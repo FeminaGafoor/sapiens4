@@ -212,11 +212,14 @@ outcomeError problem = case problem of
  InvalidSkippedCriterion -> "Only an unsatisfied, explicit If criterion can be not applicable"
  MissingCompletionEvidence -> "Completed outcome requires evidence for all applicable completion criteria"
 validateOutcome :: DecisionResponse -> Outcome -> [Text] -> Either OutcomeError ()
-validateOutcome response outcome criteria = do
- forM_ (M.keys (notApplicable outcome)) $ \criterion ->
-  unless (criterion `elem` criteria && "If " `T.isPrefixOf` criterion && criterion `notElem` satisfiedCriteria outcome) (Left InvalidSkippedCriterion)
- when (outcomeStatus outcome == Completed) $
-  unless (not (null (decisionEvidence response)) && all (`elem` (satisfiedCriteria outcome ++ M.keys (notApplicable outcome))) criteria) (Left MissingCompletionEvidence)
+validateOutcome response outcome criteria
+ | any invalidSkip skipped = Left InvalidSkippedCriterion
+ | outcomeStatus outcome == Completed && (null (decisionEvidence response) || any (`notElem` covered) criteria) = Left MissingCompletionEvidence
+ | otherwise = Right ()
+ where
+ skipped = M.keys (notApplicable outcome)
+ covered = satisfiedCriteria outcome ++ skipped
+ invalidSkip criterion = criterion `notElem` criteria || not ("If " `T.isPrefixOf` criterion) || criterion `elem` satisfiedCriteria outcome
 begin :: Service -> AgentId -> Turn -> IO ()
 begin s a turn = do
  found <- findWork s (turnId turn)
@@ -355,32 +358,34 @@ data DecisionStep
 -- Decide from an immutable snapshot. The runtime interprets only the resulting work.
 advanceDecision :: AgentId -> DecisionResponse -> Workload -> WorkCall -> Either DecisionError DecisionStep
 advanceDecision chief response work call = case decisionBody response of
- ReplyNow reply -> do
-  when (workTracked work) (Left AcceptedTaskNeedsExecution)
-  pure (finish work (FinishedCall (Answered reply)))
- ExecuteTask -> pure (finish (work { workTracked=True }) (RunningAt ReadyToWork))
- OutsideSpecialization -> pure $ SaveDecision work $
+ ReplyNow reply
+  | workTracked work -> Left AcceptedTaskNeedsExecution
+  | otherwise -> Right (finish work (FinishedCall (Answered reply)))
+ ExecuteTask -> Right (finish (work { workTracked=True }) (RunningAt ReadyToWork))
+ OutsideSpecialization -> Right $ SaveDecision work $
   if callOwner call == chief then call { callProgress=RunningAt ChiefTriage }
   else (setCallFields [("target",toJSON chief)] call) { callProgress=RunningAt Delegation }
- SelectSpecialist name -> pure (ResolveSpecialist name)
- NeedSpecialist -> pure (finish work (RunningAt CreatingSapi))
- AskAdmin question -> pure (finish (work { workTracked=True }) (FinishedCall (NeedsClarification question)))
- SpecifySapi name role -> do
-  unless (callOwner call == chief) (Left OnlyChiefCreates)
-  pure (EnsureSpecialist name role)
- PrepareTask taskType spec -> do
-  let previous=get (workField work "task") "specification"
-  unless (all (`elem` map str (NE.toList (specCriteria spec))) (items previous "completionCriteria")) (Left CriteriaRemoved)
-  let task=mergeFields [("taskType",str (if has (workField work "origin") "routine" then "automated" else taskType)),("specification",toJSON spec)] (workField work "task")
-  pure (finish (setWorkField "task" task work) (RunningAt Execution))
- Handoff request -> pure (DelegateRequest request)
+ SelectSpecialist name -> Right (ResolveSpecialist name)
+ NeedSpecialist -> Right (finish work (RunningAt CreatingSapi))
+ AskAdmin question -> Right (finish (work { workTracked=True }) (FinishedCall (NeedsClarification question)))
+ SpecifySapi name role
+  | callOwner call /= chief -> Left OnlyChiefCreates
+  | otherwise -> Right (EnsureSpecialist name role)
+ PrepareTask taskType spec
+  | any (`notElem` map str (NE.toList (specCriteria spec))) acceptedCriteria -> Left CriteriaRemoved
+  | otherwise ->
+     let task=mergeFields [("taskType",str (if has (workField work "origin") "routine" then "automated" else taskType)),("specification",toJSON spec)] (workField work "task")
+     in Right (finish (setWorkField "task" task work) (RunningAt Execution))
+ Handoff request -> Right (DelegateRequest request)
  ReportOutcome reply outcome -> do
   criteria <- B.first (InvalidAcceptedTask . T.pack) (parseEither parseJSON (get (get (workField work "task") "specification") "completionCriteria"))
   B.first InvalidOutcome (validateOutcome response outcome criteria)
   let saved=mergeFields [("reply",str reply),("evidence",toJSON (decisionEvidence response)),("author",toJSON (callOwner call))] (get (decisionRaw response) "outcome")
       result=case outcomeStatus outcome of Completed -> Answered reply; Unresolved -> UnresolvedResult reply
   pure (finish (setWorkField "outcome" saved work) (FinishedCall result))
- where finish changed progress = SaveDecision changed (call { callProgress=progress })
+ where
+ finish changed progress = SaveDecision changed (call { callProgress=progress })
+ acceptedCriteria = items (get (workField work "task") "specification") "completionCriteria"
 
 decisionFailure :: DecisionError -> IO a
 decisionFailure problem = case problem of

@@ -7,7 +7,6 @@ import Control.Monad
 import Data.Aeson hiding (pairs)
 import qualified Data.Aeson.KeyMap as KM
 import Data.Maybe (fromMaybe, isNothing, isJust)
-import Data.Bifunctor (first)
 import Data.Aeson.Types (parseEither, parseMaybe)
 import Data.Text (Text)
 import Data.Time (UTCTime, getCurrentTime)
@@ -31,15 +30,16 @@ data TaskPatch = TaskPatch
  , state :: Maybe TaskState, deleted :: Maybe Bool, revision :: Maybe Int
  } deriving (Eq, Show)
 instance FromJSON TaskPatch where
- parseJSON value = do
-  onlyFields ["title","body","assignee","state","deleted","revision"] value
-  let optional key parser = if has value key then Just <$> parser (get value key) else pure Nothing
-  title <- optional "title" $ \raw -> textFieldP "title" 500 value >> parseJSON raw
-  body <- optional "body" $ \raw -> do
-   text <- parseJSON raw
-   unless (T.length text <= 16000) (fail "Task body must be text, at most 16000 characters")
-   pure text
-  TaskPatch title body <$> optional "assignee" parseJSON <*> optional "state" parseJSON <*> optional "deleted" parseJSON <*> optional "revision" parseJSON
+ parseJSON value = onlyFields ["title","body","assignee","state","deleted","revision"] value *>
+  (TaskPatch <$> optional "title" (\raw -> textFieldP "title" 500 value *> parseJSON raw)
+             <*> optional "body" body <*> optional "assignee" parseJSON
+             <*> optional "state" parseJSON <*> optional "deleted" parseJSON <*> optional "revision" parseJSON)
+  where
+  optional key parser = if has value key then Just <$> parser (get value key) else pure Nothing
+  body raw = do
+   content <- parseJSON raw
+   unless (T.length content <= 16000) (fail "Task body must be text, at most 16000 characters")
+   pure content
 
 data CreateTask = CreateTask { title :: Text, body :: Text, assignee :: AgentId } deriving (Eq, Show)
 data TaskError = InvalidTask Text | MissingTask | TaskChanged | RestoreRequired | RestoreAssigneeRequired | StartConflict | StartAssigneeRequired | AlreadyPending deriving (Eq, Show)
@@ -50,35 +50,38 @@ data TaskCompletion = TaskCompletion
 data Settlement = NoTask | TaskForwarded | StaleResultRecorded | TaskUpdated deriving (Eq, Show)
 
 validateTask :: [AgentId] -> Value -> Either TaskError TaskPatch
-validateTask members input = do
- patch <- first (InvalidTask . T.pack) (parseEither parseJSON input)
- unless (maybe True (`elem` members) patch.assignee) (Left (InvalidTask "Assign tasks only to current Group members"))
- pure patch
+validateTask members input = case parseEither parseJSON input of
+ Left reason -> Left (InvalidTask (T.pack reason))
+ Right patch
+  | Just owner <- patch.assignee, owner `notElem` members -> Left (InvalidTask "Assign tasks only to current Group members")
+  | otherwise -> Right patch
 prepareTask :: AgentId -> TaskPatch -> Either TaskError CreateTask
-prepareTask lead patch = do
- title <- maybe (Left (InvalidTask "title must be nonempty text, at most 500 characters")) Right patch.title
- pure (CreateTask (T.strip title) (fromMaybe "" patch.body) (fromMaybe lead patch.assignee))
+prepareTask lead patch = case patch.title of
+ Nothing -> Left (InvalidTask "title must be nonempty text, at most 500 characters")
+ Just title -> Right (CreateTask (T.strip title) (fromMaybe "" patch.body) (fromMaybe lead patch.assignee))
 newTask :: TaskId -> UTCTime -> Text -> CreateTask -> GroupTask
 newTask identity created actor draft = GroupTask identity draft.title draft.body draft.assignee Backlog False 1
  (KM.fromList [("created",str (timestamp created)),("author",str actor),("updated_by",str actor),("history",arr []),("results",arr [])])
 reviseTask :: [AgentId] -> UTCTime -> Text -> TaskPatch -> GroupTask -> Either TaskError GroupTask
-reviseTask members updated actor patch task = do
- unless (patch.revision == Just task.revision) (Left TaskChanged)
- unless (not task.deleted || patch.deleted == Just False) (Left RestoreRequired)
- unless (patch.deleted /= Just False || task.assignee `elem` members || isJust patch.assignee) (Left RestoreAssigneeRequired)
- let reset = (isJust patch.title || isJust patch.body || isJust patch.assignee || isJust patch.deleted) && isNothing patch.state
-     history = items (Object task.metadata) "history" ++ [remove ["history","results"] (toJSON task)]
-     metadata = KM.fromList [("updated_by",str actor),("updated",str (timestamp updated)),("history",arr history)] <> task.metadata
- pure task { title=fromMaybe task.title patch.title, body=fromMaybe task.body patch.body
-           , assignee=fromMaybe task.assignee patch.assignee, deleted=fromMaybe task.deleted patch.deleted
-           , state=if reset then Backlog else fromMaybe task.state patch.state
-           , revision=task.revision+1, metadata=metadata }
+reviseTask members updated actor patch task
+ | patch.revision /= Just task.revision = Left TaskChanged
+ | task.deleted && patch.deleted /= Just False = Left RestoreRequired
+ | patch.deleted == Just False && task.assignee `notElem` members && isNothing patch.assignee = Left RestoreAssigneeRequired
+ | otherwise = Right task
+    { title=fromMaybe task.title patch.title, body=fromMaybe task.body patch.body
+    , assignee=fromMaybe task.assignee patch.assignee, deleted=fromMaybe task.deleted patch.deleted
+    , state=if reset then Backlog else fromMaybe task.state patch.state
+    , revision=task.revision+1, metadata=metadata }
+ where
+ reset = (isJust patch.title || isJust patch.body || isJust patch.assignee || isJust patch.deleted) && isNothing patch.state
+ history = items (Object task.metadata) "history" ++ [remove ["history","results"] (toJSON task)]
+ metadata = KM.fromList [("updated_by",str actor),("updated",str (timestamp updated)),("history",arr history)] <> task.metadata
 beginTask :: [AgentId] -> [TaskId] -> Maybe Int -> Text -> GroupTask -> Either TaskError GroupTask
-beginTask members pending revision actor task = do
- unless (revision == Just task.revision && not task.deleted) (Left StartConflict)
- unless (task.assignee `elem` members) (Left StartAssigneeRequired)
- when (task.identity `elem` pending) (Left AlreadyPending)
- pure task { state=InProgress, revision=task.revision+1, metadata=KM.insert "updated_by" (str actor) task.metadata }
+beginTask members pending revision actor task
+ | revision /= Just task.revision || task.deleted = Left StartConflict
+ | task.assignee `notElem` members = Left StartAssigneeRequired
+ | task.identity `elem` pending = Left AlreadyPending
+ | otherwise = Right task { state=InProgress, revision=task.revision+1, metadata=KM.insert "updated_by" (str actor) task.metadata }
 settleTaskResult :: UTCTime -> TaskCompletion -> GroupTask -> (GroupTask, Settlement)
 settleTaskResult time completion task =
  let stale = task.deleted || task.revision /= completion.revision
