@@ -69,7 +69,7 @@ view m = V.node "main" [V.cls "workspace",V.id "workspace-panel",V.label "Agent 
     ,V.icon ("Remove " <> D.s "title" b <> " bookmark") "×" $ Browser "unbookmark" $ D.json {id: D.get "id" b}]
 
 sync :: M.Model -> Effect Unit
-sync m = when (D.b "native" m.env) do
+sync m = when (m.env.native) do
   box <- B.measure "#workspace-content"
   background <- B.cssProperty ".workspace" "--sapi-white"
   foreground <- B.cssProperty ".workspace" "--sapi-ink"

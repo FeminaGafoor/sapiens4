@@ -1,14 +1,14 @@
 module Sapiens.App where
 
 import Prelude
+import Sapiens.Environment (Environment)
+import Sapiens.Platform as Platform
 import Control.Alt ((<|>))
 import Control.Parallel (parallel, sequential)
 import Control.Promise (toAffE)
-import Data.Argonaut.Core (Json)
 import Data.Array as A
 import Data.Either (Either(..))
 import Data.Maybe (Maybe(..), fromMaybe)
-import Data.Set as Set
 import Data.String as S
 import Data.String.CodeUnits as CU
 import Data.Foldable (traverse_)
@@ -35,7 +35,7 @@ import Sapiens.Update as U
 import Sapiens.Workspace as Workspace
 import Web.Event.Event as Event
 
-component :: forall q. C.Runtime -> H.Component q Json Void Aff
+component :: forall q. C.Runtime -> H.Component q Environment Void Aff
 component runtime = H.mkComponent
   { initialState:M.initial
   , render:View.render
@@ -59,18 +59,18 @@ handle runtime input = session input
       H.modify_ \m -> m {now=now,theme=if A.elem savedTheme ["dark","light"] then savedTheme else m.theme}
       m <- H.get
       let ios = N.ios m.env
-          mobile = ios || D.matches "Android" (D.s "userAgent" m.env)
-          required = M.remote m && mobile && not (D.b "installed" m.env)
+          mobile = ios || D.matches "Android" (m.env.userAgent)
+          required = M.remote m && mobile && not (m.env.installed)
       H.modify_ _ { installRequired=required }
       when (M.remote m) do
-        liftEffect $ B.historyReplace $ D.s "path" m.env
+        liftEffect $ B.historyReplace $ m.env.path
         void $ H.fork $ void $ H.liftAff $ try $ toAffE $ B.registerWorker "/sw.js"
       unless required $ dispatch LoadRegistry
       E.sync
     Finalize -> liftEffect $ C.dispose runtime
     Poll -> do
       m <- H.get
-      unless (m.polling || m.busy || m.active == "" || m.installRequired || D.b "hidden" m.env) do
+      unless (m.polling || m.busy || m.active == "" || m.installRequired || m.env.hidden) do
         let requested = m {polling=true,pollGeneration=m.pollGeneration+1}
         H.put requested
         E.refresh runtime dispatch requested $ E.api runtime requested "/api/state" "GET" D.null
@@ -93,8 +93,8 @@ handle runtime input = session input
     Global name event -> global name event
     RefreshTheme -> do
       saved <- liftEffect $ B.storageRead "sapi-color-theme"
-      env <- liftEffect B.environment
-      H.modify_ _ {theme=if A.elem saved ["dark","light"] then saved else if D.b "dark" env then "dark" else "light"}
+      env <- liftEffect Platform.environment
+      H.modify_ _ {theme=if A.elem saved ["dark","light"] then saved else if env.dark then "dark" else "light"}
       E.sync
     Theme -> do
       m <- H.get
@@ -141,11 +141,7 @@ handle runtime input = session input
     NoteAnchor id -> liftEffect $ B.scrollIntoView $ "#" <> id
     _ -> conversation action
   conversation action = case action of
-    Draft value -> do
-      H.modify_ \m -> m {drafts=O.insert m.selected value m.drafts}
-      E.resizeComposer
-      dispatch MentionCursor
-      E.save dispatch
+    Draft value -> E.runUpdate runtime dispatch $ U.Draft value
     MentionCursor -> do
       m <- H.get
       box <- liftEffect $ B.measure "#message-input"
@@ -184,31 +180,13 @@ handle runtime input = session input
             if key == "Escape" then H.modify_ _ {mention=Nothing} else unless (A.null menu.choices) do
               if key == "Enter" || key == "Tab" then dispatch $ MentionChoice menu.index else H.modify_ _ {mention=Just $ menu {index=mod (menu.index+(if key == "ArrowDown" then 1 else A.length menu.choices-1)) (A.length menu.choices)}}
           _ -> when (key == "Enter" && not (D.b "shift" data_)) $ liftEffect (Event.preventDefault event) *> dispatch Send
-    Send -> do
-      m <- H.get
-      let text = S.trim $ M.draft m
-          items = M.attachments m
-          a = M.selected m
-      unless ((text == "" && A.null items) || Set.member m.selected m.sending || m.uploading > 0 || not m.online || m.busy || D.b "retired" a || D.b "archived" a || A.elem (D.str $ D.at ["corpora","status"] m.snapshot) ["paused","archived"]) do
-        H.modify_ _ {sending=Set.insert m.selected m.sending,mention=Nothing}
-        let payload = D.obj $ [Tuple "text" (D.text text),Tuple "attachments" $ D.array $ map (D.get "id") items] <> case m.clarification of
-              Just work | D.s "owner" work == m.selected -> [Tuple "workload" $ D.get "id" work]
-              _ -> []
-        E.attempt (E.api runtime m (M.ownerPath m <> "/messages") "POST" payload) \result -> E.inEpoch m.epoch \current -> do
-          H.modify_ _ {sending=Set.delete m.selected current.sending}
-          case result of
-            Left failure -> E.notify $ message failure
-            Right _ -> do
-              H.modify_ \s -> s {drafts=if S.trim (fromMaybe "" $ O.lookup m.selected s.drafts) == text then O.insert m.selected "" s.drafts else s.drafts,attachments=O.insert m.selected (A.filter (\attachment -> not $ A.any (( _ == D.s "id" attachment) <<< D.s "id") items) $ fromMaybe [] $ O.lookup m.selected s.attachments) s.attachments,clarification=Nothing}
-              E.save dispatch
-              E.scrollBottom
-              dispatch Poll
-    ToggleExpanded key -> H.modify_ \m -> m {expanded=(if Set.member key m.expanded then Set.delete else Set.insert) key m.expanded}
+    Send -> E.runUpdate runtime dispatch U.Send
+    ToggleExpanded key -> E.runUpdate runtime dispatch $ U.ToggleExpanded key
     Clarify work -> do
       dispatch $ Select $ D.s "owner" work
       H.modify_ _ {clarification=Just work}
       focusComposer
-    RemoveAttachment id -> H.modify_ (\m -> m {attachments=O.alter (Just <<< A.filter (( _ /= id) <<< D.s "id") <<< fromMaybe []) m.selected m.attachments}) *> E.save dispatch
+    RemoveAttachment id -> E.runUpdate runtime dispatch $ U.RemoveAttachment id
     PrepareDraft preset placeholder -> do
       m <- H.get
       dispatch $ Navigate $ N.Chat N.Conversation
@@ -242,7 +220,7 @@ handle runtime input = session input
     TogglePane pane -> E.runUpdate runtime dispatch $ U.TogglePane pane
     Home -> do
       m <- H.get
-      if M.remote m && D.b "installed" m.env && (N.ios m.env) then do
+      if M.remote m && m.env.installed && (N.ios m.env) then do
         E.persistLocal
         void $ H.liftAff $ try $ sequential $ parallel (toAffE B.updateWorker) <|> parallel (delay $ Milliseconds 12000.0)
         E.persistLocal
@@ -250,7 +228,7 @@ handle runtime input = session input
       else do
         H.modify_ _ {panes=[N.ChatPane,N.Sidebar,N.Workspace]}
         dispatch $ Select $ D.s "main_agent_id" m.snapshot
-    RetryDocument key -> H.modify_ (\m -> m {documents=O.delete key m.documents}) *> E.requestDocument runtime
+    RetryDocument key -> E.runUpdate runtime dispatch $ U.RetryDocument key
     Menu key -> do
       H.modify_ \m -> m {menu=if m.menu == Just key then Nothing else Just key,mention=Nothing}
       E.sync
@@ -328,8 +306,8 @@ handle runtime input = session input
     "online" -> dispatch LoadRegistry
     "pageshow" -> resume unit
     "visibilitychange" -> do
-      env <- liftEffect B.environment
-      if D.b "hidden" env then suspend unit else resume unit
+      env <- liftEffect Platform.environment
+      if env.hidden then suspend unit else resume unit
     "pagehide" -> suspend unit
     "popstate" -> dispatch CloseDialog
     "storage" -> do
@@ -370,4 +348,4 @@ handle runtime input = session input
     E.later 32.0 E.restoreScroll
     dispatch Poll
   focusComposer = liftEffect $ B.focus "#message-input"
-  updateEnvironment = liftEffect B.environment >>= \env -> H.modify_ _ {env=env}
+  updateEnvironment = liftEffect Platform.environment >>= \env -> H.modify_ _ {env=env}

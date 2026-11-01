@@ -38,7 +38,7 @@ handle runtime dispatch action = case action of
           H.modify_ $ M.reset decorated
           E.restoreScroll
     requested <- H.get
-    unless requested.installRequired $ E.attempt (C.registry runtime (M.remote requested) $ D.s "origin" requested.env) \result -> E.inEpoch requested.epoch \m -> case result of
+    unless requested.installRequired $ E.attempt (C.registry runtime (M.remote requested) $ requested.env.origin) \result -> E.inEpoch requested.epoch \m -> case result of
       Left failure -> do
         H.modify_ _ {feedback=message failure,online=false}
         E.later 3000.0 $ dispatch LoadRegistry
@@ -56,9 +56,9 @@ handle runtime dispatch action = case action of
             connect current record
         unless (D.valid record) $ H.modify_ _ {active="",online=false,feedback="",snapshot=D.empty,agents=[]}
         current <- H.get
-        when (not (M.remote current) && S.contains (S.Pattern "pairing=local") (D.s "search" current.env)) do
-          liftEffect $ B.historyReplace $ D.s "path" current.env
-          H.modify_ _ {env=D.put "search" (D.text "") current.env}
+        when (not (M.remote current) && S.contains (S.Pattern "pairing=local") (current.env.search)) do
+          liftEffect $ B.historyReplace $ current.env.path
+          H.modify_ _ {env=current.env {search=""}}
           traverse_ (dispatch <<< OpenDialog M.HostPairing) $ A.find (( _ == "Local") <<< D.s "location") registry.records
         E.sync
   EnterCorpora key -> yes do
@@ -90,9 +90,9 @@ handle runtime dispatch action = case action of
           void $ H.fork do
             result <- H.liftAff $ try $ if M.remote m then do
               transport <- R.invitation invitation
-              liftEffect $ Ref.write (Just transport) runtime.pendingPair
+              liftEffect $ Ref.write (C.RemotePairing transport) runtime.pairing
               pure $ Left transport
-              else Right <$> C.json "/api/host/pair" "POST" invitation
+              else Right <$> C.json "/api/host/pair" "POST" (D.json invitation)
             case result of
               Left failure -> receivePair d.identity $ Left failure
               Right (Left transport) -> do
@@ -112,7 +112,7 @@ handle runtime dispatch action = case action of
               Right (Right value) -> do
                 current <- H.get
                 if (_.identity <$> current.dialog) /= Just d.identity then void $ H.liftAff $ try $ C.json ("/api/host/pair/" <> B.encodeURI (D.s "id" value)) "POST" D.empty else do
-                  liftEffect $ Ref.write (D.s "id" value) runtime.pendingPairId
+                  liftEffect $ Ref.write (C.LocalPairing $ D.s "id" value) runtime.pairing
                   pairCode d.identity (D.s "code" value) (D.s "id" value)
                   pollPair d.identity value
       _ -> pure unit
@@ -137,7 +137,7 @@ handle runtime dispatch action = case action of
   UploadQR -> yes do
     m <- H.get
     E.withDialog \d -> E.attempt (do
-      unless (D.b "secure" m.env) $ throwError $ error "Open this app over HTTPS."
+      unless (m.env.secure) $ throwError $ error "Open this app over HTTPS."
       file <- toAffE $ B.chooseFile "image/png,image/jpeg,image/webp" 10485760
       if not (D.valid file) then pure D.null else toAffE $ B.decodeQR ("data:" <> D.s "mime" file <> ";base64," <> D.s "data" file) 1600) $ receiveQR d.identity
   StopScan -> yes do
@@ -180,7 +180,7 @@ handle runtime dispatch action = case action of
       H.liftAff $ C.cancelPairing runtime
       E.modifyDialog id \d -> d {busy=false,error=message failure,fields=D.remove "code" d.fields}
     Right record -> do
-      liftEffect $ Ref.write "" runtime.pendingPairId
+      liftEffect $ Ref.write C.NoPairing runtime.pairing
       H.modify_ \s -> s {records=A.snoc (A.filter (( _ /= D.s "key" record) <<< D.s "key") s.records) record}
       current <- H.get
       void $ liftEffect $ C.write "s4.records" $ D.array current.records

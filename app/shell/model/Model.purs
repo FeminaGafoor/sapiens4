@@ -1,6 +1,7 @@
 module Sapiens.Model where
 
 import Prelude
+import Sapiens.Environment (Environment)
 import Data.Argonaut.Core (Json, toObject, toArray, toString)
 import Data.Array as A
 import Data.Either (Either(..))
@@ -39,24 +40,35 @@ corporaDialog kind = A.elem kind [CreateCorpora,EditCorpora,ConnectRemote,HostPa
 
 type Dialog = { kind :: DialogKind, title :: String, record :: Json, fields :: Json, content :: Json, error :: String, busy :: Boolean, identity :: Int }
 
-type Model =
-  { snapshot :: Json, agents :: Array Json, messages :: O.Object (Array Json)
-  , selected :: String, activity :: N.Activity, scope :: N.Scope, groupView :: Maybe String
-  , mention :: Maybe { start :: Int, end :: Int, choices :: Array Json, index :: Int }
-  , drafts :: O.Object String, attachments :: O.Object (Array Json), sending :: Set.Set String, uploading :: Int, clarification :: Maybe Json
-  , workspaces :: Json, workspaceRevision :: Number, documents :: O.Object (RemoteData String Json), expanded :: Set.Set String
-  , polling :: Boolean, pollGeneration :: Int, saving :: Boolean, lastPreview :: Number, nativeReporting :: Boolean, nativeReports :: Array Json
-  , epoch :: Int, sequence :: Int, now :: Number, env :: Json
-  , panes :: Array N.Pane, search :: String, searchOpen :: Boolean, menu :: Maybe String, dialog :: Maybe Dialog
-  , records :: Array Json, active :: String, online :: Boolean, busy :: Boolean, localAvailable :: Boolean, showArchived :: Boolean
-  , toast :: String, feedback :: String, theme :: String, installRequired :: Boolean
-  , dialogStack :: Array Dialog
-  , imageUrls :: Json
-  , preview :: RemoteData PreviewError String, address :: String, addressOpen :: Boolean
-  , scrollPosition :: Json, restoringScroll :: Boolean, preferencesSaved :: String
-  }
+type Model = Record (InterfaceState (ContentState SessionState))
 
-initial :: Json -> Model
+type InterfaceState r =
+  ( selected :: String, activity :: N.Activity, scope :: N.Scope, groupView :: Maybe String
+  , panes :: Array N.Pane, search :: String, searchOpen :: Boolean, menu :: Maybe String
+  , dialog :: Maybe Dialog, dialogStack :: Array Dialog, theme :: String
+  , toast :: String, feedback :: String, address :: String, addressOpen :: Boolean
+  | r )
+
+type ContentState r =
+  ( snapshot :: Json, agents :: Array Json, messages :: O.Object (Array Json)
+  , mention :: Maybe { start :: Int, end :: Int, choices :: Array Json, index :: Int }
+  , drafts :: O.Object String, attachments :: O.Object (Array Json), sending :: Set.Set String
+  , uploading :: Int, clarification :: Maybe Json
+  , workspaces :: Json, workspaceRevision :: Number, documents :: O.Object (RemoteData String Json)
+  , expanded :: Set.Set String, imageUrls :: Json, preview :: RemoteData PreviewError String
+  , scrollPosition :: Json, restoringScroll :: Boolean
+  | r )
+
+type SessionState =
+  ( polling :: Boolean, pollGeneration :: Int, saving :: Boolean, lastPreview :: Number
+  , nativeReporting :: Boolean, nativeReports :: Array Json
+  , epoch :: Int, sequence :: Int, now :: Number, env :: Environment
+  , records :: Array Json, active :: String, online :: Boolean, busy :: Boolean
+  , localAvailable :: Boolean, showArchived :: Boolean, installRequired :: Boolean
+  , preferencesSaved :: String
+  )
+
+initial :: Environment -> Model
 initial env =
   { snapshot:D.empty, agents:[], messages:O.empty, selected:"", activity:N.Chat N.Conversation, scope:N.All, groupView:Nothing
   , mention:Nothing, drafts:O.empty, attachments:O.empty, sending:Set.empty, uploading:0, clarification:Nothing
@@ -64,7 +76,7 @@ initial env =
   , polling:false,pollGeneration:0,saving:false,lastPreview:0.0,nativeReporting:false,nativeReports:[]
   , epoch:0, sequence:0, now:0.0, env, panes:[N.ChatPane,N.Sidebar,N.Workspace], search:"", searchOpen:false, menu:Nothing, dialog:Nothing
   , records:[], active:"", online:false, busy:false, localAvailable:false, showArchived:false
-  , toast:"", feedback:"", theme:if D.b "dark" env then "dark" else "light", installRequired:false
+  , toast:"", feedback:"", theme:if env.dark then "dark" else "light", installRequired:false
   , dialogStack:[], imageUrls:D.empty, preview:NotAsked, address:"", addressOpen:false, scrollPosition:D.null, restoringScroll:false, preferencesSaved:""
   }
 
@@ -84,7 +96,7 @@ activeRecord :: Model -> Json
 activeRecord m = fromMaybe D.null $ A.find ((_ == m.active) <<< D.s "key") m.records
 
 remote :: Model -> Boolean
-remote m = D.valid $ D.at ["body","remote"] m.env
+remote m = O.member "remote" m.env.body
 
 draft :: Model -> String
 draft m = fromMaybe "" $ O.lookup m.selected m.drafts
@@ -199,7 +211,7 @@ currentDocument m = case m.activity of
   make kind revision suffix = {key:kind <> ":" <> m.selected,revision,path:ownerPath m <> suffix,epoch:m.epoch,sequence:m.sequence+1}
 
 nativeWorkspace :: Model -> Boolean
-nativeWorkspace m = D.b "native" m.env && D.s "location" (activeRecord m) /= "Remote"
+nativeWorkspace m = m.env.native && D.s "location" (activeRecord m) /= "Remote"
 
 currentPreview :: Model -> Maybe Request
 currentPreview m =

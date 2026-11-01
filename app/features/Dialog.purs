@@ -150,3 +150,9 @@ hostPairing m d = if not (D.valid data_) then V.p "" "Loading…" else V.div ""
   invitation = D.get "invitation" data_
   date key = D.fallback "Not recorded" $ D.str $ D.at ["dates",key] d.fields
   action key label = V.control [V.disabled d.busy] (label) (DialogCommand ("host-" <> key) D.empty)
+
+updateField :: String -> String -> M.Dialog -> M.Dialog
+updateField key value d =
+  let fields = if key == "node" && d.kind == M.DecisionPrompts then fromMaybe d.fields $ A.find (( _ == value) <<< D.s "node") $ D.rows "prompts" d.content else D.put key (D.text value) d.fields
+      withLead = if key == "lead" && d.kind == M.GroupSettings then D.put "members" (D.array $ map D.text $ A.nub $ A.snoc (D.strings $ D.get "members" fields) value) fields else fields
+  in d {fields=withLead,error=""}

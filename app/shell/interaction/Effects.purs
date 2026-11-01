@@ -7,10 +7,10 @@ import Data.Array as A
 import Data.Either (Either(..), either)
 import Data.Foldable (traverse_)
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
+import Data.Tuple (Tuple(..))
 import Effect.Aff (Aff, Milliseconds(..), delay, try, throwError)
 import Effect.Class (liftEffect)
 import Effect.Exception (Error, error, message)
-import Foreign.Object as O
 import Halogen as H
 import Libs4.Browser as B
 import Sapiens.Action (Action(..))
@@ -63,13 +63,13 @@ refresh runtime dispatch requested operation = attempt operation \result -> do
         H.put updated {now=now,online=true,feedback="",records=map (\r -> if D.s "key" r == key then D.merge r $ D.get "corpora" raw else r) current.records,address=if current.addressOpen then current.address else D.fallback (if D.s "url" tab == "about:blank" then "" else D.s "url" tab) $ D.s "path" tab}
         liftEffect $ C.cache key raw
         restoreScroll
-        requestDocument runtime
+        requestDocument runtime dispatch
         when (now - m.lastPreview >= 2000.0) do
           H.modify_ _ {lastPreview=now}
           preview runtime dispatch
         sync
     latest <- H.get
-    unless (D.b "hidden" latest.env) $
+    unless (latest.env.hidden) $
       later (if M.remote latest || not latest.online then 2000.0 else 750.0) $
         inEpoch latest.epoch \current -> when (current.active == latest.active && current.pollGeneration == latest.pollGeneration) $ dispatch Poll
 
@@ -94,22 +94,8 @@ persistLocal = do
 save :: Dispatch -> UI Unit
 save dispatch = persistLocal *> later 300.0 (dispatch Persist)
 
-requestDocument :: C.Runtime -> UI Unit
-requestDocument runtime = do
-  m <- H.get
-  case M.currentDocument m of
-    Nothing -> pure unit
-    Just request -> do
-      let old = fromMaybe M.NotAsked $ O.lookup request.key m.documents
-      unless ((_.revision <$> M.requestOf old) == Just request.revision) do
-        H.modify_ _ { sequence=request.sequence, documents=O.insert request.key (M.Loading request $ M.valueOf old) m.documents }
-        attempt (api runtime m request.path "GET" D.null) \result -> inEpoch m.epoch \current ->
-          when ((_.sequence <$> (O.lookup request.key current.documents >>= M.requestOf)) == Just request.sequence) do
-            let decoded = either (Left <<< message) (M.decodeDocument request) result
-            H.modify_ \s -> s {documents=O.insert request.key (either (M.Failed request) (M.Ready request) decoded) s.documents}
-            case decoded of
-              Right document | D.cut 5 request.key == "memo:" -> memoImages runtime document
-              _ -> pure unit
+requestDocument :: C.Runtime -> Dispatch -> UI Unit
+requestDocument runtime dispatch = runUpdate runtime dispatch U.RequestDocument
 
 memoImages :: C.Runtime -> Json -> UI Unit
 memoImages runtime document = do
@@ -140,9 +126,20 @@ runUpdate runtime dispatch action = do
     U.Commands commands -> traverse_ (execute requested) commands
   where
   execute requested = case _ of
+    U.FetchDocument request -> attempt (api runtime requested request.path "GET" D.null) $
+      runUpdate runtime dispatch <<< U.ReceiveDocument request <<< either (Left <<< message) (M.decodeDocument request)
+    U.LoadMemoImages document -> memoImages runtime document
+    U.SendMessage request ->
+      let payload = D.obj $ [Tuple "text" (D.text request.text),Tuple "attachments" (D.array $ map D.text request.attachments)] <> maybe [] (\id -> [Tuple "workload" $ D.text id]) request.workload
+      in attempt (api runtime requested request.path "POST" payload) $
+        runUpdate runtime dispatch <<< U.MessageReceived request <<< either (Left <<< message) (const $ Right unit)
+    U.Notify caption -> notify caption
+    U.PollNow -> dispatch Poll
+    U.ResizeComposer -> resizeComposer
+    U.UpdateMention -> dispatch MentionCursor
     U.SaveView -> save dispatch *> sync
     U.SavePreferences -> save dispatch
-    U.LoadDocument -> requestDocument runtime
+    U.LoadDocument -> requestDocument runtime dispatch
     U.ScrollToStart -> liftEffect $ B.scroll "#conversation-body" 0.0
     U.ScrollToBottom -> scrollBottom
     U.FocusSearch -> liftEffect $ B.focus "#agent-search"
@@ -155,7 +152,7 @@ runUpdate runtime dispatch action = do
 captureScroll :: UI Unit
 captureScroll = do
   m <- H.get
-  when (m.activity == N.Chat N.Conversation && not (D.b "hidden" m.env) && not m.restoringScroll) do
+  when (m.activity == N.Chat N.Conversation && not (m.env.hidden) && not m.restoringScroll) do
     viewport <- liftEffect $ B.measure "#conversation-body"
     when (D.n "clientHeight" viewport > 0.0) do
       children <- liftEffect $ B.measureChildren "#conversation-body"
@@ -166,7 +163,7 @@ captureScroll = do
 restoreScroll :: UI Unit
 restoreScroll = do
   m <- H.get
-  when (m.activity == N.Chat N.Conversation && not (D.b "hidden" m.env)) do
+  when (m.activity == N.Chat N.Conversation && not (m.env.hidden)) do
     let saved = m.scrollPosition
     when (D.s "selected" saved == m.selected) do
       viewport <- liftEffect $ B.measure "#conversation-body"
@@ -192,7 +189,7 @@ sync = do
     B.setAttribute "link[rel=icon]" "href" $ if m.theme == "dark" then "/favicon-dark.svg" else "/favicon.svg"
     B.setAttribute "body" "data-pane-limit" $ show $ N.limit m.env
     if N.limit m.env < 3 then B.setAttribute "body" "data-mobile-ui" "" else B.removeAttribute "body" "data-mobile-ui"
-    when (D.n "viewportScale" m.env == 1.0) $ B.setStyle "html" "--mobile-viewport-height" (show (D.n "viewportHeight" m.env) <> "px")
+    when (m.env.viewportScale == 1.0) $ B.setStyle "html" "--mobile-viewport-height" (show (m.env.viewportHeight) <> "px")
     B.showDialog (if maybe false (M.corporaDialog <<< _.kind) m.dialog then "#corpora-dialog" else "#modal") $ m.dialog /= Nothing
     W.sync m
   resizeComposer

@@ -18,17 +18,18 @@ import Libs4.Browser as B
 import Sapiens.Data as D
 import Sapiens.Remote as R
 
-type Runtime = { clients :: Ref.Ref (O.Object R.Transport), credentials :: Ref.Ref (O.Object Json), camera :: Ref.Ref (Maybe B.Camera), pendingPair :: Ref.Ref (Maybe R.Transport), pendingPairId :: Ref.Ref String }
+data Pairing = NoPairing | LocalPairing String | RemotePairing R.Transport
+
+type Runtime = { clients :: Ref.Ref (O.Object R.Transport), credentials :: Ref.Ref (O.Object Json), camera :: Ref.Ref (Maybe B.Camera), pairing :: Ref.Ref Pairing }
 type Registry = { records :: Array Json, localAvailable :: Boolean }
 
 create :: Effect Runtime
-create = do
+create = ado
   clients <- Ref.new O.empty
   credentials <- Ref.new O.empty
   camera <- Ref.new Nothing
-  pendingPair <- Ref.new Nothing
-  pendingPairId <- Ref.new ""
-  pure {clients,credentials,camera,pendingPair,pendingPairId}
+  pairing <- Ref.new NoPairing
+  in {clients,credentials,camera,pairing}
 
 read :: String -> Effect Json
 read key = D.parse <$> B.storageRead key
@@ -140,11 +141,12 @@ cancelPairing runtime = do
   liftEffect do
     Ref.read runtime.camera >>= traverse_ B.cameraStop
     Ref.write Nothing runtime.camera
-    Ref.read runtime.pendingPair >>= traverse_ R.close
-    Ref.write Nothing runtime.pendingPair
-  id <- liftEffect $ Ref.read runtime.pendingPairId
-  liftEffect $ Ref.write "" runtime.pendingPairId
-  when (id /= "") $ void $ try $ json ("/api/host/pair/" <> B.encodeURI id) "POST" D.empty
+  pairing <- liftEffect $ Ref.read runtime.pairing
+  liftEffect $ Ref.write NoPairing runtime.pairing
+  case pairing of
+    NoPairing -> pure unit
+    RemotePairing transport -> liftEffect $ R.close transport
+    LocalPairing id -> void $ try $ json ("/api/host/pair/" <> B.encodeURI id) "POST" D.empty
 
 register :: Runtime -> R.Transport -> Aff Json
 register runtime transport = do
@@ -155,11 +157,13 @@ register runtime transport = do
     traverse_ R.close $ O.lookup key existing
     Ref.modify_ (O.insert key transport) runtime.clients
     Ref.modify_ (O.insert key session) runtime.credentials
-    Ref.write Nothing runtime.pendingPair
+    Ref.write NoPairing runtime.pairing
   pure $ D.merge (D.get "corpora" session) $ D.json {key, location: "Remote"}
 
 dispose :: Runtime -> Effect Unit
 dispose runtime = do
   Ref.read runtime.clients >>= traverse_ R.close <<< O.values
   Ref.read runtime.camera >>= traverse_ B.cameraStop
-  Ref.read runtime.pendingPair >>= traverse_ R.close
+  Ref.read runtime.pairing >>= case _ of
+    RemotePairing transport -> R.close transport
+    _ -> pure unit

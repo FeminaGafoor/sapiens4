@@ -48,7 +48,7 @@ handle runtime dispatch action = case action of
     H.modify_ _ {dialog=Nothing,dialogStack=[]}
     E.sync
   Field key value -> do
-    H.modify_ \m -> m {dialog=map (updateField key value) m.dialog}
+    H.modify_ \m -> m {dialog=map (Dialog.updateField key value) m.dialog}
     when (key == "showLink") do
       liftEffect $ B.focus "#host-pair-link"
       m <- H.get
@@ -77,10 +77,6 @@ handle runtime dispatch action = case action of
         H.modify_ \s -> s {attachments=O.alter (Just <<< flip A.snoc item <<< fromMaybe []) m.selected s.attachments}
         dispatch CloseDialog
         E.save dispatch
-  updateField key value d =
-    let fields = if key == "node" && d.kind == M.DecisionPrompts then fromMaybe d.fields $ A.find (( _ == value) <<< D.s "node") $ D.rows "prompts" d.content else D.put key (D.text value) d.fields
-        withLead = if key == "lead" && d.kind == M.GroupSettings then D.put "members" (D.array $ map D.text $ A.nub $ A.snoc (D.strings $ D.get "members" fields) value) fields else fields
-    in d {fields=withLead,error=""}
   receive id done operation = E.attempt operation \result -> E.inDialog id \_ -> do
     E.modifyDialog id _ {busy=false}
     case result of
