@@ -31,6 +31,7 @@ import Sapiens.Navigation as N
 import Sapiens.Text as Text
 import Sapiens.View as View
 import Sapiens.Work as Work
+import Sapiens.Update as U
 import Sapiens.Workspace as Workspace
 import Web.Event.Event as Event
 
@@ -228,39 +229,17 @@ handle runtime input = session input
     Select id -> do
       E.captureScroll
       E.persistLocal
-      H.modify_ $ M.select id
-      E.scrollBottom
-      E.preview runtime
-      saveView dispatch
+      E.runUpdate runtime dispatch $ U.Select id
     SetScope scope -> do
       m <- H.get
       dispatch $ Select $ D.s "main_agent_id" m.snapshot
-      H.modify_ _ {scope=scope,groupView=Nothing}
-      current <- H.get
-      when (N.limit current.env < 3) $ H.modify_ _ {panes=N.togglePane false (N.limit current.env) (D.valid $ M.activeTab current) N.Sidebar current.panes}
-      saveView dispatch
-    Navigate activity -> do
-      E.captureScroll
-      H.modify_ _ {activity=activity,menu=Nothing}
-      liftEffect $ B.scroll "#conversation-body" 0.0
-      E.requestDocument runtime
-      saveView dispatch
+      E.runUpdate runtime dispatch $ U.SetScope scope
+    Navigate activity -> E.captureScroll *> E.runUpdate runtime dispatch (U.Navigate activity)
     DefaultWork -> H.get >>= dispatch <<< Navigate <<< Work.defaultActivity
-    SetPeriod period -> do
-      H.modify_ \m -> m {menu=Nothing,activity=case m.activity of
-        N.Work view _ -> N.Work view period
-        other -> other}
-      E.save dispatch
-    Search search -> H.modify_ _ {search=search}
-    ToggleSearch -> do
-      m <- H.get
-      H.modify_ _ {searchOpen=not m.searchOpen,search=if m.searchOpen then "" else m.search}
-      unless m.searchOpen $ liftEffect $ B.focus "#agent-search"
-    TogglePane pane -> do
-      m <- H.get
-      if pane == N.Workspace && not (D.valid $ M.activeTab m) then dispatch $ Browser "open" $ D.json {url: "about:blank"} else do
-        H.modify_ _ {panes=N.togglePane true (N.limit m.env) (D.valid $ M.activeTab m) pane m.panes}
-        saveView dispatch
+    SetPeriod period -> E.runUpdate runtime dispatch $ U.SetPeriod period
+    Search search -> E.runUpdate runtime dispatch $ U.Search search
+    ToggleSearch -> E.runUpdate runtime dispatch U.ToggleSearch
+    TogglePane pane -> E.runUpdate runtime dispatch $ U.TogglePane pane
     Home -> do
       m <- H.get
       if M.remote m && D.b "installed" m.env && (N.ios m.env) then do
@@ -340,7 +319,7 @@ handle runtime input = session input
         H.modify_ _ {menu=if navigated then Nothing else current.menu,addressOpen=if navigated then opened && D.s "url" tab == "about:blank" else current.addressOpen,address=if not navigated && current.addressOpen then current.address else D.fallback (if D.s "url" tab == "about:blank" then "" else D.s "url" tab) $ D.s "path" tab,panes=if op == "close" && not (D.valid tab) then A.filter (_ /= N.Workspace) current.panes else if A.elem op ["open","focus","close","back","forward","reload"] then N.togglePane false (N.limit current.env) (D.valid tab) N.Workspace current.panes else current.panes,preview=if op == "open" || op == "focus" then M.NotAsked else current.preview}
         when (opened && D.s "url" tab == "about:blank") $ liftEffect $ B.focus "#browser-address"
       E.sync
-      E.preview runtime
+      E.preview runtime dispatch
       E.save dispatch
   global name event = case name of
     "error" -> H.modify_ _ {feedback=D.s "message" event}
@@ -390,6 +369,5 @@ handle runtime input = session input
     E.restoreScroll
     E.later 32.0 E.restoreScroll
     dispatch Poll
-  saveView next = E.save next *> E.sync
   focusComposer = liftEffect $ B.focus "#message-input"
   updateEnvironment = liftEffect B.environment >>= \env -> H.modify_ _ {env=env}

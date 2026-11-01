@@ -14,7 +14,19 @@ import Libs4.Browser as B
 import Sapiens.Data as D
 import Sapiens.Navigation as N
 
-data RemoteData a = NotAsked | Loading Request (Maybe a) | Ready Request a | Failed Request String
+data RemoteData error a = NotAsked | Loading Request (Maybe a) | Ready Request a | Failed Request error
+
+data PreviewError = PreviewUnavailable String | InvalidPreview
+
+previewError :: PreviewError -> String
+previewError = case _ of
+  PreviewUnavailable message -> message
+  InvalidPreview -> "Invalid file preview response"
+
+decodePreview :: Json -> Either PreviewError String
+decodePreview value = case toString (D.get "content" value) of
+  Just content -> Right content
+  Nothing -> Left InvalidPreview
 
 type Request = { epoch :: Int, sequence :: Int, key :: String, revision :: String, path :: String }
 
@@ -32,7 +44,7 @@ type Model =
   , selected :: String, activity :: N.Activity, scope :: N.Scope, groupView :: Maybe String
   , mention :: Maybe { start :: Int, end :: Int, choices :: Array Json, index :: Int }
   , drafts :: O.Object String, attachments :: O.Object (Array Json), sending :: Set.Set String, uploading :: Int, clarification :: Maybe Json
-  , workspaces :: Json, workspaceRevision :: Number, documents :: O.Object (RemoteData Json), expanded :: Set.Set String
+  , workspaces :: Json, workspaceRevision :: Number, documents :: O.Object (RemoteData String Json), expanded :: Set.Set String
   , polling :: Boolean, pollGeneration :: Int, saving :: Boolean, lastPreview :: Number, nativeReporting :: Boolean, nativeReports :: Array Json
   , epoch :: Int, sequence :: Int, now :: Number, env :: Json
   , panes :: Array N.Pane, search :: String, searchOpen :: Boolean, menu :: Maybe String, dialog :: Maybe Dialog
@@ -40,7 +52,7 @@ type Model =
   , toast :: String, feedback :: String, theme :: String, installRequired :: Boolean
   , dialogStack :: Array Dialog
   , imageUrls :: Json
-  , preview :: RemoteData Json, previewPath :: String, address :: String, addressOpen :: Boolean
+  , preview :: RemoteData PreviewError String, address :: String, addressOpen :: Boolean
   , scrollPosition :: Json, restoringScroll :: Boolean, preferencesSaved :: String
   }
 
@@ -53,7 +65,7 @@ initial env =
   , epoch:0, sequence:0, now:0.0, env, panes:[N.ChatPane,N.Sidebar,N.Workspace], search:"", searchOpen:false, menu:Nothing, dialog:Nothing
   , records:[], active:"", online:false, busy:false, localAvailable:false, showArchived:false
   , toast:"", feedback:"", theme:if D.b "dark" env then "dark" else "light", installRequired:false
-  , dialogStack:[], imageUrls:D.empty, preview:NotAsked, previewPath:"", address:"", addressOpen:false, scrollPosition:D.null, restoringScroll:false, preferencesSaved:""
+  , dialogStack:[], imageUrls:D.empty, preview:NotAsked, address:"", addressOpen:false, scrollPosition:D.null, restoringScroll:false, preferencesSaved:""
   }
 
 agent :: Model -> String -> Json
@@ -141,7 +153,7 @@ reset snapshot old = project snapshot old
   , sending=Set.empty, uploading=0, clarification=Nothing, documents=O.empty, expanded=Set.empty, epoch=old.epoch+1
   , panes=if not (D.valid $ D.get "panes" p) then [N.ChatPane,N.Sidebar,N.Workspace] else A.filter (\pane -> D.b (N.paneId pane) $ D.get "panes" p) [N.ChatPane,N.Sidebar,N.Workspace]
   , workspaces=D.get "workspaces" p, workspaceRevision=D.n "workspace_revision" p, search="", searchOpen=false
-  , preview=NotAsked, previewPath="", address="", scrollPosition=D.get "chatPosition" p, restoringScroll=D.valid $ D.get "chatPosition" p
+  , preview=NotAsked, address="", scrollPosition=D.get "chatPosition" p, restoringScroll=D.valid $ D.get "chatPosition" p
   }
   where
   p = D.get "preferences" snapshot
@@ -152,7 +164,7 @@ select id m = if not (D.valid target) then m else m
   { selected=id, activity=N.Chat N.Conversation, search="", groupView=if group then Just id else Nothing
   , scope=if group then N.Groups else if m.groupView /= Nothing || m.scope == N.Groups then N.All else m.scope
   , menu=Nothing, dialog=Nothing, addressOpen=false, address="", panes=N.togglePane false (N.limit m.env) (D.valid $ activeTab m) N.ChatPane m.panes
-  , scrollPosition=D.null, restoringScroll=false, preview=NotAsked, previewPath=""
+  , scrollPosition=D.null, restoringScroll=false, preview=NotAsked
   }
   where
   target = D.find id m.agents
@@ -186,14 +198,23 @@ currentDocument m = case m.activity of
   info = if isGroup a then D.get "notes" a else D.at ["orchestration",m.selected,"notes"] m.snapshot
   make kind revision suffix = {key:kind <> ":" <> m.selected,revision,path:ownerPath m <> suffix,epoch:m.epoch,sequence:m.sequence+1}
 
-requestOf :: forall a. RemoteData a -> Maybe Request
+nativeWorkspace :: Model -> Boolean
+nativeWorkspace m = D.b "native" m.env && D.s "location" (activeRecord m) /= "Remote"
+
+currentPreview :: Model -> Maybe Request
+currentPreview m =
+  let tab = activeTab m
+  in if nativeWorkspace m || D.s "path" tab == "" || not (A.elem N.Workspace m.panes) then Nothing
+     else Just {epoch:m.epoch,sequence:m.sequence+1,key:D.s "id" tab,revision:D.encode $ D.get "command" tab,path:ownerPath m <> "/browser/" <> B.encodeURI (D.s "id" tab) <> "/content"}
+
+requestOf :: forall error a. RemoteData error a -> Maybe Request
 requestOf = case _ of
   NotAsked -> Nothing
   Loading r _ -> Just r
   Ready r _ -> Just r
   Failed r _ -> Just r
 
-valueOf :: forall a. RemoteData a -> Maybe a
+valueOf :: forall error a. RemoteData error a -> Maybe a
 valueOf = case _ of
   Loading _ value -> value
   Ready _ value -> Just value

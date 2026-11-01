@@ -21,6 +21,7 @@ import Sapiens.Model as M
 import Sapiens.Navigation as N
 import Sapiens.Remote as R
 import Sapiens.Workspace as W
+import Sapiens.Update as U
 
 type UI = H.HalogenM M.Model Action () Void Aff
 type Dispatch = Action -> UI Unit
@@ -65,7 +66,7 @@ refresh runtime dispatch requested operation = attempt operation \result -> do
         requestDocument runtime
         when (now - m.lastPreview >= 2000.0) do
           H.modify_ _ {lastPreview=now}
-          preview runtime
+          preview runtime dispatch
         sync
     latest <- H.get
     unless (D.b "hidden" latest.env) $
@@ -127,21 +128,30 @@ memoImages runtime document = do
     unless (D.n "status" result == 200.0 && D.matches "^image/(png|jpeg|gif|webp|svg\\+xml)(;|$)" (D.s "mime" result)) $ throwError $ error "Image unavailable"
     pure $ "data:" <> D.s "mime" result <> ";base64," <> D.s "body" result
 
-preview :: C.Runtime -> UI Unit
-preview runtime = do
-  m <- H.get
-  let tab = M.activeTab m
-      path = if D.s "path" tab == "" then "" else M.ownerPath m <> "/browser/" <> B.encodeURI (D.s "id" tab) <> "/content"
-  unless (W.native m || path == "" || not (A.elem N.Workspace m.panes)) do
-    let request = {epoch:m.epoch,sequence:m.sequence+1,key:D.s "id" tab,revision:D.encode $ D.get "command" tab,path}
-        pending = case m.preview of
-          M.Loading _ _ -> true
-          _ -> false
-    unless pending do
-      H.modify_ _ { sequence=request.sequence,previewPath=path,preview=M.Loading request $ if path == m.previewPath then M.valueOf m.preview else Nothing }
-      attempt (api runtime m path "GET" D.null) \result -> inEpoch m.epoch \current ->
-        when (current.previewPath == path && ((_.sequence <$> M.requestOf current.preview) == Just request.sequence)) $
-          H.modify_ _ {preview=either (M.Failed request <<< message) (M.Ready request) result}
+preview :: C.Runtime -> Dispatch -> UI Unit
+preview runtime dispatch = runUpdate runtime dispatch U.RequestPreview
+
+runUpdate :: C.Runtime -> Dispatch -> U.Action -> UI Unit
+runUpdate runtime dispatch action = do
+  transition <- U.update action <$> H.get
+  case transition of
+    U.Unchanged -> pure unit
+    U.Changed model commands -> H.put model *> traverse_ execute commands
+    U.Commands commands -> traverse_ execute commands
+  where
+  execute = case _ of
+    U.SaveView -> save dispatch *> sync
+    U.SavePreferences -> save dispatch
+    U.LoadDocument -> requestDocument runtime
+    U.ScrollToStart -> liftEffect $ B.scroll "#conversation-body" 0.0
+    U.ScrollToBottom -> scrollBottom
+    U.FocusSearch -> liftEffect $ B.focus "#agent-search"
+    U.OpenWorkspace -> dispatch $ Browser "open" $ D.json {url: "about:blank"}
+    U.LoadPreview -> preview runtime dispatch
+    U.FetchPreview request -> do
+      m <- H.get
+      attempt (api runtime m request.path "GET" D.null) $ runUpdate runtime dispatch <<< U.ReceivePreview request <<<
+        either (Left <<< M.PreviewUnavailable <<< message) M.decodePreview
 
 captureScroll :: UI Unit
 captureScroll = do

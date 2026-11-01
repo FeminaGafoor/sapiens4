@@ -34,6 +34,18 @@ RSpec.describe 'Connecting from the shipped remote app', :desktop do
     expect(host.state['turns'].map { |turn| turn['input'] }).to eq(['A private remote message'])
   end
 
+  it 'renders literal remote file previews and recovers after the file becomes unavailable' do
+    file = File.join(host.workspace(chief), 'preview.txt')
+    File.write(file, 'Literal <b>remote preview</b>')
+    host.control(chief, 'workspace_open', path: file)
+    connect
+    expect(desktop.see('Literal <b>remote preview</b>')).to include('preview.txt')
+    File.unlink(file)
+    desktop.see('File not found or unreadable')
+    File.write(file, 'Recovered remote preview')
+    expect(desktop.see('Recovered remote preview')).not_to include('File not found or unreadable')
+  end
+
   it 'rejects a malformed invitation and still accepts a valid invitation afterward' do
     desktop.press('Connect remote corpora')
     desktop.fill('Or paste an invitation', 's4.A.abc.abc.abc.A.1')
