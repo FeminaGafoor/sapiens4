@@ -9,7 +9,8 @@ import Control.Exception
 import Control.Monad
 import Crypto.Hash.SHA256 (hash)
 import Data.Aeson hiding (pairs)
-import Data.Aeson.Types (Parser)
+import Data.Aeson.Types (Parser, parseEither)
+import qualified Data.Bifunctor as B
 import qualified Data.Aeson.KeyMap as KM
 import qualified Data.Aeson.Key
 import Data.List.NonEmpty (NonEmpty(..))
@@ -42,20 +43,54 @@ instance Wire CallState where
 instance FromJSON CallState where parseJSON = parseWire
 instance ToJSON CallState where toJSON = str . wireName
 
+-- A finished call owns its required reply and determines its terminal node.
+-- Active/stopped calls retain the node needed for retry and have no output.
+data CallResult = Answered Text | UnresolvedResult Text | HandedOff Text | NeedsClarification Text deriving (Eq, Show)
+data CallProgress = QueuedAt Node | RunningAt Node | FailedAt Node | InterruptedAt Node | CancelledAt Node | FinishedCall CallResult deriving (Eq, Show)
 data WorkCall = WorkCall
- { callIdentity :: RunId, callOwner :: AgentId, callNode :: Node, callState :: CallState
- , callRequest :: Text, callParent :: Maybe RunId, callOutput :: Maybe Text, callFields :: Object
+ { callIdentity :: RunId, callOwner :: AgentId, callProgress :: CallProgress
+ , callRequest :: Text, callParent :: Maybe RunId, callFields :: Object
  } deriving (Eq, Show)
+callState :: WorkCall -> CallState
+callState call = case callProgress call of
+ QueuedAt _ -> CallQueued; RunningAt _ -> CallRunning; FailedAt _ -> CallFailed; InterruptedAt _ -> CallInterrupted; CancelledAt _ -> CallCancelled
+ FinishedCall result -> case result of
+  Answered _ -> CallCompleted; UnresolvedResult _ -> CallUnresolved; HandedOff _ -> CallDelegated; NeedsClarification _ -> CallWaiting
+callNode :: WorkCall -> Node
+callNode call = case callProgress call of
+ QueuedAt node -> node; RunningAt node -> node; FailedAt node -> node; InterruptedAt node -> node; CancelledAt node -> node
+ FinishedCall result -> case result of
+  Answered _ -> OutcomeNode; UnresolvedResult _ -> OutcomeNode; HandedOff _ -> Delegation; NeedsClarification _ -> WaitingForAdmin
+callOutput :: WorkCall -> Maybe Text
+callOutput call = case callProgress call of
+ QueuedAt _ -> Nothing; RunningAt _ -> Nothing; FailedAt _ -> Nothing; InterruptedAt _ -> Nothing; CancelledAt _ -> Nothing
+ FinishedCall result -> Just $ case result of
+  Answered output -> output; UnresolvedResult output -> output; HandedOff output -> output; NeedsClarification output -> output
 instance FromJSON WorkCall where
- parseJSON = withObject "Workload call" $ \o -> WorkCall <$> o .: "callId" <*> o .: "addressedTo" <*> o .: "node" <*> o .: "state" <*> o .: "request" <*> o .:? "causedBy" <*> o .:? "output" <*> pure (foldr KM.delete o ["callId","addressedTo","node","state","request","causedBy","output"])
+ parseJSON = withObject "Workload call" $ \o -> do
+  node <- o .: "node"
+  state <- o .: "state"
+  output <- o .:? "output"
+  let unfinished constructor = do
+       unless (isNothing output) (fail "Unfinished workload call cannot have output")
+       pure (constructor node)
+      finished constructor expected = do
+       unless (node == expected) (fail "Workload call has an inconsistent terminal node")
+       FinishedCall . constructor <$> maybe (fail "Finished workload call requires output") pure output
+  progress <- case state of
+   CallQueued -> unfinished QueuedAt; CallRunning -> unfinished RunningAt
+   CallFailed -> unfinished FailedAt; CallInterrupted -> unfinished InterruptedAt; CallCancelled -> unfinished CancelledAt
+   CallCompleted -> finished Answered OutcomeNode; CallUnresolved -> finished UnresolvedResult OutcomeNode
+   CallDelegated -> finished HandedOff Delegation; CallWaiting -> finished NeedsClarification WaitingForAdmin
+  WorkCall <$> o .: "callId" <*> o .: "addressedTo" <*> pure progress <*> o .: "request" <*> o .:? "causedBy" <*> pure (foldr KM.delete o ["callId","addressedTo","node","state","request","causedBy","output"])
 instance ToJSON WorkCall where
  toJSON call = mergeFields ([("callId",toJSON (callIdentity call)),("addressedTo",toJSON (callOwner call)),("node",toJSON (callNode call)),("state",toJSON (callState call)),("request",str (callRequest call)),("causedBy",toJSON (callParent call))] ++ [("output",str output) | output <- maybeToList (callOutput call)]) (Object (callFields call))
 callField :: WorkCall -> Text -> Value
 callField call = get (Object (callFields call))
 setCallFields :: [(Text,Value)] -> WorkCall -> WorkCall
 setCallFields fields call = call { callFields = KM.fromList [(Data.Aeson.Key.fromText key,value) | (key,value) <- fields] <> callFields call }
-newCall :: RunId -> AgentId -> Maybe RunId -> Node -> CallState -> Text -> WorkCall
-newCall identity owner parent node state request = WorkCall identity owner node state request parent Nothing (KM.singleton "attempt" (num 1))
+newCall :: RunId -> AgentId -> Maybe RunId -> CallProgress -> Text -> WorkCall
+newCall identity owner parent progress request = WorkCall identity owner progress request parent (KM.singleton "attempt" (num 1))
 
 data Workload = Workload { workloadId :: Text, workTracked :: Bool, workCalls :: NonEmpty WorkCall, workFields :: Object } deriving (Eq, Show)
 instance FromJSON Workload where
@@ -171,20 +206,25 @@ saveWork s w = do
  DB.putValue s DB.Workloads (workloadId w) (toJSON w)
 withCall :: Workload -> WorkCall -> Workload
 withCall w c = w { workCalls = fmap (\x -> if callIdentity x == callIdentity c then c else x) (workCalls w) }
-validateOutcome :: DecisionResponse -> Outcome -> [Text] -> IO ()
+data OutcomeError = InvalidSkippedCriterion | MissingCompletionEvidence deriving (Eq, Show)
+outcomeError :: OutcomeError -> Text
+outcomeError problem = case problem of
+ InvalidSkippedCriterion -> "Only an unsatisfied, explicit If criterion can be not applicable"
+ MissingCompletionEvidence -> "Completed outcome requires evidence for all applicable completion criteria"
+validateOutcome :: DecisionResponse -> Outcome -> [Text] -> Either OutcomeError ()
 validateOutcome response outcome criteria = do
  forM_ (M.keys (notApplicable outcome)) $ \criterion ->
-  require (criterion `elem` criteria && "If " `T.isPrefixOf` criterion && criterion `notElem` satisfiedCriteria outcome) 400 "Only an unsatisfied, explicit If criterion can be not applicable"
+  unless (criterion `elem` criteria && "If " `T.isPrefixOf` criterion && criterion `notElem` satisfiedCriteria outcome) (Left InvalidSkippedCriterion)
  when (outcomeStatus outcome == Completed) $
-  require (not (null (decisionEvidence response)) && all (`elem` (satisfiedCriteria outcome ++ M.keys (notApplicable outcome))) criteria) 400 "Completed outcome requires evidence for all applicable completion criteria"
+  unless (not (null (decisionEvidence response)) && all (`elem` (satisfiedCriteria outcome ++ M.keys (notApplicable outcome))) criteria) (Left MissingCompletionEvidence)
 begin :: Service -> AgentId -> Turn -> IO ()
 begin s a turn = do
  found <- findWork s (turnId turn)
  let routine=has (turnField turn "origin") "routine"
-     first=newCall (turnId turn) a Nothing (if routine then ReadyToWork else Assessing) CallRunning (turnInput turn)
+     first=newCall (turnId turn) a Nothing (RunningAt (if routine then ReadyToWork else Assessing)) (turnInput turn)
      initial=Workload (runIdText (turnId turn)) routine (first :| []) (KM.fromList [("originalIntent",str (turnInput turn)),("task",obj [("taskId",str ("task_"<>runIdText (turnId turn))),("taskType",str (if routine then "automated" else "work")),("specification",Null)]),("origin",merge (obj [("agent",toJSON a),("call",toJSON (turnId turn))]) (turnField turn "origin")),("decisions",arr []),("outcome",Null)])
      (w,c)=fromMaybe (initial,first) found
-     running=if isNothing (callOutput c) then c { callState=CallRunning, callFields=KM.delete "error" (callFields c) } else c
+     running=if isNothing (callOutput c) then c { callProgress=RunningAt (callNode c), callFields=KM.delete "error" (callFields c) } else c
      updated=setCallFields [("attempt",num (fromMaybe 1 (turnAttempt turn)))] running
  saveWork s (withCall w updated)
 conversation :: Service -> AgentId -> Turn -> AgentState -> IO Value
@@ -275,9 +315,9 @@ transfer s run request reason record = do
  validateTarget s w (agentIdText (runOwner run)) target
  i <- newId
  chief <- DB.mainAgent s
- let child=setCallFields [("handoffReason",str reason)] (newCall (RunId i) (AgentId target) (Just (callIdentity c)) (if target==chief then ChiefTriage else Assessing) CallQueued request)
+ let child=setCallFields [("handoffReason",str reason)] (newCall (RunId i) (AgentId target) (Just (callIdentity c)) (QueuedAt (if target==chief then ChiefTriage else Assessing)) request)
      reply="Delegated to "<>target<>"."
-     updated=c { callState=CallDelegated, callOutput=Just reply, callNode=Delegation }
+     updated=c { callProgress=FinishedCall (HandedOff reply) }
      accepted=withCall w updated
  saveWork s accepted { workTracked=True, workCalls=workCalls accepted <> (child :| []) }
  accept s (agentIdText (runOwner run)) record "Delegation" (wireName (callNode child))
@@ -301,6 +341,55 @@ applyDecision s owner current decision = do
    (updated,_) <- getWork s (RunId identity)
    maybe (failure 409 "Delegation acceptance was not saved") pure (find ((==Just (RunId identity)) . callParent) (workCalls updated))
  pure (obj [("saved",Bool True),("callId",toJSON (callIdentity existing)),("target",toJSON (callOwner existing))])
+data DecisionError
+ = AcceptedTaskNeedsExecution | OnlyChiefCreates | CriteriaRemoved
+ | InvalidOutcome OutcomeError | InvalidAcceptedTask Text
+ deriving (Eq, Show)
+data DecisionStep
+ = SaveDecision Workload WorkCall
+ | ResolveSpecialist Text
+ | EnsureSpecialist Text Text
+ | DelegateRequest Text
+ deriving (Eq, Show)
+
+-- Decide from an immutable snapshot. The runtime interprets only the resulting work.
+advanceDecision :: AgentId -> DecisionResponse -> Workload -> WorkCall -> Either DecisionError DecisionStep
+advanceDecision chief response work call = case decisionBody response of
+ ReplyNow reply -> do
+  when (workTracked work) (Left AcceptedTaskNeedsExecution)
+  pure (finish work (FinishedCall (Answered reply)))
+ ExecuteTask -> pure (finish (work { workTracked=True }) (RunningAt ReadyToWork))
+ OutsideSpecialization -> pure $ SaveDecision work $
+  if callOwner call == chief then call { callProgress=RunningAt ChiefTriage }
+  else (setCallFields [("target",toJSON chief)] call) { callProgress=RunningAt Delegation }
+ SelectSpecialist name -> pure (ResolveSpecialist name)
+ NeedSpecialist -> pure (finish work (RunningAt CreatingSapi))
+ AskAdmin question -> pure (finish (work { workTracked=True }) (FinishedCall (NeedsClarification question)))
+ SpecifySapi name role -> do
+  unless (callOwner call == chief) (Left OnlyChiefCreates)
+  pure (EnsureSpecialist name role)
+ PrepareTask taskType spec -> do
+  let previous=get (workField work "task") "specification"
+  unless (all (`elem` map str (NE.toList (specCriteria spec))) (items previous "completionCriteria")) (Left CriteriaRemoved)
+  let task=mergeFields [("taskType",str (if has (workField work "origin") "routine" then "automated" else taskType)),("specification",toJSON spec)] (workField work "task")
+  pure (finish (setWorkField "task" task work) (RunningAt Execution))
+ Handoff request -> pure (DelegateRequest request)
+ ReportOutcome reply outcome -> do
+  criteria <- B.first (InvalidAcceptedTask . T.pack) (parseEither parseJSON (get (get (workField work "task") "specification") "completionCriteria"))
+  B.first InvalidOutcome (validateOutcome response outcome criteria)
+  let saved=mergeFields [("reply",str reply),("evidence",toJSON (decisionEvidence response)),("author",toJSON (callOwner call))] (get (decisionRaw response) "outcome")
+      result=case outcomeStatus outcome of Completed -> Answered reply; Unresolved -> UnresolvedResult reply
+  pure (finish (setWorkField "outcome" saved work) (FinishedCall result))
+ where finish changed progress = SaveDecision changed (call { callProgress=progress })
+
+decisionFailure :: DecisionError -> IO a
+decisionFailure problem = case problem of
+ AcceptedTaskNeedsExecution -> failure 409 "An accepted Task must execute and report its completion criteria"
+ OnlyChiefCreates -> failure 403 "Only Chief can create a Sapi"
+ CriteriaRemoved -> failure 400 "A handoff cannot remove accepted completion criteria"
+ InvalidOutcome reason -> failure 400 (outcomeError reason)
+ InvalidAcceptedTask reason -> failure 500 reason
+
 runDecision :: Service -> Run -> Turn -> AgentState -> IO (Text,[Value])
 runDecision s run turn state = do
  locked s (begin s (runOwner run) turn)
@@ -319,41 +408,26 @@ runDecision s run turn state = do
          require (not stopped) 409 "Stopped by Admin"
          chief <- DB.mainAgent s
          let owner=agentIdText (runOwner run)
-             finish work updated next = do
-              let following=(setCallFields [("observation",decisionRaw response)] updated) { callNode=next }
+             finish work updated = do
+              let following=setCallFields [("observation",decisionRaw response)] updated
+                  next=callNode following
               saveWork s (withCall work following)
               accept s owner record (wireName node) (wireName next)
               pure (callOutput following)
-         case decisionBody response of
-          ReplyNow reply -> do
-           require (not (workTracked current)) 409 "An accepted Task must execute and report its completion criteria"
-           finish current (call { callState=CallCompleted, callOutput=Just reply }) OutcomeNode
-          ExecuteTask -> finish (current { workTracked=True }) call ReadyToWork
-          OutsideSpecialization -> finish current (if owner==chief then call else setCallFields [("target",str chief)] call) (if owner==chief then ChiefTriage else Delegation)
-          SelectSpecialist name -> do
+         step <- either decisionFailure pure (advanceDecision (AgentId chief) response current call)
+         case step of
+          SaveDecision work updated -> finish work updated
+          ResolveSpecialist name -> do
            target <- resolve s name False
            validateTarget s current owner target
-           finish current (setCallFields [("target",str target)] call) Delegation
-          NeedSpecialist -> finish current call CreatingSapi
-          AskAdmin question -> finish (current { workTracked=True }) (call { callState=CallWaiting, callOutput=Just question }) WaitingForAdmin
-          SpecifySapi name role -> do
-           require (owner==chief) 403 "Only Chief can create a Sapi"
+           finish current ((setCallFields [("target",str target)] call) { callProgress=RunningAt Delegation })
+          EnsureSpecialist name role -> do
            rows <- DB.agents s
            created <- case find ((==T.toCaseFold name) . T.toCaseFold . (`at` "name")) rows of
             Just row -> require (at row "role" == role) 409 "Name already exists with a different role" >> pure row
             Nothing -> createAgent s (obj [("name",str name),("role",str role),("manager",str owner)])
-           finish current (setCallFields [("target",get created "id"),("creation",obj [("name",str name),("role",str role)]),("creationReceipt",obj [("agent",created),("created",Bool True)])] call) Delegation
-          PrepareTask taskType spec -> do
-           let previous=get (workField current "task") "specification"
-           require (all (`elem` map str (NE.toList (specCriteria spec))) (items previous "completionCriteria")) 400 "A handoff cannot remove accepted completion criteria"
-           let task=mergeFields [("taskType",str (if has (workField current "origin") "routine" then "automated" else taskType)),("specification",toJSON spec)] (workField current "task")
-           finish (setWorkField "task" task current) call Execution
-          Handoff request -> Just <$> transfer s run request (decisionReason response) record
-          ReportOutcome reply outcome -> do
-           criteria <- decodeValue 500 (get (get (workField current "task") "specification") "completionCriteria")
-           validateOutcome response outcome criteria
-           let saved=mergeFields [("reply",str reply),("evidence",toJSON (decisionEvidence response)),("author",str owner)] (get (decisionRaw response) "outcome")
-           finish (setWorkField "outcome" saved current) (call { callState=case outcomeStatus outcome of Completed -> CallCompleted; Unresolved -> CallUnresolved, callOutput=Just reply }) OutcomeNode
+           finish current ((setCallFields [("target",get created "id"),("creation",obj [("name",str name),("role",str role)]),("creationReceipt",obj [("agent",created),("created",Bool True)])] call) { callProgress=RunningAt Delegation })
+          DelegateRequest request -> Just <$> transfer s run request (decisionReason response) record
         maybe (loop (n+1)) pure result
  output <- loop (0::Int) `catch` (\(e::SomeException) -> do
   locked s $ do
@@ -374,9 +448,9 @@ reconcileWorks s = do
    Just t | isNothing (callOutput c) -> do
     status <- field 500 t "status"
     pure $ case status of
-     Failed -> (setCallFields [("error",get t "error")] c) { callState=CallFailed }
-     Interrupted -> (setCallFields [("error",get t "error")] c) { callState=CallInterrupted }
-     Cancelled -> (setCallFields [("error",get t "error")] c) { callState=CallCancelled }
+     Failed -> (setCallFields [("error",get t "error")] c) { callProgress=FailedAt (callNode c) }
+     Interrupted -> (setCallFields [("error",get t "error")] c) { callProgress=InterruptedAt (callNode c) }
+     Cancelled -> (setCallFields [("error",get t "error")] c) { callProgress=CancelledAt (callNode c) }
      Queued -> c
      Running -> c
      OutputPending -> c
@@ -405,7 +479,7 @@ clarify s a wid message = do
  let previous=NE.last (workCalls w)
  require (callState previous == CallWaiting && a==chief) 409 "Clarification requires the waiting Chief call"
  i <- newId
- let call=setCallFields [("activation",str "RequestClarified")] (newCall (RunId i) (AgentId a) (Just (callIdentity previous)) ChiefTriage CallQueued message)
+ let call=setCallFields [("activation",str "RequestClarified")] (newCall (RunId i) (AgentId a) (Just (callIdentity previous)) (QueuedAt ChiefTriage) message)
  saveWork s w { workCalls=workCalls w <> (call :| []) }
  pendingWorks s
  pure i

@@ -21,6 +21,7 @@ import qualified Data.Text.Encoding as TE
 import qualified Data.Vector as V
 
 newtype AgentId = AgentId { agentIdText :: Text } deriving (Eq, Ord, Show, FromJSON, ToJSON)
+newtype TaskId = TaskId { taskIdText :: Text } deriving (Eq, Ord, Show, FromJSON, ToJSON)
 newtype RunId = RunId { runIdText :: Text } deriving (Eq, Ord, Show, FromJSON, ToJSON)
 
 -- Wire spellings live at the codec boundary; domain code matches constructors.

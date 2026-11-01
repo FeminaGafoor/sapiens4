@@ -144,7 +144,7 @@ dispatch s tick = when (pulseFrequency tick == Bph60) $ do
         DB.project s a
        D.begin s (AgentId a) turn
        (w,c) <- D.getWork s (RunId identity)
-       when (D.callState c==D.CallRunning && null (D.workItems w "decisions")) $ D.saveWork s (D.withCall w c { D.callState=D.CallQueued })
+       when (D.callState c==D.CallRunning && null (D.workItems w "decisions")) $ D.saveWork s (D.withCall w c { D.callProgress=D.QueuedAt (D.callNode c) })
       Just g -> when (isNothing (findId identity (items g "requests"))) $ do
        let taskId="gtask_"<>identity; groupOrigin=merge origin (obj [("group",str owner),("author",str "admin")])
            message=obj [("id",str identity),("author",str "admin"),("text",get r "prompt"),("created",str (timestamp t)),("routine",get r "id")]

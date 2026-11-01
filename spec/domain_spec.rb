@@ -1,4 +1,5 @@
 require 'sqlite3'
+require 'yaml'
 
 RSpec.describe 'Domain validation through saved installation fixtures', :host do
   before do
@@ -43,6 +44,57 @@ RSpec.describe 'Domain validation through saved installation fixtures', :host do
     Contract.atomic_json(File.join(File.dirname(@file), 'run-settings.json'), {mode: 'deeep'})
     expect(host.request('GET', '/api/state').first).to eq(500)
     expect(host.calls).to be_empty
+  end
+
+  def saved_workload(**fields)
+    call = {callId: 'saved-call', addressedTo: @owner, node: 'Outcome', state: 'Completed',
+      request: 'Saved request', causedBy: nil, output: 'Saved answer', extension: {kept: true}}.merge(fields)
+    work = {workloadId: 'saved-work', tracked: true, calls: [call], originalIntent: 'Saved request', extension: {kept: true}}
+    SQLite3::Database.open(File.join(host.root, 'corpora.sqlite3')) do |db|
+      db.execute('INSERT INTO workloads VALUES (?, ?)', ['saved-work', JSON.generate(work)])
+    end
+    JSON.parse(JSON.generate(work))
+  end
+
+  {
+    'completed without output' => {output: nil},
+    'unresolved without output' => {state: 'Unresolved', output: nil},
+    'waiting without a question' => {state: 'WaitingForAdmin', node: 'WaitingForAdmin', output: nil},
+    'delegated without a reply' => {state: 'Delegated', node: 'Delegation', output: nil},
+    'queued with output' => {state: 'Queued', node: 'Assessing'},
+    'running with output' => {state: 'Running', node: 'Execution'},
+    'completed at the wrong node' => {node: 'Execution'},
+    'waiting at the wrong node' => {state: 'WaitingForAdmin'}
+  }.each do |behavior, fields|
+    it "reports an inconsistent saved call: #{behavior}" do
+      saved_workload(**fields)
+      code, body = host.request('GET', '/api/state')
+      expect(code).to eq(500)
+      expect(body['error']).not_to be_empty
+      expect(host.request('GET', '/api/health').first).to eq(200)
+      expect(host.calls).to be_empty
+    end
+  end
+
+  {
+    'completed' => {state: 'Completed', node: 'Outcome'},
+    'unresolved' => {state: 'Unresolved', node: 'Outcome'},
+    'delegated' => {state: 'Delegated', node: 'Delegation'},
+    'waiting' => {state: 'WaitingForAdmin', node: 'WaitingForAdmin'},
+    'queued' => {state: 'Queued', node: 'Assessing', output: nil},
+    'failed' => {state: 'Failed', node: 'Execution', output: nil},
+    'interrupted' => {state: 'Interrupted', node: 'Execution', output: nil},
+    'cancelled' => {state: 'Cancelled', node: 'Execution', output: nil}
+  }.each do |behavior, fields|
+    it "reads an existing #{behavior} workload without changing its identity or metadata" do
+      work = saved_workload(**fields)
+      expected = work['calls'].first.reject { |key, value| key == 'output' && value.nil? }
+      read = -> { YAML.safe_load(host.api('GET', "/api/agents/#{@owner}/tasks"))['tasks'].first }
+      expect(read.call['calls']).to eq([expected])
+      host.restart
+      expect(read.call['calls']).to eq([expected])
+      expect(host.calls).to be_empty
+    end
   end
 
   it 'rejects an empty saved workload history and keeps the health endpoint available' do
