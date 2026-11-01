@@ -1,6 +1,9 @@
 module Sapiens.Action where
 
+import Sapiens.Form as F
+import Sapiens.Browser as Browser
 import Data.Argonaut.Core (Json)
+import Sapiens.Domain as X
 import Sapiens.Model (DialogKind)
 import Sapiens.Navigation (Activity, Scope, Pane, Period)
 import Web.Event.Event (Event)
@@ -24,23 +27,23 @@ data Action
   | Send
   | RetryDocument String
   | ToggleExpanded String
-  | Clarify Json
+  | Clarify X.Workload
   | Menu String
   | CloseMenu
-  | OpenDialog DialogKind Json
+  | OpenDialog DialogKind F.Context
   | CloseDialog
-  | Field String String
-  | CheckField String String Boolean
+  | Field F.Field String
+  | CheckField String Boolean
   | SubmitDialog
   | DialogCommand String Json
   | Copy String String
   | Scroll
   | UserScroll
   | Resize
-  | Global String Json
+  | Global Browser.GlobalEvent
   | GlobalEvent String Event
   | DrainNative
-  | NativeReport Json
+  | NativeReport Browser.NativeReport
   | MentionChoice Int
   | MentionCursor
   | RefreshTheme

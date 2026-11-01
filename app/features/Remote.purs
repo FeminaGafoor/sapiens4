@@ -23,6 +23,8 @@ import Effect.Ref as Ref
 import Foreign.Object as O
 import Libs4.Browser as B
 import Sapiens.Data as D
+import Sapiens.Browser as Browser
+import Sapiens.Domain as X
 
 protocol :: String
 protocol = "sapiens-remote-box-v1"
@@ -68,9 +70,7 @@ base64 input = let value = D.replace "_" "/" $ D.replace "-" "+" input in value 
 invalid :: String
 invalid = "Use the QR from the host corpora’s New Pairing."
 
-type Invitation =
-  { v :: String, relay :: String, room :: String, token :: String, secret :: String
-  , desktop :: String, expires :: Number, public_id :: String }
+type Invitation = X.Invitation
 
 decode :: String -> Either String Invitation
 decode raw = decodeValue (S.trim raw) >>= \value ->
@@ -82,9 +82,9 @@ decodeValue value
   | CU.length value > 4096 = Left invalid
   | S.take 1 value == "{" = if D.valid (D.parse value) then Right (D.parse value) else Left invalid
   | D.matches "^https?://" value =
-      let u = B.parseURL "https://invalid.local" value in
-      case decodeValue (S.trim $ S.drop 1 $ D.s "hash" u) of
-        Right parsed | D.s "origin" u == D.s "relay" parsed && D.s "path" u == "/" && D.s "search" u == "" && D.s "username" u == "" && D.s "password" u == "" -> Right parsed
+      let u = Browser.url "https://invalid.local" value in
+      case decodeValue (S.trim $ S.drop 1 $ u.hash) of
+        Right parsed | u.origin == D.s "relay" parsed && u.path == "/" && u.search == "" && u.username == "" && u.password == "" -> Right parsed
         _ -> Left "Invalid pairing link."
   | otherwise =
       let parts = S.split (S.Pattern ".") (D.replace "\\s" "" value)
@@ -95,8 +95,8 @@ decodeValue value
         Right $ D.json {v: protocol, relay, room: part 2, token: part 3, secret: part 4, desktop: base64 $ part 5, expires: expiration, public_id: part 7}
       else Left invalid
 
-invitationLink :: Json -> String
-invitationLink v = D.s "relay" v <> "/#" <> S.joinWith "." (["s4", url64 $ B.base64Encode $ D.s "relay" v, D.s "room" v, D.s "token" v, D.s "secret" v, url64 $ D.s "desktop" v, I.toStringAs (fromMaybe I.decimal (I.radix 36)) (I.floor $ D.n "expires" v)] <> if D.s "public_id" v == "" then [] else [D.s "public_id" v])
+invitationLink :: Invitation -> String
+invitationLink v = v.relay <> "/#" <> S.joinWith "." (["s4", url64 $ B.base64Encode $ v.relay, v.room, v.token, v.secret, url64 $ v.desktop, I.toStringAs (fromMaybe I.decimal (I.radix 36)) (I.floor $ v.expires)] <> if v.public_id == "" then [] else [v.public_id])
 
 confirmation :: Json -> Aff String
 confirmation session = do
