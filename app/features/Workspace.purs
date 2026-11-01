@@ -2,7 +2,7 @@ module Sapiens.Workspace where
 
 import Prelude
 import Data.Array as A
-import Data.Maybe (Maybe(..), fromMaybe)
+import Data.Maybe (Maybe(..))
 import Data.Int as I
 import Data.Tuple (Tuple(..))
 import Foreign.Object as O
@@ -10,6 +10,7 @@ import Effect (Effect)
 import Libs4.Browser as B
 import Sapiens.Action (Action(..))
 import Sapiens.Data as D
+import Sapiens.Browser as Browser
 import Sapiens.Platform as Platform
 import Sapiens.Domain as X
 import Sapiens.Html as V
@@ -43,7 +44,7 @@ view m = V.node "main" [V.cls "workspace",V.id "workspace-panel",V.label "Agent 
     [V.node "div" [V.id "browser-options",V.hidden $ m.menu /= Just "browser-options"]
       [V.div "workspace-owner" [T.mention m m.selected,V.span [] "’s browser"]
       ,V.button "" "URL or file path…" EditAddress,V.button "" "Open file…" OpenFile
-      ,V.div "browser-menu-row" $ map (\(Tuple action caption) -> V.control [V.disabled $ not (tab.id /= "") || (action == "back" && not (tab.can_back)) || (action == "forward" && not (tab.can_forward))] (caption) (Browser action D.empty)) [Tuple "back" "← Back",Tuple "forward" "Forward →",Tuple "reload" "Reload"]
+      ,V.div "browser-menu-row" $ map (\(Tuple action caption) -> V.control [V.disabled $ not (tab.id /= "") || (action == Browser.GoBack && not (tab.can_back)) || (action == Browser.GoForward && not (tab.can_forward))] (caption) (Browser action)) [Tuple Browser.GoBack "← Back",Tuple Browser.GoForward "Forward →",Tuple Browser.Reload "Reload"]
       ,V.div "browser-menu-row" [V.span [] "Zoom",zoomButton "Zoom out" "−" (max 0.25 $ zoom-0.1),zoomButton "Reset zoom" (show (I.round $ zoom*100.0) <> "%") 1.0,zoomButton "Zoom in" "＋" (min 5.0 $ zoom+0.1)]
       ,V.div "browser-menu-label" [V.text "Bookmarks"],V.node "div" [V.id "browser-bookmarks"] $ if A.null (bookmarks m) then [V.p "" "No bookmarks yet."] else map bookmarkRow (bookmarks m)]
     ,V.node "div" [V.id "browser-all-tabs",V.hidden $ m.menu /= Just "browser-tabs"] $ [V.div "browser-menu-label" [V.text $ "Open tabs · " <> show (A.length tabs)]] <> map (tabView true) tabs
@@ -59,20 +60,22 @@ view m = V.node "main" [V.cls "workspace",V.id "workspace-panel",V.label "Agent 
   tabs = M.tabs m
   tab = M.activeTab m
   zoom = if tab.zoom > 0.0 then tab.zoom else 1.0
-  newTab = Browser "open" $ D.json {url: "about:blank"}
-  zoomButton caption glyph factor = V.control [V.label caption] (glyph) (Browser "zoom" $ D.json {factor})
+  newTab = Browser $ Browser.Open (Browser.WebAddress "about:blank") Nothing
+  zoomButton caption glyph factor = V.control [V.label caption] (glyph) (Browser $ Browser.Zoom factor)
   tabView all t =
     let active = t.id == tab.id
         saved = bookmark m t
     in V.node "div" [V.cls $ "workspace-tab " <> if active then "active" else "",V.hidden $ not all && N.limit m.env < 3 && not active]
-      [V.control [V.cls "tab-star",V.label $ (if saved /= Nothing then "Unbookmark " else "Bookmark ") <> t.title,V.attr "aria-pressed" $ show $ saved /= Nothing,V.disabled $ t.url == "about:blank"] (if saved /= Nothing then "★" else "☆") (Browser (if saved /= Nothing then "unbookmark" else "bookmark") $ D.json {id: if saved /= Nothing then D.text $ fromMaybe "" $ _.id <$> saved else D.json t.id})
-      ,V.control [V.cls "tab-select",V.attr "aria-pressed" $ show active,V.attr "title" $ D.fallback (t.url) $ t.path] (D.fallback "New tab" $ t.title) (Browser "focus" $ D.json {id: D.json t.id})
-      ,V.control [V.cls "tab-close",V.label $ "Close " <> t.title] "×" (Browser "close" $ D.json {id: D.json t.id})]
+      [V.control [V.cls "tab-star",V.label $ (if saved /= Nothing then "Unbookmark " else "Bookmark ") <> t.title,V.attr "aria-pressed" $ show $ saved /= Nothing,V.disabled $ t.url == "about:blank"] (if saved /= Nothing then "★" else "☆") (Browser $ case saved of
+        Just item -> Browser.RemoveBookmark item.id
+        Nothing -> Browser.SaveBookmark t.id)
+      ,V.control [V.cls "tab-select",V.attr "aria-pressed" $ show active,V.attr "title" $ D.fallback (t.url) $ t.path] (D.fallback "New tab" $ t.title) (Browser $ Browser.FocusTab t.id)
+      ,V.control [V.cls "tab-close",V.label $ "Close " <> t.title] "×" (Browser $ Browser.CloseTab t.id)]
   bookmarkRow b = let open = A.find (( _ == b.url) <<< _.url) tabs in V.div "bookmark-row"
     [V.button "" ("★ " <> b.title) $ case open of
-      Just t -> Browser "focus" $ D.json {id: D.json t.id}
-      Nothing -> Browser "open" $ D.json {url: D.json b.url}
-    ,V.icon ("Remove " <> b.title <> " bookmark") "×" $ Browser "unbookmark" $ D.json {id: D.json b.id}]
+      Just t -> Browser $ Browser.FocusTab t.id
+      Nothing -> Browser $ Browser.Open (Browser.WebAddress b.url) Nothing
+    ,V.icon ("Remove " <> b.title <> " bookmark") "×" $ Browser $ Browser.RemoveBookmark b.id]
 
 sync :: M.Model -> Effect Unit
 sync m = when (m.env.native) do

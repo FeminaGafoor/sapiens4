@@ -1,5 +1,7 @@
 module Sapiens.Action where
 
+import Prelude (class Eq)
+
 import Sapiens.Form as F
 import Sapiens.Browser as Browser
 import Data.Argonaut.Core (Json)
@@ -35,7 +37,7 @@ data Action
   | Field F.Field String
   | CheckField String Boolean
   | SubmitDialog
-  | DialogCommand String Json
+  | DialogCommand DialogIntent
   | Copy String String
   | Scroll
   | UserScroll
@@ -50,12 +52,12 @@ data Action
   | Theme
   | Persist
   | EnterCorpora String
-  | Lifecycle String
+  | Lifecycle X.LifecycleIntent
   | ShowArchived Boolean
   | Mutate String String Json Success
-  | AttachmentKind String
+  | AttachmentKind X.AttachmentKind
   | RemoveAttachment String
-  | Browser String Json
+  | Browser Browser.Command
   | Address String
   | OpenAddress
   | EditAddress
@@ -75,3 +77,25 @@ data Action
   | NoteAnchor String
 
 data Success = Refresh | CloseAndRefresh String | SavedPrompt String
+
+data DialogIntent
+  = SuggestNames
+  | CreateAgent
+  | MentionGroup X.Entity
+  | ResetRelay
+  | InstallPrompt
+  | DeleteTask
+  | AddRelay
+  | BackRelay
+  | SelectRelay F.Relay
+  | ConfirmRelay
+  | EditRelay String
+  | ArchiveRelay F.Relay
+  | ImportRelay
+  | DoneRelay
+  | AcceptRelay
+  | HostPair HostIntent
+
+data HostIntent = RevokeHost | ReplaceHost | InviteHost | ApproveHost String
+
+derive instance eqHostIntent :: Eq HostIntent

@@ -6,6 +6,7 @@ import Data.Array as A
 import Data.Maybe (Maybe(..))
 import Data.String as S
 import Data.Tuple (Tuple(..))
+import Sapiens.Action as Intent
 import Sapiens.Action (Action(..))
 import Sapiens.Conversation as Chat
 import Sapiens.Data as D
@@ -73,7 +74,7 @@ corporaMenu m = V.node "section" [V.id "corpora-menu",V.cls "corpora-popover",V.
     ,V.when local $ V.node "span" [V.cls "corpora-pairing-cell"] [V.when (r.location == X.Local) $ V.control [V.disabled (M.busy m)] (if r.paired then "Edit Pairing" else "New Pairing") (OpenDialog M.HostPairing (F.CorporaRecord r false))]]
 
 statusMenu :: M.Model -> V.Html
-statusMenu m = V.node "div" [V.id "corpora-status-menu",V.cls "corpora-popover status-popover",V.hidden $ m.menu /= Just "status"] $ if state == X.Archived then [V.text "Archived"] else map (\(Tuple action label) -> V.control [V.disabled $ (M.busy m) || state == (if action == "pause" then X.Paused else X.Active)] (label <> if state == (if action == "pause" then X.Paused else X.Active) then " ✓" else "") (Lifecycle action)) [Tuple "pause" "Pause",Tuple "activate" "Activate"]
+statusMenu m = V.node "div" [V.id "corpora-status-menu",V.cls "corpora-popover status-popover",V.hidden $ m.menu /= Just "status"] $ if state == X.Archived then [V.text "Archived"] else map (\(Tuple action label) -> V.control [V.disabled $ (M.busy m) || state == (if action == X.PauseCorpora then X.Paused else X.Active)] (label <> if state == (if action == X.PauseCorpora then X.Paused else X.Active) then " ✓" else "") (Lifecycle action)) [Tuple X.PauseCorpora "Pause",Tuple X.ActivateCorpora "Activate"]
   where
   state = (M.activeRecord m).status
 
@@ -87,7 +88,7 @@ installGate m = V.node "section" [V.id "mobile-install-gate",V.label "Install Sa
 
 sidebar :: M.Model -> V.Html
 sidebar m = V.node "aside" [V.cls "sidebar",V.id "chat-list-panel",V.label "Chat list",V.hidden $ not $ A.elem N.Sidebar panes]
-  [V.div "sidebar-heading" [V.textNode "h1" [V.id "corpora-identity",V.cls "corpora-identity",V.attr "title" $ m.snapshot.corpora.id] (D.fallback "Connecting…" $ m.snapshot.corpora.name),V.span [V.id "agent-count",V.label "Sapi count"] (show $ A.length $ A.filter (\a -> not $ M.isGroup a || a.retired || a.archived) m.agents),V.div "sidebar-actions" [V.control [V.id "search-toggle",V.cls "icon-button",V.label "Search Corpora",V.attr "aria-expanded" $ show m.searchOpen] "⌕" (ToggleSearch),V.icon "Create through Chief" "＋" $ DialogCommand "create-agent" D.empty]]
+  [V.div "sidebar-heading" [V.textNode "h1" [V.id "corpora-identity",V.cls "corpora-identity",V.attr "title" $ m.snapshot.corpora.id] (D.fallback "Connecting…" $ m.snapshot.corpora.name),V.span [V.id "agent-count",V.label "Sapi count"] (show $ A.length $ A.filter (\a -> not $ M.isGroup a || a.retired || a.archived) m.agents),V.div "sidebar-actions" [V.control [V.id "search-toggle",V.cls "icon-button",V.label "Search Corpora",V.attr "aria-expanded" $ show m.searchOpen] "⌕" (ToggleSearch),V.icon "Create through Chief" "＋" $ DialogCommand Intent.CreateAgent]]
   ,V.node "div" [V.cls "scope-switch",V.label "Agent views"] $ map (\(Tuple scope label) -> V.control [V.cls $ if m.scope == scope then "active" <> if m.groupView /= Nothing then " group-open" else "" else "",V.attr "aria-pressed" $ show $ m.scope == scope,V.disabled $ scope == N.Groups && not (A.any (\a -> M.isGroup a && not (a.archived)) m.agents)] (label) (SetScope scope)) [Tuple N.All "All",Tuple N.Sapis "Sapis",Tuple N.Groups "Groups"]
   ,V.node "label" [V.id "corpora-search",V.cls $ "search-field " <> if m.searchOpen then "search-open" else ""] [V.span [V.attr "aria-hidden" "true"] "⌕",V.node "input" [V.id "agent-search",V.attr "type" "search",V.attr "placeholder" "Find a Sapi or Group…",V.label "Search agents",V.value m.search,V.input Search] [],V.textNode "kbd" [] "/"]
   ,V.node "div" [V.id "agent-list",V.cls "agent-list"] $ map row $ M.roster m
@@ -98,7 +99,7 @@ sidebar m = V.node "aside" [V.cls "sidebar",V.id "chat-list-panel",V.label "Chat
   group = M.maybeGroup m
   row a = let pinned = a.id == (if group.id /= "" then group.lead else m.snapshot.main_agent_id)
               caption = a.name <> if group.id /= "" && pinned then " · Lead" else ""
-          in V.div "agent-entry" [V.node "div" [V.cls $ "agent-row " <> (if a.id == m.selected then "active " else "") <> (if pinned then "main-sapi-row " else "") <> if M.isGroup a then "group-row" else "",V.click $ if group.id /= "" && not (M.isGroup a) then DialogCommand "group-mention" (D.json a) else Select $ a.id]
+          in V.div "agent-entry" [V.node "div" [V.cls $ "agent-row " <> (if a.id == m.selected then "active " else "") <> (if pinned then "main-sapi-row " else "") <> if M.isGroup a then "group-row" else "",V.click $ if group.id /= "" && not (M.isGroup a) then DialogCommand $ Intent.MentionGroup a else Select $ a.id]
             [T.avatar a (if pinned then "main-sapi-avatar" else "") true,V.div "agent-row-copy" [V.div "agent-row-name" [V.textNode "button" [V.cls "agent-name",V.label $ "Open " <> caption,V.attr "aria-current" $ show $ a.id == m.selected,V.on "click" \e -> Link e $ Select $ a.id] (a.name),if M.isGroup a then V.span [V.cls "group-chip",V.style $ "--group-color:" <> T.color (a.color),V.label $ show (A.length $ a.members) <> " members"] (show $ A.length $ a.members) else T.groupLabels m a true],V.p "" $ (if group.id /= "" && pinned then "Lead · " else "") <> if group.id /= "" then a.role else D.fallback "Shared workspace" $ a.preview]]]
 
 conversation :: M.Model -> V.Html

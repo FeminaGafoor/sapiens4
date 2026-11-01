@@ -122,7 +122,7 @@ wiki m document info =
         let href = attribute "href" node
             url = Browser.url ("file://" <> document.path) href
         in if D.matches "^#[a-zA-Z][\\w-]*$" href then V.node "a" (attrs <> [V.attr "href" $ "#note-" <> S.drop 1 href,V.on "click" \e -> Link e (NoteAnchor $ "note-" <> S.drop 1 href)]) $ map (copy isAbout) children
-        else if url.protocol == "file:" then V.node "a" (attrs <> [V.attr "href" "#",V.on "click" \e -> Link e $ Browser "open" $ D.json {path: B.decodeURI $ url.path}]) $ map (copy isAbout) children
+        else if url.protocol == "file:" then V.node "a" (attrs <> [V.attr "href" "#",V.on "click" \e -> Link e $ Browser $ Browser.Open (Browser.FilePath $ B.decodeURI url.path) Nothing]) $ map (copy isAbout) children
         else if A.elem (url.protocol) ["http:","https:"] then V.node "a" (attrs <> [V.cls "chat-link",V.attr "href" $ url.href,V.attr "target" "_blank",V.attr "rel" "noopener noreferrer",V.on "click" \e -> Link e $ OpenLink $ url.href]) $ map (copy isAbout) children
         else V.node "span" attrs $ map (copy isAbout) children
       "img" ->

@@ -48,12 +48,12 @@ blocksChat :: Turn -> Boolean
 blocksChat request = A.elem request.status [Queued,Running,OutputPending]
 
 type Attachment =
-  { id :: String, kind :: String, name :: String, value :: String }
+  { id :: String, kind :: AttachmentKind, name :: String, value :: String }
 
 attachment :: Json -> Attachment
 attachment value =
   { id: D.s "id" value
-  , kind: D.s "kind" value
+  , kind: attachmentKind $ D.s "kind" value
   , name: D.s "name" value
   , value: D.s "value" value
   }
@@ -92,11 +92,12 @@ turn value =
   }
 
 type Workload =
-  { id :: String, taskId :: String, taskType :: String, callId :: String, owner :: String, state :: WorkState, output :: String, error :: String, origin :: Origin, participants :: Array String }
+  { revision :: String, id :: String, taskId :: String, taskType :: String, callId :: String, owner :: String, state :: WorkState, output :: String, error :: String, origin :: Origin, participants :: Array String }
 
 workload :: Json -> Workload
 workload value =
-  { id: D.s "id" value
+  { revision: D.encode value
+  , id: D.s "id" value
   , taskId: D.s "taskId" value
   , taskType: D.s "taskType" value
   , callId: D.s "callId" value
@@ -616,3 +617,33 @@ metadataField key value = if O.member key (fromMaybe O.empty $ toObject value) t
 
 withMetadata :: Notes -> NoteMetadata -> Notes
 withMetadata original patch = { revision: fromMaybe original.revision patch.revision, path: fromMaybe original.path patch.path, workspace: fromMaybe original.workspace patch.workspace, modified_at: fromMaybe original.modified_at patch.modified_at, modified_by: fromMaybe original.modified_by patch.modified_by, created_at: fromMaybe original.created_at patch.created_at, created_by: fromMaybe original.created_by patch.created_by }
+
+data AttachmentKind = ImageAttachment | DocumentAttachment | LinkAttachment | FileAttachment | OtherAttachment String
+derive instance eqAttachmentKind :: Eq AttachmentKind
+
+attachmentKind :: String -> AttachmentKind
+attachmentKind = case _ of
+  "image" -> ImageAttachment
+  "document" -> DocumentAttachment
+  "link" -> LinkAttachment
+  "filepath" -> FileAttachment
+  value -> OtherAttachment value
+
+attachmentKindName :: AttachmentKind -> String
+attachmentKindName = case _ of
+  ImageAttachment -> "image"
+  DocumentAttachment -> "document"
+  LinkAttachment -> "link"
+  FileAttachment -> "filepath"
+  OtherAttachment value -> value
+
+instance encodeAttachmentKind :: EncodeJson AttachmentKind where
+  encodeJson = D.text <<< attachmentKindName
+
+data LifecycleIntent = PauseCorpora | ActivateCorpora
+derive instance eqLifecycleIntent :: Eq LifecycleIntent
+
+lifecycleName :: LifecycleIntent -> String
+lifecycleName = case _ of
+  PauseCorpora -> "pause"
+  ActivateCorpora -> "activate"

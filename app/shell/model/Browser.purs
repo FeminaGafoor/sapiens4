@@ -3,7 +3,9 @@ module Sapiens.Browser where
 import Prelude
 import Data.Argonaut.Core (Json)
 import Data.Array as A
-import Data.Maybe (fromMaybe)
+import Data.Maybe (Maybe(..), fromMaybe, maybe)
+import Data.String as S
+import Data.Tuple (Tuple(..))
 import Foreign.Object as O
 import Libs4.Browser as B
 import Sapiens.Data as D
@@ -107,3 +109,32 @@ nativeReport value =
   {owner:D.s "owner" value
   ,op:if D.s "open" value /= "" || D.s "file" value /= "" then "open" else D.s "action" value
   ,body:if D.s "open" value /= "" then D.json {url:D.get "open" value} else if D.s "file" value /= "" then D.json {path:D.get "file" value} else if D.s "action" value == "" then value else D.get "fields" value}
+
+data Destination = WebAddress String | FilePath String
+derive instance eqDestination :: Eq Destination
+
+data Command = Open Destination (Maybe String) | FocusTab String | CloseTab String | GoBack | GoForward | Reload | Zoom Number | SaveBookmark String | RemoveBookmark String
+derive instance eqCommand :: Eq Command
+
+openDestination :: String -> Command
+openDestination value = Open (destination value) Nothing
+
+destination :: String -> Destination
+destination value = if D.matches "^(https?:|file:|about:)" value then WebAddress value else FilePath value
+
+addressCommand :: String -> Maybe String -> Maybe Command
+addressCommand raw id = let value = S.trim raw in if value == "" then Nothing else Just $ Open (destination value) id
+
+request :: Command -> {op :: String, fields :: Json}
+request = case _ of
+  Open target id -> {op:"open",fields:D.obj $ [case target of
+    WebAddress value -> Tuple "url" $ D.text value
+    FilePath value -> Tuple "path" $ D.text value] <> maybe [] (\value -> [Tuple "id" $ D.text value]) id}
+  FocusTab id -> {op:"focus",fields:D.json {id}}
+  CloseTab id -> {op:"close",fields:D.json {id}}
+  GoBack -> {op:"back",fields:D.empty}
+  GoForward -> {op:"forward",fields:D.empty}
+  Reload -> {op:"reload",fields:D.empty}
+  Zoom factor -> {op:"zoom",fields:D.json {factor}}
+  SaveBookmark id -> {op:"bookmark",fields:D.json {id}}
+  RemoveBookmark id -> {op:"unbookmark",fields:D.json {id}}

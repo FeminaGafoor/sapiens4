@@ -10,7 +10,6 @@ import Control.Promise (toAffE)
 import Data.Array as A
 import Data.Either (Either(..), either)
 import Data.Maybe (Maybe(..))
-import Data.String as S
 import Data.Foldable (traverse_)
 import Data.Tuple (Tuple(..))
 import Effect.Aff (Aff, Milliseconds(..), delay, try)
@@ -169,16 +168,16 @@ handle runtime input = session input
     UserScroll -> H.modify_ _ {scrollPosition=Nothing,restoringScroll=false}
     NativeReport report -> E.runUpdate runtime dispatch $ U.QueueNative report
     DrainNative -> E.runUpdate runtime dispatch U.DrainNative
-    Browser op fields -> do
+    Browser command -> do
       m <- H.get
+      let {op,fields} = Browser.request command
       E.attempt (do
         void $ E.api runtime m (M.ownerPath m <> "/control") "POST" $ D.put "op" (D.text $ "workspace_" <> op) fields
         E.api runtime m "/api/state" "GET" D.null) $ browserReceived m.epoch m.selected op
     Address text -> E.runUpdate runtime dispatch $ U.Address text
     OpenAddress -> do
       m <- H.get
-      let value = S.trim m.address
-      when (value /= "") $ dispatch $ Browser "open" $ D.obj $ [Tuple (if D.matches "^(https?:|file:|about:)" value then "url" else "path") (D.text value)] <> if M.hasTab m then [Tuple "id" $ D.json (M.activeTab m).id] else []
+      traverse_ (dispatch <<< Browser) $ Browser.addressCommand m.address $ if M.hasTab m then Just (M.activeTab m).id else Nothing
     EditAddress -> E.runUpdate runtime dispatch U.EditAddress
     OpenFile -> do
       m <- H.get
@@ -189,7 +188,7 @@ handle runtime input = session input
         liftEffect $ B.focus "#browser-address"
     OpenLink url -> do
       m <- H.get
-      when (Workspace.native m) $ dispatch $ Browser "open" $ D.json {url}
+      when (Workspace.native m) $ dispatch $ Browser $ Browser.Open (Browser.WebAddress url) Nothing
     _ -> do
       handled <- Corpora.handle runtime dispatch action
       unless handled $ Dialog.handle runtime dispatch action

@@ -6,7 +6,6 @@ import Data.Maybe (Maybe(..), fromMaybe)
 import Data.String as S
 import Data.String.CodeUnits as CU
 import Data.String.Regex.Flags (unicode)
-import Data.Tuple (Tuple(..))
 import Libs4.Browser as B
 import Sapiens.Action (Action(..))
 import Sapiens.Data as D
@@ -49,7 +48,7 @@ mentions m value = if A.null m.agents then [V.text value] else case D.matchWith 
 
 link :: String -> String -> V.Html
 link destination caption =
-  if S.take 1 destination == "/" || S.take 7 destination == "file://" then V.control [V.cls "entity-mention"] (D.fallback destination caption) (Browser "open" $ D.obj [Tuple (if S.take 7 destination == "file://" then "url" else "path") (D.text destination)])
+  if S.take 1 destination == "/" || S.take 7 destination == "file://" then V.control [V.cls "entity-mention"] (D.fallback destination caption) (Browser $ Browser.openDestination destination)
   else if A.elem (url.protocol) ["http:","https:"] then V.textNode "a" [V.cls "chat-link",V.attr "href" (url.href),V.attr "title" destination,V.attr "target" "_blank",V.attr "rel" "noopener noreferrer",V.on "click" \event -> Link event (OpenLink $ url.href)] (label <> " ↗")
   else V.text $ D.fallback destination caption
   where
@@ -90,7 +89,7 @@ time :: String -> String
 time = B.formatDate "" $ D.json {hour: "2-digit", minute: "2-digit"}
 
 attachment :: X.Attachment -> V.Html
-attachment item = if item.kind == "link" then V.link (item.value) (caption <> " ↗") else V.span [V.cls "attachment-item",V.attr "title" (item.value)] (caption)
+attachment item = if item.kind == X.LinkAttachment then V.link (item.value) (caption <> " ↗") else V.span [V.cls "attachment-item",V.attr "title" (item.value)] (caption)
   where
-  kind = item.kind
+  kind = X.attachmentKindName item.kind
   caption = S.toUpper (S.take 1 kind) <> S.drop 1 kind <> " · " <> item.name

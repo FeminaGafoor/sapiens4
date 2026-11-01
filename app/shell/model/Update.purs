@@ -21,7 +21,7 @@ import Sapiens.Navigation as N
 data Action
   = RegistryReceived Int String {records :: Array X.Corpora, localAvailable :: Boolean}
   | Entered X.Corpora (Maybe X.Snapshot)
-  | Lifecycle String
+  | Lifecycle X.LifecycleIntent
   | LifecycleReceived Int (Either String X.Corpora)
   | Global Browser.GlobalEvent
   | QueueNative Browser.NativeReport
@@ -65,7 +65,7 @@ data Command
   = SaveRegistry (Array X.Corpora)
   | SaveActive String
   | ConnectRecord X.Corpora
-  | ChangeLifecycle String
+  | ChangeLifecycle X.LifecycleIntent
   | ReplaceHistory String
   | Dispatch Shell.Action
   | ReadVisibility
@@ -83,7 +83,7 @@ data Command
   | Sync
   | PersistTheme String
   | FetchDocument M.Request
-  | LoadMemoImages X.MemoDocument
+  | LoadMemoImages M.Request X.MemoDocument
   | SendMessage Submission
   | Notify String
   | PollNow
@@ -162,7 +162,7 @@ update action m = case action of
     Browser.Visibility -> Commands [ReadVisibility]
     Browser.Suspend -> Commands [Suspend]
     Browser.Back -> Commands [Dispatch Shell.CloseDialog]
-    Browser.Storage key -> Commands $ (if key == "sapi-color-theme" then [Dispatch Shell.RefreshTheme] else []) <> (if key == "s4.relay-reset" then [Dispatch $ Shell.DialogCommand "relay-reset" D.empty] else [])
+    Browser.Storage key -> Commands $ (if key == "sapi-color-theme" then [Dispatch Shell.RefreshTheme] else []) <> (if key == "s4.relay-reset" then [Dispatch $ Shell.DialogCommand Shell.ResetRelay] else [])
     Browser.KeyDown key
       | key.key == "Escape" -> Commands $
           if m.dialog /= Nothing then [Dispatch Shell.CloseDialog] else if m.menu /= Nothing then [Dispatch Shell.CloseMenu] else if m.searchOpen then [Dispatch Shell.ToggleSearch,Focus "#search-toggle"] else []
@@ -282,7 +282,7 @@ update action m = case action of
         Just pending | pending == request -> Changed
           (m {documents=O.insert request.key (either (M.Failed request) (M.Ready request) result) m.documents})
           (case result of
-            Right (X.MemoDocument document) -> [LoadMemoImages document]
+            Right (X.MemoDocument document) -> [LoadMemoImages request document]
             _ -> [])
         _ -> Unchanged
   RetryDocument key -> Changed (m {documents=O.delete key m.documents}) [LoadDocument]

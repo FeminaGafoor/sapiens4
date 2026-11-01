@@ -18,6 +18,7 @@ import Effect.Ref as Ref
 import Foreign.Object as O
 import Halogen as H
 import Libs4.Browser as B
+import Sapiens.Action as Intent
 import Sapiens.Action (Action(..), Success(..))
 import Sapiens.Connections as C
 import Sapiens.Data as D
@@ -62,14 +63,14 @@ handle runtime dispatch action = case action of
     traverse_ (\d -> unless (M.dialogBusy d) $ submit m d) m.dialog
   AttachmentKind kind -> do
     m <- H.get
-    if kind == "link" || kind == "filepath" then dispatch $ OpenDialog (M.Reference kind) F.NoRecord else do
+    if A.elem kind [X.LinkAttachment,X.FileAttachment] then dispatch $ OpenDialog (M.Reference kind) F.NoRecord else do
       unless (A.length (M.attachments m) >= 8) do
         H.modify_ _ {uploading=m.uploading+1}
         attach m do
-          file <- toAffE $ B.chooseFile (if kind == "image" then "image/png,image/jpeg,image/gif,image/webp" else ".pdf,.txt,.md,.csv,.json,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.rtf,.odt") 10485760
+          file <- toAffE $ B.chooseFile (if kind == X.ImageAttachment then "image/png,image/jpeg,image/gif,image/webp" else ".pdf,.txt,.md,.csv,.json,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.rtf,.odt") 10485760
           if not (D.valid file) then pure D.null else E.api runtime m (M.ownerPath m <> "/attachments") "POST" (D.json {kind, name: D.get "name" file, data: D.get "data" file})
       when (A.length (M.attachments m) >= 8) $ E.notify "Attach up to 8 items per message."
-  DialogCommand command value -> commandAction command value
+  DialogCommand command -> commandAction command
   _ -> pure unit
   where
   attach m operation = E.attempt operation \result -> E.inEpoch m.epoch \current -> do
@@ -161,10 +162,10 @@ handle runtime dispatch action = case action of
       uuid <- liftEffect B.uuid
       void $ liftEffect $ C.write "s4.relay-reset" $ D.text uuid
     dispatch LoadRegistry
-  commandAction command value = do
+  commandAction command = do
     m <- H.get
     case command of
-      "create-agent" -> do
+      Intent.CreateAgent -> do
         dispatch $ SetScope N.All
         current <- H.get
         let template = m.snapshot.creation_template
@@ -174,52 +175,58 @@ handle runtime dispatch action = case action of
         case CU.indexOf (S.Pattern "WORKFLOW") $ M.draft latest of
           Just index -> liftEffect $ B.selectRange "#message-input" index (index+8)
           Nothing -> pure unit
-      "group-mention" -> case m.groupView of
-        Nothing -> dispatch $ Select $ D.s "id" value
+      Intent.MentionGroup entity -> case m.groupView of
+        Nothing -> dispatch $ Select entity.id
         Just group -> do
           dispatch $ Select group
           current <- H.get
           let old = M.draft current
               prefix = A.find (\name -> S.take (CU.length name) old == name) $ map (\id -> "@" <> (M.agent current id).name <> " ") $ (M.selected current).members
-          dispatch $ Draft $ "@" <> D.s "name" value <> " " <> maybe old (\p -> CU.drop (CU.length p) old) prefix
+          dispatch $ Draft $ "@" <> entity.name <> " " <> maybe old (\p -> CU.drop (CU.length p) old) prefix
           liftEffect $ B.focus "#message-input"
-      "relay-reset" -> resetRelay false
-      "install-prompt" -> void $ H.fork $ void $ H.liftAff $ try $ toAffE B.installPrompt
-      _ -> traverse_ (\d -> unless (M.dialogBusy d) $ dialogCommand m d command value) m.dialog
-  dialogCommand m d command value = case command of
-    "names" -> do
+      Intent.ResetRelay -> resetRelay false
+      Intent.InstallPrompt -> void $ H.fork $ void $ H.liftAff $ try $ toAffE B.installPrompt
+      _ -> traverse_ (\d -> unless (M.dialogBusy d) $ dialogCommand m d command) m.dialog
+  dialogCommand m d command = case command of
+    Intent.SuggestNames -> do
       E.modifyDialog d.identity (\s -> s {identity=s.identity+1})
       H.modify_ (\s -> s {sequence=s.sequence+1})
-    "delete-task" -> saveTask m d true
-    "relay-add" -> push M.RelayAdd F.NoRecord
-    "relay-back" -> if A.null m.dialogStack then dispatch CloseDialog else H.modify_ Dialog.back *> E.sync
-    "relay-select" -> when (D.s "id" value /= (F.relays d.content).selected) $ confirmRelay d (D.json {action: "switch", id: D.get "id" value}) (D.s "name" value)
-    "relay-confirm" -> changeRelay d $ D.put "confirm_revoke" (D.bool true) $ (F.contextChange d.record).change
-    "relay-edit" -> runDialog d (push M.RelayAdd <<< F.relayContext) $ C.json ("/api/host/relays/" <> B.encodeURI (D.s "id" value)) "GET" D.null
-    "relay-archive" -> changeRelay d $ D.json {action: if D.b "archived" value then "restore" else "archive", id: D.get "id" value}
-    "relay-import" -> runDialog d (\imported -> E.modifyDialog d.identity \current -> current {fields=current.fields {connection=D.s "raw" imported},status=M.Editing}) do
+    Intent.DeleteTask -> saveTask m d true
+    Intent.AddRelay -> push M.RelayAdd F.NoRecord
+    Intent.BackRelay -> if A.null m.dialogStack then dispatch CloseDialog else H.modify_ Dialog.back *> E.sync
+    Intent.SelectRelay relay -> when (relay.id /= (F.relays d.content).selected) $ confirmRelay d (D.json {action: "switch", id: relay.id}) relay.name
+    Intent.ConfirmRelay -> changeRelay d $ D.put "confirm_revoke" (D.bool true) $ (F.contextChange d.record).change
+    Intent.EditRelay id -> runDialog d (push M.RelayAdd <<< F.relayContext) $ C.json ("/api/host/relays/" <> B.encodeURI id) "GET" D.null
+    Intent.ArchiveRelay relay -> changeRelay d $ D.json {action: if relay.archived then "restore" else "archive", id: relay.id}
+    Intent.ImportRelay -> runDialog d (\imported -> E.modifyDialog d.identity \current -> current {fields=current.fields {connection=D.s "raw" imported},status=M.Editing}) do
       file <- toAffE $ B.chooseFile "application/json,.json" 4096
       if not (D.valid file) then pure (D.json {raw: D.json d.fields.connection}) else do
         let raw = D.str $ B.base64Decode $ D.s "data" file
         case parseRelay raw of
           Left failure -> throwError $ error failure
           Right _ -> pure $ D.json {raw}
-    "relay-done" -> do
+    Intent.DoneRelay -> do
       let current = fromMaybe (F.relay D.empty) $ A.find ((_ == (F.relays d.content).selected) <<< _.id) (F.relays d.content).servers
       if (F.contextCorpora d.record).key == "" then dispatch CloseDialog else if current.beta && not ((F.relays d.content).beta_accepted) then push M.RelayTerms d.record else dispatch $ OpenDialog M.HostPairing $ F.readyContext d.record
-    "relay-accept" -> do
+    Intent.AcceptRelay -> do
       E.modifyDialog d.identity (M.setDialogBusy true)
       receive d.identity (\_ -> dispatch $ OpenDialog M.HostPairing $ F.readyContext d.record) $
         C.json "/api/host/relays" "POST" $ D.json {revision: D.json (F.relays d.content).revision, action: "accept-beta", accepted: true}
-    _ | S.take 5 command == "host-" -> do
-      let op = S.drop 5 command
-      proceed <- if op == "revoke" || op == "replace" then liftEffect $ B.confirm $ if op == "revoke" then "Revoke this remote access? It will need to pair again." else "Replace the trusted remote device? The previous device will lose access." else pure true
+    Intent.HostPair intent -> do
+      let revoking = intent == Intent.RevokeHost || intent == Intent.ReplaceHost
+      proceed <- if revoking then liftEffect $ B.confirm $ if intent == Intent.RevokeHost then "Revoke this remote access? It will need to pair again." else "Replace the trusted remote device? The previous device will lose access." else pure true
       when proceed $ runDialog d (\result -> do
-        E.modifyDialog d.identity (M.setDialogError $ if D.valid (D.get "relay_deleted" result) && not (D.b "relay_deleted" result) then "Revoked locally. Relay could not be reached." else "")
+        E.modifyDialog d.identity $ M.setDialogError $ if D.valid (D.get "relay_deleted" result) && not (D.b "relay_deleted" result) then "Revoked locally. Relay could not be reached." else ""
         dispatch $ HostPairPoll d.identity) do
-        previous <- if op == "revoke" || op == "replace" then C.request runtime (M.remote m) (F.contextCorpora d.record) "/api/remote/revoke" "POST" D.empty else pure D.empty
-        if op == "pair" || op == "replace" then C.request runtime (M.remote m) (F.contextCorpora d.record) "/api/remote/pair" "POST" (D.json {saved: true}) else if op == "approve" then C.request runtime (M.remote m) (F.contextCorpora d.record) "/api/remote/approve" "POST" (D.json {peer: D.get "peer" value}) else pure previous
+        previous <- if revoking then C.request runtime (M.remote m) (F.contextCorpora d.record) "/api/remote/revoke" "POST" D.empty else pure D.empty
+        case intent of
+          Intent.InviteHost -> invite m d
+          Intent.ReplaceHost -> invite m d
+          Intent.ApproveHost peer -> C.request runtime (M.remote m) (F.contextCorpora d.record) "/api/remote/approve" "POST" $ D.json {peer}
+          Intent.RevokeHost -> pure previous
     _ -> pure unit
+
+  invite m d = C.request runtime (M.remote m) (F.contextCorpora d.record) "/api/remote/pair" "POST" (D.json {saved:true})
 
 parseRelay :: String -> Either String Json
 parseRelay raw =

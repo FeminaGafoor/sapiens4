@@ -4,6 +4,7 @@ import Prelude
 import Control.Promise (toAffE)
 import Data.Argonaut.Core (Json)
 import Data.Array as A
+import Data.String as S
 import Data.Either (Either(..), either)
 import Data.Foldable (traverse_)
 import Data.Maybe (Maybe(..), maybe)
@@ -86,16 +87,16 @@ save dispatch = persistLocal *> later 300.0 (dispatch Persist)
 requestDocument :: C.Runtime -> Dispatch -> UI Unit
 requestDocument runtime dispatch = runUpdate runtime dispatch U.RequestDocument
 
-memoImages :: C.Runtime -> X.MemoDocument -> UI Unit
-memoImages runtime document = do
+memoImages :: C.Runtime -> M.Request -> X.MemoDocument -> UI Unit
+memoImages runtime request document = do
   m <- H.get
   traverse_ (\source -> do
-    let key = m.selected <> ":" <> source
+    let key = S.drop 5 request.key <> ":" <> source
     unless (O.member key m.imageUrls) $ attempt (imageRequest m source) \result -> inEpoch m.epoch \_ ->
       traverse_ (\uri -> H.modify_ \s -> s {imageUrls=O.insert key uri s.imageUrls}) result) $ Memo.imagePaths document
   where
   imageRequest m source = do
-    let path = M.ownerPath m <> "/notes?image=" <> B.encodeURI source
+    let path = request.path <> "?image=" <> B.encodeURI source
     result <- if M.remote m then do
       client <- C.client runtime (M.activeRecord m)
       R.request client 15000 $ D.json {kind: "request", op: "api", method: "GET", path}
@@ -121,7 +122,7 @@ runUpdate runtime dispatch action = do
     U.ConnectRecord record -> do
       current <- H.get
       refresh runtime dispatch current $ C.authenticate runtime (M.remote current) record *> C.request runtime (M.remote current) record "/api/state" "GET" D.null
-    U.ChangeLifecycle command -> attempt (C.reconcile runtime (M.remote requested) requested.records requested.active *> C.lifecycle runtime (M.remote requested) (M.activeRecord requested) command) $
+    U.ChangeLifecycle command -> attempt (C.reconcile runtime (M.remote requested) requested.records requested.active *> C.lifecycle runtime (M.remote requested) (M.activeRecord requested) (X.lifecycleName command)) $
       runUpdate runtime dispatch <<< U.LifecycleReceived requested.epoch <<< either (Left <<< message) (Right <<< X.corpora)
     U.Dispatch next -> dispatch next
     U.ReadVisibility -> do
@@ -152,7 +153,7 @@ runUpdate runtime dispatch action = do
     U.PersistTheme theme -> void $ liftEffect $ B.storageWrite "sapi-color-theme" theme
     U.FetchDocument request -> attempt (api runtime requested request.path "GET" D.null) $
       runUpdate runtime dispatch <<< U.ReceiveDocument request <<< either (Left <<< message) (M.decodeDocument request)
-    U.LoadMemoImages document -> memoImages runtime document
+    U.LoadMemoImages request document -> memoImages runtime request document
     U.SendMessage request ->
       let payload = D.obj $ [Tuple "text" (D.text request.text),Tuple "attachments" (D.array $ map D.text request.attachments)] <> maybe [] (\id -> [Tuple "workload" $ D.text id]) request.workload
       in attempt (api runtime requested request.path "POST" payload) $
@@ -167,7 +168,7 @@ runUpdate runtime dispatch action = do
     U.ScrollToStart -> liftEffect $ B.scroll "#conversation-body" 0.0
     U.ScrollToBottom -> scrollBottom
     U.FocusSearch -> liftEffect $ B.focus "#agent-search"
-    U.OpenWorkspace -> dispatch $ Browser "open" $ D.json {url: "about:blank"}
+    U.OpenWorkspace -> dispatch $ Browser $ Browser.Open (Browser.WebAddress "about:blank") Nothing
     U.LoadPreview -> preview runtime dispatch
     U.FetchPreview request ->
       attempt (api runtime requested request.path "GET" D.null) $ runUpdate runtime dispatch <<< U.ReceivePreview request <<<
