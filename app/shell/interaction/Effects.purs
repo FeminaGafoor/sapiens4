@@ -133,13 +133,13 @@ preview runtime dispatch = runUpdate runtime dispatch U.RequestPreview
 
 runUpdate :: C.Runtime -> Dispatch -> U.Action -> UI Unit
 runUpdate runtime dispatch action = do
-  transition <- U.update action <$> H.get
-  case transition of
+  requested <- H.get
+  case U.update action requested of
     U.Unchanged -> pure unit
-    U.Changed model commands -> H.put model *> traverse_ execute commands
-    U.Commands commands -> traverse_ execute commands
+    U.Changed model commands -> H.put model *> traverse_ (execute requested) commands
+    U.Commands commands -> traverse_ (execute requested) commands
   where
-  execute = case _ of
+  execute requested = case _ of
     U.SaveView -> save dispatch *> sync
     U.SavePreferences -> save dispatch
     U.LoadDocument -> requestDocument runtime
@@ -148,9 +148,8 @@ runUpdate runtime dispatch action = do
     U.FocusSearch -> liftEffect $ B.focus "#agent-search"
     U.OpenWorkspace -> dispatch $ Browser "open" $ D.json {url: "about:blank"}
     U.LoadPreview -> preview runtime dispatch
-    U.FetchPreview request -> do
-      m <- H.get
-      attempt (api runtime m request.path "GET" D.null) $ runUpdate runtime dispatch <<< U.ReceivePreview request <<<
+    U.FetchPreview request ->
+      attempt (api runtime requested request.path "GET" D.null) $ runUpdate runtime dispatch <<< U.ReceivePreview request <<<
         either (Left <<< M.PreviewUnavailable <<< message) M.decodePreview
 
 captureScroll :: UI Unit
