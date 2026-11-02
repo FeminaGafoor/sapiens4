@@ -172,10 +172,10 @@ reconcileGroups s = DB.values s DB.Groups >>= mapM_ reconcile
       let targets = filter (`notElem` called) mentioned
       valid <- if routine && not (null targets) then do task <- findTask group (at request "task"); pure (not (boolean (get task "deleted")) && get task "revision" == get request "task_revision") else pure True
       let recipients = if valid then if routine then take 1 targets else targets else []
-      (finished,stale) <- if routine && not (null recipients) then pure (base,Nothing) else settleTask base request turn
+      (finished,stale) <- if routine && not (null recipients) then pure (base,TaskForwarded) else settleTask base request turn
       output <- if get turn "output" == Null then pure finished else do
        initialMessage <- message (at request "target") (at turn "output")
-       let entry = merge initialMessage (obj [("turn",get request "id"),("stale",Bool (fromMaybe False stale))])
+       let entry = merge initialMessage (obj [("turn",get request "id"),("stale",Bool (stale == StaleResultRecorded))])
        foldM (\g target -> do
          initialCall <- newRequest entry target (at request "root")
          if routine then do
@@ -184,7 +184,7 @@ reconcileGroups s = DB.values s DB.Groups >>= mapM_ reconcile
               call = merge initialCall (obj [("origin",get request "origin"),("task",get task "id"),("task_revision",get revised "revision")])
           pure (append "requests" call (replace "tasks" revised g))
          else pure (append "requests" initialCall g)) (append "messages" entry finished) recipients
-      event <- eventRecord (at request "target") (if fromMaybe False stale then "result needs review" else "call " <> at turn "status") (get request "id")
+      event <- eventRecord (at request "target") (if stale == StaleResultRecorded then "result needs review" else "call " <> at turn "status") (get request "id")
       pure (append "events" event output)
  addMemo group entry = if not (boolean (get entry "memo_pending")) then pure group else do
   let related = filter ((== get entry "id") . (`get` "root")) (items group "requests")
