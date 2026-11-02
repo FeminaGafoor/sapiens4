@@ -32,9 +32,7 @@ RSpec.describe 'Navigating work', :desktop do
     malformed = false
     proxy = HostProxy.new(host) do |request, response|
       if malformed && request.path.end_with?('/api/state')
-        snapshot = JSON.parse(response[1])
-        snapshot['agents'] = 'invalid agent collection'
-        [response[0], JSON.generate(snapshot), response[2]]
+        [response[0], response[1].merge('agents' => 'invalid agent collection'), response[2]]
       else
         response
       end
