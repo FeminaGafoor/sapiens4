@@ -55,18 +55,27 @@ authorizeGroup :: Service -> Value -> Text -> GroupAccess -> IO ()
 authorizeGroup s group actor mode = unless (actor == "admin") $ do
  Population.requireActive s actor
  chief <- DB.mainAgent s
+ validated (groupPermission chief group actor mode)
+
+groupPermission :: Text -> Value -> Text -> GroupAccess -> Validation ()
+groupPermission chief group actor mode = do
  let allowed = case mode of
        ChiefOnly -> actor == chief
        Management -> actor `elem` [chief,at group "lead"]
        Member -> str actor `elem` items group "members"
- require allowed 403 (if mode == ChiefOnly then "Only Chief can perform this operation" else if mode == Management then "Only Chief or the Lead can manage members" else "Only Group members can contribute")
+ check allowed 403 (if mode == ChiefOnly then "Only Chief can perform this operation" else if mode == Management then "Only Chief or the Lead can manage members" else "Only Group members can contribute")
 validateMembers :: Service -> Value -> Value -> IO [Value]
 validateMembers s value lead = do
- let members = list value
- require (case value of Array _ -> length members >= 2 && length members <= 100 && all (\v -> case v of String _ -> True; _ -> False) members; _ -> False) 400 "A Group needs 2–100 distinct Sapis, including its Lead"
- require (length (nub members) == length members && lead `elem` members) 400 "Members must be distinct and include exactly one Lead"
+ members <- validated (groupMembers value lead)
  mapM_ (Population.requireActive s . text) members
  pure members
+groupMembers :: Value -> Value -> Validation [Value]
+groupMembers value lead = do
+ let members = list value
+ check (case value of Array _ -> length members >= 2 && length members <= 100 && all (\v -> case v of String _ -> True; _ -> False) members; _ -> False) 400 "A Group needs 2–100 distinct Sapis, including its Lead"
+ check (length (nub members) == length members && lead `elem` members) 400 "Members must be distinct and include exactly one Lead"
+ pure members
+
 capacity :: Service -> [Value] -> Maybe Text -> IO ()
 capacity s members exclude = do
  groups <- filter (\g -> not (boolean (get g "archived")) && Just (at g "id") /= exclude) <$> DB.values s DB.Groups

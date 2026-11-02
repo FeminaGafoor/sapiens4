@@ -31,6 +31,19 @@ RSpec.describe 'Corpora lifecycle and device registry', :host do
     expect(host.request('PUT', '/api/corpora/lifecycle', {action: 'activate', revision: metadata['revision'], operation: SecureRandom.uuid}).first).to eq(409)
   end
 
+  it 'replays an old pause receipt after activation and restart without pausing again' do
+    original = host.api('GET', '/api/corpora')
+    operation = SecureRandom.uuid
+    transition('pause', original, operation: operation)
+    active = transition('activate')
+    host.restart
+    replayed = transition('pause', original, operation: operation)
+    expect(replayed).to include('status' => 'active', 'revision' => active['revision'])
+    expect(host.state['pulse']['running']).to eq(true)
+    expect(host.request('PUT', '/api/corpora/lifecycle', {action: 'activate', revision: original['revision'], operation: operation}).first).to eq(409)
+    expect(host.api('GET', '/api/corpora')['revision']).to eq(active['revision'])
+  end
+
   it 'lets only ChiefSapi update names, scope and archive state with revision checks' do
     other = host.agent
     initial = host.control(chief, 'corpora_get')

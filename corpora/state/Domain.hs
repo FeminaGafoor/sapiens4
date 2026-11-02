@@ -87,6 +87,12 @@ instance FromJSON BrowserCommand where
  parseJSON = withObject "Browser command" $ \o -> BrowserCommand <$> o .: "seq" <*> o .: "action"
 instance ToJSON BrowserCommand where
  toJSON command = object ["seq" .= browserSequence command, "action" .= browserAction command]
+data BrowserTransition = BrowserUnchanged | BrowserExecute BrowserCommand deriving (Eq, Show)
+browserTransition :: Text -> Maybe BrowserCommand -> BrowserTransition
+browserTransition previous command = case command of
+ Just next | browserSequence next/=previous -> BrowserExecute next
+ _ -> BrowserUnchanged
+
 data TurnAction = Retry | Cancel deriving (Eq, Ord, Show, Enum, Bounded)
 instance Wire TurnAction where wireName action = case action of Retry -> "retry"; Cancel -> "cancel"
 instance FromJSON TurnAction where parseJSON = parseWire

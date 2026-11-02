@@ -78,17 +78,22 @@ clientRequest c method path body = do
  result <- exchange c (obj [("kind",str "request"),("op",str "api"),("method",str method),("path",str path),("data",maybe Null id body)]) 12
  raw <- if boolean (get result "binary") then BL.fromStrict <$> unb64 (get result "body") Nothing else pure (encode (get result "body"))
  pure (int (get result "status"),raw,at result "mime")
-invitation :: Value -> IO Client
-invitation value = do
- require (at value "v"==protocol) 400 "Invalid pairing invitation"
- relay <- origin (get value "relay")
+validateInvitation :: Double -> Value -> Validation Text
+validateInvitation time value = do
+ check (at value "v"==protocol) 400 "Invalid pairing invitation"
+ relay <- relayURL <$> decodeRelayOrigin (get value "relay")
  forM_ ["room","token","secret"] $ \field -> do
   let input = at value field
-  require (T.length input>=32 && T.length input<=64 && T.all (\c -> isAscii c && (isAlphaNum c || c `elem` ("_-"::String))) input) 400 "Invalid pairing invitation"
- time <- seconds
+  check (T.length input>=32 && T.length input<=64 && T.all (\c -> isAscii c && (isAlphaNum c || c `elem` ("_-"::String))) input) 400 "Invalid pairing invitation"
  let expiry = case get value "expires" of Number n -> realToFrac n; _ -> 0
- require (time<expiry && expiry<=time+fromIntegral pairingTTL+60) 400 "Invitation expired. Show a new QR on the host."
- void (unb64 (get value "desktop") (Just 32))
+ check (time<expiry && expiry<=time+fromIntegral pairingTTL+60) 400 "Invitation expired. Show a new QR on the host."
+ void (decodeBase64 (get value "desktop") (Just 32))
+ pure relay
+
+invitation :: Value -> IO Client
+invitation value = do
+ time <- seconds
+ relay <- validated (validateInvitation time value)
  (private,public) <- keypair
  newClient (obj [("relay",str relay),("room",get value "room"),("token",get value "token"),("desktop",get value "desktop"),("private",str private),("public",str public)])
 pairClient :: Client -> Value -> IO Value

@@ -135,26 +135,37 @@ closeBridge :: Bridge -> IO ()
 closeBridge b = readMVar (bridgeThread b) >>= mapM_ cancel
 cleanDeviceInfo :: Value -> Value
 cleanDeviceInfo value = obj [(k,str (T.take 200 (T.strip (T.filter isPrint s)))) | k <- ["name","platform","client"], String s <- [get value k]]
+connectionUpdate :: Double -> S.Set Text -> Value -> Value -> (Bool,Text,Value)
+connectionUpdate time connections config message = (changed,connection,final)
+ where
+ raw = at message "connection_id"
+ connection = if T.length raw <=100 then raw else ""
+ info = cleanDeviceInfo (get message "device_info")
+ changed = get config "last_connected_at"==Null || (not (T.null connection) && S.notMember connection connections) || (T.null connection && at message "op"=="resume")
+ updated = if changed then merge config (obj [("last_connected_at",toJSON time),("last_connection_id",if T.null connection then Null else str connection)]) else config
+ final = if info/=empty then put "device_info" info updated else updated
+
 recordConnection :: Bridge -> Value -> Value -> IO Value
 recordConnection b config message = do
- let raw = at message "connection_id"
-     connection = if T.length raw <=100 then raw else ""
-     info = cleanDeviceInfo (get message "device_info")
  connections <- readIORef (bridgeConnections b)
  time <- seconds
- let changed = get config "last_connected_at"==Null || (not (T.null connection) && S.notMember connection connections) || (T.null connection && at message "op"=="resume")
-     updated = if changed then merge config (obj [("last_connected_at",toJSON time),("last_connection_id",if T.null connection then Null else str connection)]) else config
-     final = if info/=empty then put "device_info" info updated else updated
+ let (changed,connection,final)=connectionUpdate time connections config message
  when changed (writeIORef (bridgeConnections b) (if S.size connections >128 then S.singleton connection else S.insert connection connections))
  when (final/=config) (saveConfig b final)
  pure final
+data RemoteRequest = RemoteRequest Text Text (Maybe Value)
+remoteRequest :: Value -> Validation RemoteRequest
+remoteRequest message = do
+ let method = at message "method"; target = at message "path"; path = T.takeWhile (/='?') target; parts = T.splitOn "/" (T.dropAround (=='/') path)
+ check (at message "op"=="api") 409 "Remote operation not allowed"
+ check (method `elem` ["GET","POST","PUT"] && T.length target<=8192) 409 "Unsupported remote API request"
+ check ("/api/" `T.isPrefixOf` target && not (T.any (=='%') path) && not (T.any (`elem` ("\\#"::String)) target) && ".." `notElem` parts && take 2 parts `notElem` [["api","remote"],["api","host"]] && not (method/="GET" && length parts==4 && last parts=="browser")) 409 "Remote API route is not allowed"
+ pure (RemoteRequest method target (if get message "data"==Null then Nothing else Just (get message "data")))
+
 executeRemote :: Bridge -> Value -> IO Value
 executeRemote b message = do
- let method = at message "method"; target = at message "path"; path = T.takeWhile (/='?') target; parts = T.splitOn "/" (T.dropAround (=='/') path)
- require (at message "op"=="api") 409 "Remote operation not allowed"
- require (method `elem` ["GET","POST","PUT"] && T.length target<=8192) 409 "Unsupported remote API request"
- require ("/api/" `T.isPrefixOf` target && not (T.any (=='%') path) && not (T.any (`elem` ("\\#"::String)) target) && ".." `notElem` parts && take 2 parts `notElem` [["api","remote"],["api","host"]] && not (method/="GET" && length parts==4 && last parts=="browser")) 409 "Remote API route is not allowed"
- (status,body,mime) <- Service.dispatch (bridgeService b) method target (if get message "data" == Null then Nothing else Just (get message "data"))
+ RemoteRequest method target input <- validated (remoteRequest message)
+ (status,body,mime) <- Service.dispatch (bridgeService b) method target input
   `catch` \(APIError status messageText) -> pure (status,encode (obj [("error",str messageText)]),"application/json")
  let isJSON = "application/json" `T.isPrefixOf` mime
  pure (obj [("status",num status),("body",if isJSON then fromMaybeValue (decode body) else str (b64 (BL.toStrict body))),("mime",str mime),("binary",Bool (not isJSON))])

@@ -40,6 +40,26 @@ RSpec.describe 'Domain validation through saved installation fixtures', :host do
     expect(host.calls).to be_empty
   end
 
+  it 'archives settled history before trimming it and retains the current cancelled turn' do
+    settled = 110.times.map { |n| @turn.merge(id: "past-#{n}", status: 'done') }
+    chat = settled.map { |turn| {role: 'agent', turn: turn[:id], content: "Saved #{turn[:id]}"} }
+    Contract.atomic_json(@file, @state.merge('turns' => settled + [@turn], 'chat' => chat))
+    host.api('PUT', '/api/corpora/lifecycle', {action: 'activate', operation: 'fixture-resume', revision: host.state['corpora']['revision']})
+    host.api('POST', "/api/agents/#{@owner}/turns/fixture-call/cancel", {})
+    saved = JSON.parse(File.read(@file))
+    expect(saved['turns'].length).to eq(100)
+    expect(saved['turns'].last).to include('id' => 'fixture-call', 'status' => 'cancelled', 'extension' => {'kept' => true})
+    expect(saved['chat'].length).to eq(100)
+    archive = File.join(host.root, 'agentpy/corpora/archive', @owner)
+    archived_turns = Dir[File.join(archive, 'turns/*.json')].flat_map { |file| JSON.parse(File.read(file)) }
+    archived_chat = Dir[File.join(archive, 'chat/*.json')].flat_map { |file| JSON.parse(File.read(file)) }
+    expect(archived_turns.map { |turn| turn['id'] }).to eq(11.times.map { |n| "past-#{n}" })
+    expect(archived_chat.map { |message| message['turn'] }).to eq(10.times.map { |n| "past-#{n}" })
+    expect(host.calls).to be_empty
+    host.restart
+    expect(JSON.parse(File.read(@file))['turns'].last['id']).to eq('fixture-call')
+  end
+
   it 'reports an unknown saved execution mode instead of silently choosing normal mode' do
     Contract.atomic_json(File.join(File.dirname(@file), 'run-settings.json'), {mode: 'deeep'})
     expect(host.request('GET', '/api/state').first).to eq(500)

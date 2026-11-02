@@ -26,8 +26,10 @@ import GroupModel
 import GroupWork
 
 mentions :: Service -> Value -> Text -> IO [Text]
-mentions s group content = do
- rows <- DB.agents s
+mentions s group content = DB.agents s >>= validated . mentionedMembers group content
+
+mentionedMembers :: Value -> Text -> [Value] -> Validation [Text]
+mentionedMembers group content rows = do
  let members = filter ((`elem` items group "members") . (`get` "id")) rows
      word c = isAlphaNum c || c == '_'
      mentioned name = any (\(before,remaining) ->
@@ -35,7 +37,7 @@ mentions s group content = do
        let after = T.drop (T.length name + 1) remaining
        in T.null after || not (word (T.head after) || T.head after `elem` (":#+|()&$^-" :: String) || (T.head after == '.' && T.length after > 1 && word (T.index after 1)))) (T.breakOnAll ("@" <> name) content)
  found <- filterM (\row -> if mentioned (at row "name") then do
-   require (length (filter ((== at row "name") . (`at` "name")) members) == 1) 400 "Ambiguous mention; address the member by target ID"
+   check (length (filter ((== at row "name") . (`at` "name")) members) == 1) 400 "Ambiguous mention; address the member by target ID"
    pure True
   else pure False) members
  pure (map (`at` "id") found)

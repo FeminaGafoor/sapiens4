@@ -130,21 +130,35 @@ events :: Service -> IO Value
 events s = do
  rows <- queryRows s "SELECT * FROM activity_events ORDER BY id DESC" ["id","owner","timestamp","actor","entity","event","agency","details"] []
  pure $ obj [(k,arr vs) | (k,vs) <- M.toList (M.fromListWith (flip (++)) [(at v "owner",[remove ["owner"] (put "details" (parseJSONText (at v "details")) v)]) | v <- rows])]
+data TurnProjection = TurnProjection
+ { projectionStatus :: TurnStatus, projectionOrigin :: Value, projectionOwners :: [Text]
+ , projectionActor :: Text, projectionOutput :: Maybe Value }
+
+projectTurn :: Text -> AgentState -> Turn -> TurnProjection
+projectTurn owner state turn = TurnProjection status origin owners actor output
+ where
+ status=if turnStatus turn==Done && turnField turn "warning"/=Null then Warning else turnStatus turn
+ origin=turnField turn "origin" `fallback` empty
+ owners=owner:[at origin "group" | has origin "group"]
+ actor=if status==Queued then if has origin "routine" then "system" else text (get origin "author" `fallback` str "admin") else owner
+ output=listToMaybe [get m "content" | m<-items (stateJSON state) "chat",get m "turn"==toJSON (turnId turn),at m "role"=="agent"]
+
 project :: Service -> Text -> IO ()
 project s a = do
  state <- agentState s a
  connection s $ \db -> SQLite.withTransaction db $ forM_ (agentTurns state) $ \typed -> do
   let turn=toJSON typed
   previous <- queryRowsOn db "SELECT status FROM turns WHERE id=?" ["status"] [sql (get turn "id")]
-  let status = wireName (if turnStatus typed == Done && get turn "warning" /= Null then Warning else turnStatus typed)
-      origin = get turn "origin" `fallback` empty
-      owners = a : [at origin "group" | has origin "group"]
-      old = maybe Null (get `flip` "status") (listToMaybe previous)
-      actor = if status == "queued" then if has origin "routine" then "system" else at (put "author" (get origin "author" `fallback` str "admin") origin) "author" else a
+  let projection=projectTurn a state typed
+      status=wireName (projectionStatus projection)
+      origin=projectionOrigin projection
+      owners=projectionOwners projection
+      actor=projectionActor projection
+      old=maybe Null (get `flip` "status") (listToMaybe previous)
   when (old /= str status) $ recordOn s db owners (at turn "id") ("call." <> status) (obj [("previous",old),("origin",origin),("error",get turn "error"),("warning",get turn "warning")]) actor (Just (if has turn "output_order" then "chatOutput" else at turn "agency_kind"))
   let details = selectPresent ["origin","batch_id","batch_members","agency_kind","slot","pulseId","output_at","output_order"] turn
   putValueOn db TurnDetails (at turn "id") details
-  let output = listToMaybe [get m "content" | m <- items (stateJSON state) "chat",get m "turn" == get turn "id",at m "role" == "agent"]
+  let output=projectionOutput projection
   archived <- if isNothing output && status `elem` ["done","warning"] && batchLeader typed == turnId typed then readJSON (archivePath s a ("runs/" <> at turn "id")) empty else pure empty
   executeOn db "INSERT INTO turns VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,output=COALESCE(excluded.output,turns.output),error=excluded.error WHERE turns.status IS NOT excluded.status OR turns.output IS NOT COALESCE(excluded.output,turns.output) OR turns.error IS NOT excluded.error" [sql (get turn "id"),SQLText a,sql (get turn "flow"),sql (get turn "input"),SQLText status,sql (fromMaybe (get archived "output") output),sql (get turn "error" `fallback` get turn "warning"),SQLInteger 0,sql (get turn "created")]
 turns :: Service -> IO [Value]

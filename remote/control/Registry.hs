@@ -287,39 +287,44 @@ selectedConnection registry = do
  require (not (boolean $ get (get row "connection") "beta") || boolean (get state "beta_accepted")) 409 "Accept the beta terms before pairing."
  pure $ get row "connection"
 
-relayChange :: Registry -> Value -> IO Value
-relayChange registry input = registryLock registry $ do
- state <- relayState registry
- require (get input "revision" == get state "revision") 409 "Relay settings changed. Reopen the selector."
+data RelayChange = RelayChange Value Bool
+planRelayChange :: Text -> Value -> Value -> Validation RelayChange
+planRelayChange key state input = do
+ check (get input "revision" == get state "revision") 409 "Relay settings changed. Reopen the selector."
  let action = at input "action"; identity = at input "id"
- row <- if T.null identity then pure Null else findRelay state identity
+ row <- if T.null identity then pure Null else maybe (Left (APIError 404 "Unknown relay server")) Right (findId identity (items state "servers"))
  (changed,reset) <- case action of
   "save" -> do
    let name = at input "name"
-   require (not (T.null $ T.strip name) && T.length name <= 200) 400 "Enter a name (up to 200 characters)."
-   connection <- validateConnection (get input "connection") `catch` \(APIError _ message) -> failure 409 message
-   base <- if row /= Null then pure row else do
-    key <- newId
-    pure $ obj [("id",str key),("archived",Bool False),("available",Bool True),("builtin",Bool False)]
-   let different = row /= Null && connection /= get row "connection"
+   check (not (T.null $ T.strip name) && T.length name <= 200) 400 "Enter a name (up to 200 characters)."
+   connection <- either (\(APIError _ message) -> Left (APIError 409 message)) Right (connectionValue (get input "connection"))
+   let base = if row /= Null then row else obj [("id",str key),("archived",Bool False),("available",Bool True),("builtin",Bool False)]
+       different = row /= Null && connection /= get row "connection"
        updated = merge (if different then remove ["address"] base else base) $ obj [("name",str $ T.strip name),("connection",connection)]
        rows = if row == Null then items state "servers" ++ [updated] else map (\old -> if get old "id" == get row "id" then updated else old) (items state "servers")
        selected = identity == at state "selected"
    pure (put "servers" (arr rows) $ if different && selected then put "beta_accepted" (Bool False) state else state, different && selected)
   "switch" -> do
-   require (row /= Null && not (boolean $ get row "archived") && boolean (get row "available")) 409 "This relay is unavailable."
+   check (row /= Null && not (boolean $ get row "archived") && boolean (get row "available")) 409 "This relay is unavailable."
    let reset = identity /= at state "selected"
    pure (put "selected" (str identity) $ if reset then put "beta_accepted" (Bool False) state else state,reset)
   value | value `elem` ["archive","restore"] -> do
-   require (row /= Null) 404 "Unknown relay server"
-   require (action /= "archive" || identity /= at state "selected") 409 "Switch servers before archiving this relay."
+   check (row /= Null) 404 "Unknown relay server"
+   check (action /= "archive" || identity /= at state "selected") 409 "Switch servers before archiving this relay."
    pure (put "servers" (arr $ map (\old -> if at old "id" == identity then put "archived" (Bool $ action == "archive") old else old) $ items state "servers") state,False)
   "accept-beta" -> do
-   require (get input "accepted" == Bool True) 400 "Accept the beta terms to continue."
+   check (get input "accepted" == Bool True) 400 "Accept the beta terms to continue."
    pure (put "beta_accepted" (Bool True) state,False)
-  _ -> failure 400 "Unknown relay action"
- require (not reset || get input "confirm_revoke" == Bool True) 409 "Confirm revoking all paired devices and remote corpora connections."
+  _ -> Left (APIError 400 "Unknown relay action")
+ check (not reset || get input "confirm_revoke" == Bool True) 409 "Confirm revoking all paired devices and remote corpora connections."
  let next = put "revision" (num $ int (get state "revision") + 1) changed
+ pure (RelayChange next reset)
+
+relayChange :: Registry -> Value -> IO Value
+relayChange registry input = registryLock registry $ do
+ state <- relayState registry
+ key <- newId
+ RelayChange next reset <- validated (planRelayChange key state input)
  modifyIORef' (registrySaved registry) $ put "relay_servers" next
  when reset $ do
   queueRelayCleanup registry

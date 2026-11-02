@@ -131,38 +131,63 @@ control s a payload = do
   target <- resolve s (at d "target") True
   receipt <$> changeRetirement s target retire (at d "reason")
  pause receipt paused=do i<-textField d "id" 80; receipt . obj . (:[]) . ("routine",) <$> R.setPaused s a i paused
-updateCorpora :: Service -> Value -> IO Value
-updateCorpora s d = do
- require (not (null (keys d)) && all (`elem` ["name","device","scope","revision","archived"]) (keys d)) 400 "Unknown corpora setting"
- cfg <- corporaSettings s
- require (get d "revision"==num (corporaRevision cfg)) 409 "Corpora changed. Read its settings again."
- forM_ [("name",200),("device",200),("scope",16000)] $ \(k,limit) -> when (has d k) $ require (case get d k of String value -> T.length (T.strip value)<=limit && (k=="scope" || not (T.null (T.strip value))); _ -> False) 400 ("Invalid "<>k)
- when (has d "archived") $ do
-  require (case get d "archived" of Bool _ -> True; _ -> False) 400 "archived must be a boolean"
-  when (boolean (get d "archived")) $ readMVar (serviceRuns s) >>= mapM_ (\r->writeIORef (runCancel r) True) . M.elems
+reviseCorpora :: Value -> CorporaConfig -> Validation CorporaConfig
+reviseCorpora d cfg = do
+ check (get d "revision"==num (corporaRevision cfg)) 409 "Corpora changed. Read its settings again."
+ forM_ [("name",200),("device",200),("scope",16000)] $ \(k,limit) -> when (has d k) $ check (case get d k of String value -> T.length (T.strip value)<=limit && (k=="scope" || not (T.null (T.strip value))); _ -> False) 400 ("Invalid "<>k)
+ when (has d "archived") $ check (case get d "archived" of Bool _ -> True; _ -> False) 400 "archived must be a boolean"
  let updated=cfg
       { corporaName=if has d "name" then Just (T.strip (at d "name")) else corporaName cfg
       , corporaDevice=if has d "device" then T.strip (at d "device") else corporaDevice cfg
       , corporaScope=if has d "scope" then T.strip (at d "scope") else corporaScope cfg
       , corporaRevision=corporaRevision cfg+1
       , corporaStatus=if has d "archived" then if boolean (get d "archived") then Archived else Paused else corporaStatus cfg }
+ pure updated
+
+updateCorpora :: Service -> Value -> IO Value
+updateCorpora s d = do
+ require (not (null (keys d)) && all (`elem` ["name","device","scope","revision","archived"]) (keys d)) 400 "Unknown corpora setting"
+ cfg <- corporaSettings s
+ updated <- validated (reviseCorpora d cfg)
+ when (boolean (get d "archived")) $ readMVar (serviceRuns s) >>= mapM_ (\r->writeIORef (runCancel r) True) . M.elems
  writeJSON (serviceRoot s </> "corpora-settings.json") updated
  modifyIORef' (servicePulse s) (put "running" (Bool (corporaStatus updated==Active)))
  DB.agents s >>= mapM_ (setManifests s)
  corporaIdentity s
+data LifecycleAction = PauseCorpora | ActivateCorpora deriving (Eq, Show)
+data LifecycleRequest = LifecycleRequest Text LifecycleAction Value
+data LifecycleChange = LifecycleReplay | LifecycleApplied CorporaConfig
+
+lifecycleRequest :: Value -> Validation LifecycleRequest
+lifecycleRequest d
+ | all (`elem` ["operation","action","revision"]) (keys d)
+ , T.length operation>=8, T.length operation<=80
+ , Just action <- lookup (at d "action") [("pause",PauseCorpora),("activate",ActivateCorpora)] = Right (LifecycleRequest operation action (get d "revision"))
+ | otherwise = Left (APIError 400 "Provide an operation ID and pause or activate")
+ where operation=at d "operation"
+
+changeLifecycle :: Bool -> LifecycleRequest -> CorporaConfig -> Validation LifecycleChange
+changeLifecycle running (LifecycleRequest operation action revision) cfg
+ | previous/=Null = check (previous==intent) 409 "Operation ID was reused" *> Right LifecycleReplay
+ | revision/=num (corporaRevision cfg) = Left (APIError 409 "Corpora changed. Refresh before trying again.")
+ | corporaStatus cfg==Archived = Left (APIError 409 "Restore this archived corpora before activating it")
+ | action==ActivateCorpora && corporaStatus cfg/=Active && running = Left (APIError 409 "Work is still stopping. Try again shortly.")
+ | otherwise = Right (LifecycleApplied cfg { corporaStatus=next, corporaRevision=corporaRevision cfg+1, corporaOperations=M.insert operation intent (corporaOperations cfg) })
+ where
+ previous=fromMaybe Null (M.lookup operation (corporaOperations cfg))
+ intent=arr [str (case action of PauseCorpora->"pause"; ActivateCorpora->"activate"),revision]
+ next=case action of PauseCorpora->Paused; ActivateCorpora->Active
+
 lifecycle :: Service -> Value -> IO Value
 lifecycle s d = do
- let operation=at d "operation"; action=at d "action"
- require (all (`elem` ["operation","action","revision"]) (keys d) && action `elem` ["pause","activate"] && T.length operation>=8 && T.length operation<=80) 400 "Provide an operation ID and pause or activate"
+ request <- validated (lifecycleRequest d)
  cfg <- corporaSettings s
- let previous=fromMaybe Null (M.lookup operation (corporaOperations cfg)); intent=arr [str action,get d "revision"]
- if previous/=Null then require (previous==intent) 409 "Operation ID was reused" >> corporaIdentity s else do
-  require (get d "revision"==num (corporaRevision cfg)) 409 "Corpora changed. Refresh before trying again."
-  require (corporaStatus cfg/=Archived) 409 "Restore this archived corpora before activating it"
-  runs <- readMVar (serviceRuns s)
-  when (action=="activate" && corporaStatus cfg/=Active) $ require (M.null runs) 409 "Work is still stopping. Try again shortly."
-  let updated=cfg { corporaStatus=if action=="pause" then Paused else Active, corporaRevision=corporaRevision cfg+1, corporaOperations=M.insert operation intent (corporaOperations cfg) }
-  writeJSON (serviceRoot s </> "corpora-settings.json") updated
-  modifyIORef' (servicePulse s) (put "running" (Bool (action=="activate")))
-  when (action=="pause") $ forM_ (M.elems runs) $ \r -> writeIORef (runCancel r) True
-  corporaIdentity s
+ runs <- readMVar (serviceRuns s)
+ change <- validated (changeLifecycle (not (M.null runs)) request cfg)
+ case change of
+  LifecycleReplay -> pure ()
+  LifecycleApplied updated -> do
+   writeJSON (serviceRoot s </> "corpora-settings.json") updated
+   modifyIORef' (servicePulse s) (put "running" (Bool (corporaStatus updated==Active)))
+   when (corporaStatus updated==Paused) $ forM_ (M.elems runs) $ \r -> writeIORef (runCancel r) True
+ corporaIdentity s

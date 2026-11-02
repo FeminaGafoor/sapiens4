@@ -33,13 +33,17 @@ saveDirectory s = writeJSON (serviceRoot s </> "agentpy/corpora/directory.json")
 resolve :: Service -> Text -> Bool -> IO Text
 resolve s name includeRetired = do
  rows <- DB.agents s
- let exact = filter ((==name) . (`at` "id")) rows
-     matches = if null exact then filter ((==T.toCaseFold name) . T.toCaseFold . (`at` "name")) rows else exact
- a <- case matches of
-  [row] -> pure (at row "id")
-  _ -> failure 400 "Sapi name must identify exactly one existing Sapi; use its ID"
+ a <- validated (resolveName name rows)
  unless includeRetired $ requireActive s a
  pure a
+resolveName :: Text -> [Value] -> Validation Text
+resolveName name rows = case matches of
+ [row] -> Right (at row "id")
+ _ -> Left (APIError 400 "Sapi name must identify exactly one existing Sapi; use its ID")
+ where
+ exact = filter ((==name) . (`at` "id")) rows
+ matches = if null exact then filter ((==T.toCaseFold name) . T.toCaseFold . (`at` "name")) rows else exact
+
 validName :: Value -> IO Text
 validName = parseValue 400 nameP
 validateManager :: Service -> Text -> Value -> IO Value
@@ -48,12 +52,15 @@ validateManager s a manager = do
  if a == chief then require (manager == Null) 400 "The main orchestrator cannot have a manager" >> pure Null else do
   parent <- if manager == Null then pure chief else resolve s (text manager) False
   d <- directory s
-  let check seen p | T.null p = pure ()
-                   | p `elem` seen = failure 400 "A Sapi cannot report to itself or one of its descendants"
-                   | not (has d p) = failure 400 "Parent Sapi must be registered first"
-                   | otherwise = check (p:seen) (at (get d p) "parent")
-  check [a] parent
+  validated (managerChain d [a] parent)
   pure (if T.null parent then Null else str parent)
+managerChain :: Value -> [Text] -> Text -> Validation ()
+managerChain directory seen parent
+ | T.null parent = Right ()
+ | parent `elem` seen = Left (APIError 400 "A Sapi cannot report to itself or one of its descendants")
+ | not (has directory parent) = Left (APIError 400 "Parent Sapi must be registered first")
+ | otherwise = managerChain directory (parent:seen) (at (get directory parent) "parent")
+
 assignManager :: Service -> Text -> Value -> IO ()
 assignManager s a parent = do
  d <- directory s
