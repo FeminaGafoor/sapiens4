@@ -71,6 +71,12 @@ parseValue code parser = validated . validateValue code parser
 field :: FromJSON a => Int -> Value -> Text -> IO a
 field code value key = decodeValue code (get value key)
 
+turnResult :: Either TurnControlError a -> IO a
+turnResult = either (failure 409 . message) pure
+ where
+ message TurnNotRetryable = "Only failed or interrupted batches can be retried"
+ message TurnAlreadyComplete = "Completed input cannot be cancelled"
+
 failure :: Int -> Text -> IO a
 failure n = throwIO . APIError n
 require :: Bool -> Int -> Text -> IO ()

@@ -48,7 +48,8 @@ validName :: Value -> IO Text
 validName = parseValue 400 nameP
 validateManager :: Service -> Text -> Value -> IO Value
 validateManager s a manager = do
- chief <- DB.mainAgent s
+ roster <- DB.population s
+ let chief = maybe "" (agentIdText . populationChief) roster
  if a == chief then require (manager == Null) 400 "The main orchestrator cannot have a manager" >> pure Null else do
   parent <- if manager == Null then pure chief else resolve s (text manager) False
   d <- directory s
@@ -87,14 +88,18 @@ ensureAgent s row = do
   let version = int (get v "schema_version"); backup = root </> ("legacy-state-v" ++ show version ++ ".json")
   backed <- doesFileExist backup
   unless backed $ copyFile p backup
-  let old = items v (if version == 1 then "jobs" else "turns")
-      migrate t = let base = selectPresent ["id","flow","status","created","error","warning"] t; input = get t (if version==1 then "task" else "input") in merge (put "input" input base) (if at t "status" == "budget_blocked" then obj [("status",str "interrupted"),("error",str "Former budget block removed; retry to continue")] else empty)
-      state = select ["agid","revision","chat","events","event_sequence","last_output"] v
-      migrateMessage m = if has m "job" then put "turn" (get m "job") (remove ["job"] m) else m
-  decodeValue 500 (merge state (obj [("schema_version",num 3),("turns",arr [migrate t | t <- old,at t "flow" `elem` ["chat","computer"]]),("chat",arr (map migrateMessage (items v "chat"))),("events",arr (map migrateMessage (items v "events")))])) >>= saveState s a
+  validated (migrateAgentState version v) >>= saveState s a
  d <- directory s
  unless (has d a) $ saveDirectory s (put a (obj [("parent",Null),("scope",str "")]) d)
  setManifests s row
+migrateAgentState :: Int -> Value -> Validation AgentState
+migrateAgentState version v =
+ let old = items v (if version == 1 then "jobs" else "turns")
+     migrate t = let base = selectPresent ["id","flow","status","created","error","warning"] t; input = get t (if version==1 then "task" else "input") in merge (put "input" input base) (if at t "status" == "budget_blocked" then obj [("status",str "interrupted"),("error",str "Former budget block removed; retry to continue")] else empty)
+     state = select ["agid","revision","chat","events","event_sequence","last_output"] v
+     migrateMessage m = if has m "job" then put "turn" (get m "job") (remove ["job"] m) else m
+ in validateValue 500 parseJSON (merge state (obj [("schema_version",num 3),("turns",arr [migrate t | t <- old,at t "flow" `elem` ["chat","computer"]]),("chat",arr (map migrateMessage (items v "chat"))),("events",arr (map migrateMessage (items v "events")))]))
+
 setManifests :: Service -> Value -> IO ()
 setManifests s row = do
  let a = at row "id"; root = agentRoot s a </> "manifests"
@@ -135,34 +140,48 @@ repairAvatars s = do
    else pure (at row "face")
   modifyIORef' used (face:)
  where sqlId row=SQLText (at row "id")
+data AgentDraft = AgentDraft
+ { draftName :: Text, draftRole :: Text
+ , preferredColor :: Maybe Text, preferredFace :: Maybe Text
+ }
+agentDraft :: Value -> Validation AgentDraft
+agentDraft d = do
+ name <- validateValue 400 nameP d
+ role <- validateValue 400 (textFieldP "role" 60) d
+ let color = get d "color" `fallback` str "#d8e5f4"; face = get d "face" `fallback` str "◠‿◠"
+ check (T.length (text color) == 7 && T.head (text color) == '#' && T.all isHexDigit (T.tail (text color))) 400 "color must be a six-digit hex color"
+ check (T.length (text face) >= 1 && T.length (text face) <= 24) 400 "face must contain 1–24 characters"
+ check (get d "kind" `fallback` str "sapi" == str "sapi") 400 "Use /api/groups to create a Group"
+ pure (AgentDraft name role (if has d "color" then Just (text color) else Nothing) (if has d "face" then Just (text face) else Nothing))
+
 createAgent :: Service -> Value -> IO Value
 createAgent s d = do
- name <- validName d
- role <- textField d "role" 60
- let color = get d "color" `fallback` str "#d8e5f4"; face = get d "face" `fallback` str "◠‿◠"
- require (T.length (text color) == 7 && T.head (text color) == '#' && T.all isHexDigit (T.tail (text color))) 400 "color must be a six-digit hex color"
- require (T.length (text face) >= 1 && T.length (text face) <= 24) 400 "face must contain 1–24 characters"
- require (get d "kind" `fallback` str "sapi" == str "sapi") 400 "Use /api/groups to create a Group"
+ AgentDraft name role color face <- validated (agentDraft d)
  a <- fresh "sapi_"
  parent <- validateManager s a (get d "manager")
  rows <- DB.agents s
  (randomFace,randomColor) <- randomAvatar (map (`at` "face") rows)
- let selected=if has d "face" && text face `notElem` map (`at` "face") rows then text face else randomFace
-     selectedColor=if has d "color" then color else str randomColor
+ let selected = case face of Just chosen | chosen `notElem` map (`at` "face") rows -> chosen; _ -> randomFace
+     selectedColor = fromMaybe randomColor color
  time <- now
- let row = obj [("id",str a),("name",str name),("role",str role),("color",selectedColor),("face",str selected),("created",str time)]
+ let row = toJSON (AgentProfile (AgentId a) name role selectedColor selected time)
  DB.addAgent s row
  dir <- directory s
  saveDirectory s (put a (obj [("parent",parent),("scope",str "")]) dir)
  ensureAgent s row
  DB.record s [a] a "sapi.created" (put "manager" parent row) "admin" Nothing
  pure row
+identityEdit :: Value -> Validation (Text,Text)
+identityEdit d = do
+ check (all (`elem` ["name","role","manager","execution"]) (keys d)) 400 "Unknown or inactive setting"
+ when (has d "execution") $ check (keys (get d "execution") == ["mode"] && at (get d "execution") "mode" `elem` ["normal","deep"]) 400 "Choose Normal or Deep work; call timeouts are managed globally"
+ name <- validateValue 400 nameP d
+ role <- validateValue 400 (textFieldP "role" 60) d
+ pure (name,role)
+
 updateAgent :: Service -> Text -> Value -> IO Value
 updateAgent s a d = do
- require (all (`elem` ["name","role","manager","execution"]) (keys d)) 400 "Unknown or inactive setting"
- when (has d "execution") $ require (keys (get d "execution") == ["mode"] && at (get d "execution") "mode" `elem` ["normal","deep"]) 400 "Choose Normal or Deep work; call timeouts are managed globally"
- name <- validName d
- role <- textField d "role" 60
+ (name,role) <- validated (identityEdit d)
  requireActive s a
  state <- agentState s a
  require (not (any ((`elem` [Queued,Running]) . turnStatus) (agentTurns state))) 409 "Wait for this Sapi's current turn before changing its identity"
@@ -188,11 +207,35 @@ retiredTeam s = do
  fmap catMaybes $ forM rows $ \row -> do
   cfg <- settings s (at row "id")
   pure $ if get cfg "retired_at" == Null then Nothing else Just (obj [("id",get row "id"),("name",get row "name"),("role",get row "role"),("retired_at",get cfg "retired_at"),("reason",get cfg "retirement_reason" `fallback` str ""),("manager",get (get d (at row "id")) "parent")])
+data RetirementError = ChiefRetirement | LongRetirementReason | ActiveGroupMembership | PendingHandoff | UnfinishedWork | ActiveReports deriving (Eq, Show)
+retirementResult :: Either RetirementError a -> IO a
+retirementResult = either reject pure
+ where
+ reject problem = case problem of
+  ChiefRetirement -> failure 400 "The main orchestrator cannot be retired"
+  LongRetirementReason -> failure 400 "reason must be text, at most 500 characters"
+  ActiveGroupMembership -> failure 409 "Remove this Sapi from active Groups before retiring it"
+  PendingHandoff -> failure 409 "Cancel the accepted handoff before retiring this Sapi"
+  UnfinishedWork -> failure 409 "Finish or cancel queued work before retiring this Sapi"
+  ActiveReports -> failure 409 "Reassign this Sapi's direct reports before retiring it"
+retirementRequest :: Text -> Text -> Text -> Either RetirementError ()
+retirementRequest chief target reason
+ | chief==target = Left ChiefRetirement
+ | T.length reason>500 = Left LongRetirementReason
+ | otherwise = Right ()
+retirementAllowed :: Text -> AgentState -> [Value] -> [Value] -> Either RetirementError ()
+retirementAllowed target state groups works
+ | any (\g -> str target `elem` items g "members" && not (boolean (get g "archived"))) groups = Left ActiveGroupMembership
+ | any (\call -> at call "addressedTo" == target && at call "state" == "Queued") (concatMap (`items` "calls") works) = Left PendingHandoff
+ | any (activeStatus . turnStatus) (agentTurns state) = Left UnfinishedWork
+ | otherwise = Right ()
+retirementSettings :: Bool -> Text -> Text -> Value -> Value
+retirementSettings retire reason time settings = merge settings (obj [("retired_at",if retire then str time else Null),("retirement_reason",str (if retire then reason else ""))])
+
 changeRetirement :: Service -> Text -> Bool -> Text -> IO Value
 changeRetirement s a retire reason = do
  chief <- DB.mainAgent s
- require (a /= chief) 400 "The main orchestrator cannot be retired"
- require (T.length reason <= 500) 400 "reason must be text, at most 500 characters"
+ retirementResult (retirementRequest chief a reason)
  current <- retired s a
  if current == retire then pure (obj [("id",str a),("retired",Bool retire),("changed",Bool False)]) else do
   state <- agentState s a
@@ -200,13 +243,11 @@ changeRetirement s a retire reason = do
   works <- DB.values s DB.Workloads
   d <- directory s
   when retire $ do
-   require (not (any (\g -> str a `elem` items g "members" && not (boolean (get g "archived"))) groups)) 409 "Remove this Sapi from active Groups before retiring it"
-   require (not (any (\c -> at c "addressedTo" == a && at c "state" == "Queued") (concatMap (`items` "calls") works))) 409 "Cancel the accepted handoff before retiring this Sapi"
-   require (not (any (activeStatus . turnStatus) (agentTurns state))) 409 "Finish or cancel queued work before retiring this Sapi"
-   forM_ (pairs d) $ \(child,entry) -> when (at entry "parent" == a) $ retired s child >>= \r -> require r 409 "Reassign this Sapi's direct reports before retiring it"
+   retirementResult (retirementAllowed a state groups works)
+   forM_ (pairs d) $ \(child,entry) -> when (at entry "parent" == a) $ retired s child >>= \r -> retirementResult (if r then Right () else Left ActiveReports)
   time <- now
   cfg <- settings s a
-  writeJSON (agentRoot s a </> "host.json") (merge cfg (obj [("retired_at",if retire then str time else Null),("retirement_reason",str (if retire then reason else ""))]))
+  writeJSON (agentRoot s a </> "host.json") (retirementSettings retire reason time cfg)
   unless retire $ do
    let parent = at (get d a) "parent"
    unless (T.null parent) $ retired s parent >>= \r -> when r (assignManager s a (str chief))

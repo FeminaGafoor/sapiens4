@@ -444,25 +444,28 @@ runDecision s run turn state = do
     _ -> pure ()
   readIORef logs >>= throwIO . RunFailure (exceptionText e))
  (output,) <$> readIORef logs
+reconcileCall :: [Value] -> WorkCall -> Validation WorkCall
+reconcileCall turns call = case findId (runIdText (callIdentity call)) turns of
+ Just turn | isNothing (callOutput call) -> do
+  status <- validateValue 500 parseJSON (get turn "status")
+  let failed progress = (setCallFields [("error",get turn "error")] call) { callProgress=progress (callNode call) }
+  pure $ case status of
+   Failed -> failed FailedAt
+   Interrupted -> failed InterruptedAt
+   Cancelled -> failed CancelledAt
+   Queued -> call
+   Running -> call
+   OutputPending -> call
+   Done -> call
+   Warning -> call
+ _ -> Right call
 reconcileWorks :: Service -> IO ()
 reconcileWorks s = do
  turns <- DB.turns s
  works <- readWorks s
- forM_ works $ \w -> do
-  updated <- forM (workCalls w) $ \c -> case findId (runIdText (callIdentity c)) turns of
-   Just t | isNothing (callOutput c) -> do
-    status <- field 500 t "status"
-    pure $ case status of
-     Failed -> (setCallFields [("error",get t "error")] c) { callProgress=FailedAt (callNode c) }
-     Interrupted -> (setCallFields [("error",get t "error")] c) { callProgress=InterruptedAt (callNode c) }
-     Cancelled -> (setCallFields [("error",get t "error")] c) { callProgress=CancelledAt (callNode c) }
-     Queued -> c
-     Running -> c
-     OutputPending -> c
-     Done -> c
-     Warning -> c
-   _ -> pure c
-  when (updated /= workCalls w) $ saveWork s w { workCalls=updated }
+ forM_ works $ \work -> do
+  updated <- validated (traverse (reconcileCall turns) (workCalls work))
+  when (updated /= workCalls work) $ saveWork s work { workCalls=updated }
 pendingWorks :: Service -> IO ()
 pendingWorks s = do
  works <- readWorks s

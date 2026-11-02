@@ -106,6 +106,8 @@ RSpec.describe 'Corpora lifecycle and device registry', :host do
     other.api('POST', '/api/remote/approve', {peer: pending['peer']})
     result = Contract.wait { status = host.api('GET', "/api/host/pair/#{pairing['id']}"); status if status['state'] != 'waiting' }
     expect(result['state']).to eq('approved'), result.inspect
+    cancelled_receipt = host.api('POST', "/api/host/pair/#{pairing['id']}", {})
+    expect(cancelled_receipt).to eq(result.merge('state' => 'cancelled'))
     identity = other.state['corpora']['id']
     route = "/api/host/corpora/#{identity}"
     expect(host.api('GET', route + '/api/state')['corpora']['id']).to eq(identity)
@@ -124,4 +126,23 @@ RSpec.describe 'Corpora lifecycle and device registry', :host do
     other.close if other
     relay.close if relay
   end
+  it 'keeps cancelled pairing terminal when the other device subsequently approves' do
+    relay = Relay.new
+    other = Host.new
+    invitation = other.api('POST', '/api/remote/pair', {relay: relay.url, token: relay.token}, status: 201)['qr']
+    pairing = host.api('POST', '/api/host/pair', invitation, status: 202)
+    pending = Contract.wait { other.api('GET', '/api/remote')['pending'] }
+    path = "/api/host/pair/#{pairing['id']}"
+    cancelled = host.api('POST', path, {})
+    expect(cancelled).to include('state' => 'cancelled', 'id' => pairing['id'], 'code' => pairing['code'])
+    other.api('POST', '/api/remote/approve', {peer: pending['peer']})
+    expect(host.api('POST', path, {})).to eq(cancelled)
+    expect(host.api('GET', path)).to eq(cancelled)
+    host.restart
+    expect(host.api('GET', '/api/host')['corpora'].none? { |c| c['location'] == 'Remote' }).to eq(true)
+  ensure
+    other.close if other
+    relay.close if relay
+  end
+
 end

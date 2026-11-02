@@ -33,7 +33,7 @@ data Registry = Registry
  , registryGuard :: MVar (), registrySaved :: IORef Value
  , registryLocals :: IORef (M.Map Text (Service, Bridge, IO ()))
  , registryClients :: IORef (M.Map Text Client)
- , registryPending :: IORef (M.Map Text Value)
+ , registryPending :: IORef (M.Map Text Pairing)
  , registryPairClients :: IORef (M.Map Text Client)
  , registryClosed :: IORef Bool
  }
@@ -167,18 +167,45 @@ registryCreate registry input = do
   metadata <- Service.corporaIdentity service
   pure $ put "location" (str "Local") metadata
 
+data Pairing = Pairing Text Text PairingProgress
+data PairingProgress = AwaitingApproval | PairApproved Value | PairFailed Text PairingProgress | PairCancelled PairingProgress
+data PairingEvent = ApprovePair Value | FailPair Text | CancelPair
+instance ToJSON Pairing where
+ toJSON (Pairing identity code progress) = merge (obj [("id",str identity),("code",str code)]) (fields progress)
+  where
+  fields AwaitingApproval = obj [("state",str "waiting")]
+  fields (PairApproved corpora) = obj [("state",str "approved"),("corpora",put "location" (str "Remote") corpora)]
+  fields (PairFailed reason prior) = merge (fields prior) (obj [("state",str "failed"),("error",str reason)])
+  fields (PairCancelled prior) = put "state" (str "cancelled") (fields prior)
+pairWaiting :: Pairing -> Bool
+pairWaiting (Pairing _ _ AwaitingApproval) = True
+pairWaiting _ = False
+pairCancelled :: Pairing -> Bool
+pairCancelled (Pairing _ _ (PairCancelled _)) = True
+pairCancelled _ = False
+advancePairing :: PairingEvent -> Pairing -> Pairing
+advancePairing event pairing@(Pairing identity code progress) = Pairing identity code $ case event of
+ CancelPair | pairCancelled pairing -> progress
+ CancelPair -> PairCancelled progress
+ FailPair _ | pairCancelled pairing -> progress
+ FailPair reason -> PairFailed reason progress
+ ApprovePair _ | pairCancelled pairing -> progress
+ ApprovePair corpora -> PairApproved corpora
+canApprovePairing :: Bool -> Maybe Pairing -> Bool
+canApprovePairing closed pending = not closed && maybe False (not . pairCancelled) pending
+
 beginPair :: Registry -> Value -> IO Value
 beginPair registry input = do
  client <- invitation input
  identity <- newId
  config <- readMVar (clientConfig client)
  code <- confirmationCode (get input "desktop") (get config "public") (at input "room")
- let item = obj [("id",str identity),("state",str "waiting"),("code",str code)]
+ let item = Pairing identity code AwaitingApproval
  registryLock registry $ do
   saved <- readIORef (registrySaved registry)
   require (not $ boolean $ get (get saved "relay_servers") "reset_pending") 409 "Relay switch interrupted. Restart the app to finish."
   pending <- readIORef (registryPending registry)
-  require (all ((/= "waiting") . (`at` "state")) pending) 409 "A connection is already waiting for approval"
+  require (all (not . pairWaiting) pending) 409 "A connection is already waiting for approval"
   writeIORef (registryPending registry) (M.singleton identity item)
   modifyIORef' (registryPairClients registry) (M.insert identity client)
  let run = do
@@ -186,7 +213,7 @@ beginPair registry input = do
       registryLock registry $ do
        closed <- readIORef (registryClosed registry)
        pending <- readIORef (registryPending registry)
-       unless (closed || maybe True ((== "cancelled") . (`at` "state")) (M.lookup identity pending)) $ do
+       when (canApprovePairing closed (M.lookup identity pending)) $ do
         saved <- readIORef (registrySaved registry)
         opened <- readIORef (registryLocals registry)
         let corporaId = at corpora "id"
@@ -194,13 +221,12 @@ beginPair registry input = do
         configValue <- readMVar (clientConfig client)
         writeIORef (registrySaved registry) $ put "remotes" (put corporaId configValue $ get saved "remotes") saved
         saveRegistry registry
-        modifyIORef' (registryPending registry) (M.adjust (mergeWith $ obj [("state",str "approved"),("corpora",put "location" (str "Remote") corpora)]) identity)
+        modifyIORef' (registryPending registry) (M.adjust (advancePairing (ApprovePair corpora)) identity)
      failed (errorValue :: SomeException) = registryLock registry $
-      modifyIORef' (registryPending registry) $ M.adjust (\current -> if at current "state" == "cancelled" then current else merge current $ obj [("state",str "failed"),("error",str $ exceptionMessage errorValue)]) identity
+      modifyIORef' (registryPending registry) $ M.adjust (advancePairing (FailPair (exceptionMessage errorValue))) identity
      finish = closeClient client >> registryLock registry (modifyIORef' (registryPairClients registry) (M.delete identity))
  void $ forkIO $ (run `catch` failed) `finally` finish
- pure item
- where mergeWith value current = merge current value
+ pure (toJSON item)
 
 exceptionMessage :: SomeException -> Text
 exceptionMessage errorValue = case fromException errorValue of
@@ -211,12 +237,12 @@ pairing :: Registry -> Text -> Bool -> IO Value
 pairing registry identity cancelPairing = registryLock registry $ do
  pending <- readIORef (registryPending registry)
  item <- maybe (failure 404 "Unknown pairing") pure (M.lookup identity pending)
- if not cancelPairing then pure item else do
-  let updated = put "state" (str "cancelled") item
+ if not cancelPairing then pure (toJSON item) else do
+  let updated = advancePairing CancelPair item
   modifyIORef' (registryPending registry) (M.insert identity updated)
   clients <- readIORef (registryPairClients registry)
   mapM_ revokeClient (M.lookup identity clients)
-  pure updated
+  pure (toJSON updated)
 
 closeRegistry :: Registry -> IO ()
 closeRegistry registry = do
@@ -360,7 +386,7 @@ cleanupRelays registry relay identity = do
 
 resetConnections :: Registry -> Value -> IO ()
 resetConnections registry connection = do
- modifyIORef' (registryPending registry) $ M.map $ put "state" (str "cancelled")
+ modifyIORef' (registryPending registry) $ M.map (advancePairing CancelPair)
  clients <- atomicModifyIORef' (registryClients registry) (\current -> (M.empty,current))
  pending <- readIORef (registryPairClients registry)
  mapM_ revokeClient (M.elems clients ++ M.elems pending)

@@ -61,8 +61,8 @@ trimConversation s a = do
  when (final/=state) (decodeValue 500 final >>= saveState s a)
 submitTurn :: Service -> Text -> Value -> IO Value
 submitTurn s a d = do
- let raw=get d "text" `fallback` str ""; input=T.strip (text raw); flowValue=get d "flow" `fallback` str "chat"
- require (case raw of String t -> T.length t<=16000; _ -> False) 400 "Message must be text, at most 16000 characters"
+ input <- either (failure 400) pure (messageText (get d "text"))
+ let flowValue=get d "flow" `fallback` str "chat"
  attachments <- resolveAttachments s a (get d "attachments" `fallback` arr []) True
  require (not (T.null input) || not (null attachments)) 400 "Write a message or attach a file"
  flow <- decodeValue 400 flowValue
@@ -81,14 +81,18 @@ submitTurn s a d = do
    i <- if has d "workload" then D.clarify s a (at d "workload") message else do
     i <- newId
     time <- now
-    let turn=toJSON (newTurn (RunId i) flow message time Null True)
-        msg=obj [("role",str "user"),("content",str message),("turn",str i),("time",str time),("origin",Null)]
-    modifyState s a $ \state -> merge state (obj [("turns",arr (items state "turns"++[turn])),("chat",arr (items state "chat"++[msg]))])
+    agentState s a >>= saveState s a . enqueueTurn (RunId i) flow message time
     pure i
    DB.message s i input attachments
    DB.project s a
    trimConversation s a
    pure (obj [("id",str i),("agent",str a),("status",str "queued"),("flow",toJSON flow)])
+enqueueTurn :: RunId -> Flow -> Text -> Text -> AgentState -> AgentState
+enqueueTurn identity flow input time state = mapStateFields (appendItems "chat" [message])
+ state { agentTurns=agentTurns state ++ [newTurn identity flow input time Null True] }
+ where
+ message = obj [("role",str "user"),("content",str input),("turn",toJSON identity),("time",str time),("origin",Null)]
+
 turnAction :: Service -> Text -> Text -> Text -> IO Value
 turnAction s a identity rawAction = do
  requireActive s a
@@ -97,27 +101,30 @@ turnAction s a identity rawAction = do
  turn <- maybe (failure 404 "Unknown active turn") pure (find ((==RunId identity) . turnId) (agentTurns state))
  work <- D.findWork s (RunId identity)
  require (not (maybe False (any ((==Just (RunId identity)) . D.callParent) . D.workCalls . fst) work)) 409 "This request was delegated; use the recipient call controls"
- let leader=batchLeader turn
-     update f = mapTurns (\t -> if batchLeader t == leader then f t else t)
- case action of
-  Retry -> do
-   require (retryableStatus (turnStatus turn)) 409 "Only failed or interrupted batches can be retried"
-   saveState s a (update retryTurn state)
-  Cancel -> do
-   require (turnStatus turn `notElem` [Done,OutputPending]) 409 "Completed input cannot be cancelled"
-   runs <- readMVar (serviceRuns s)
-   case M.lookup leader runs of
-    Just run -> writeIORef (runCancel run) True
-    Nothing -> saveState s a (update (\t -> t { turnStatus = Cancelled }) state)
+ runs <- readMVar (serviceRuns s)
+ change <- turnResult (controlTurn action (M.member (batchLeader turn) runs) turn state)
+ case change of
+  SaveTurns changed -> saveState s a changed
+  StopTurn identity -> forM_ (M.lookup identity runs) $ \run -> writeIORef (runCancel run) True
  DB.project s a
  trimConversation s a
  D.reconcileWorks s
  updated <- agentState s a
  pure (obj [("id",str identity),("status",maybe Null (toJSON . turnStatus) (find ((==RunId identity) . turnId) (agentTurns updated)))])
+data TurnChange = SaveTurns AgentState | StopTurn RunId
+controlTurn :: TurnAction -> Bool -> Turn -> AgentState -> Either TurnControlError TurnChange
+controlTurn action running turn state = do
+ validateTurnAction action (turnStatus turn)
+ let leader = batchLeader turn
+     update f = mapTurns (\t -> if batchLeader t == leader then f t else t) state
+ pure $ case action of
+  Retry -> SaveTurns (update retryTurn)
+  Cancel | running -> StopTurn leader
+  Cancel -> SaveTurns (update (\t -> t { turnStatus=Cancelled }))
+
 recover :: Service -> Text -> IO ()
 recover s a = do
- modifyTurns s a $ \t -> if turnStatus t == Running then
-  (withTurnFields (put "error" (str "Runner stopped before saving a reply; inspect effects before retrying")) t) { turnStatus = Interrupted } else t
+ modifyTurns s a recoverTurn
  DB.project s a
 data RunOutcome = RunCompleted Text [Value] | RunRejected Text [Value] | RunStopped Text [Value]
 

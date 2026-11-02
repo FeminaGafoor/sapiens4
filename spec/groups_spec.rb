@@ -257,4 +257,25 @@ RSpec.describe 'Group collaboration contracts' do
     expect(host.control(@member, 'workspace')['tabs']).to be_empty
     expect(host.control(@member, 'workspace', group: @group['id'])['tabs'].first['url']).to eq('https://example.com/shared')
   end
+  it 'rejects removal of the designated Lead without changing persisted membership' do
+    before = group
+    expect(host.request('PUT', path, {revision: before['revision'], members: [@member, @outsider]}).first).to eq(400)
+    expect(group).to eq(before)
+    host.restart
+    expect(group).to eq(before)
+  end
+
+  it 'persists leadership and membership together while retaining unknown group metadata' do
+    saved = group.merge('extension' => {'keep' => [1, 'two']})
+    SQLite3::Database.open(File.join(host.root, 'corpora.sqlite3')) do |db|
+      db.execute('UPDATE groups SET value=? WHERE id=?', [JSON.generate(saved), @group['id']])
+    end
+    edit(lead: @outsider, members: [@member, @outsider])
+    updated = group
+    expect(updated).to include('lead' => @outsider, 'members' => [@member, @outsider], 'extension' => saved['extension'])
+    expect(updated['strip_order'].first).to eq(@outsider)
+    host.restart
+    expect(group).to eq(updated)
+  end
+
 end

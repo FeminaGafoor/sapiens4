@@ -109,15 +109,29 @@ replyFrame :: Value -> Text -> Value -> IO Value
 replyFrame config ident value = do
  expires <- (+86390) <$> seconds
  pack (get config "private") (get config "peer") (at config "room") DesktopToPhone (obj [("id",str ident),("expires",toJSON expires),("kind",str "response"),("result",value)])
+data PairingApproval = PairingApproval { approvedConfig :: Value, approvalRequest :: Text }
+planApproval :: Double -> Value -> Value -> Validation PairingApproval
+planApproval time input config = do
+ let pending = get config "pending"
+ check (pending/=Null && expiry (get config "expires") > time && get input "peer" == get pending "peer") 409 "Pairing expired or phone changed; generate a new QR"
+ let paired = merge (remove ["secret","invitation"] config) (obj [("peer",get pending "peer"),("paired_at",toJSON time),("device_info",fallback (get pending "device_info") empty),("pending",Null)])
+ pure (PairingApproval paired (at pending "id"))
+
+pairingProof :: Double -> Bool -> Value -> Value -> Value -> Validation Value
+pairingProof time proof config peer message = do
+ check (at message "kind"=="pair" && expiry (get config "expires")>time && has message "secret" && proof) 400 "Invalid pairing proof"
+ let pending = get config "pending"
+ check (pending==Null || get pending "peer"==peer) 400 "Another phone is awaiting approval"
+ pure (put "pending" (obj [("peer",peer),("id",get message "id"),("device_info",cleanDeviceInfo (get message "device_info"))]) config)
+
 approvePairing :: Bridge -> Value -> IO Value
 approvePairing b input = modifyMVar (bridgeConfig b) $ \config -> do
  time <- seconds
- let pending = get config "pending"
- require (pending/=Null && expiry (get config "expires") > time && get input "peer" == get pending "peer") 409 "Pairing expired or phone changed; generate a new QR"
+ approval <- validated (planApproval time input config)
  void (request (at config "relay") ("/api/rooms/"<>at config "room"<>"/trust") (at config "token") "POST" (Just empty))
  identity <- Service.corporaIdentity (bridgeService b)
- let paired = merge (remove ["secret","invitation"] config) (obj [("peer",get pending "peer"),("paired_at",toJSON time),("device_info",fallback (get pending "device_info") empty),("pending",Null)])
- accept <- replyFrame paired (at pending "id") (obj [("paired",Bool True),("corpora",identity)])
+ let paired = approvedConfig approval
+ accept <- replyFrame paired (approvalRequest approval) (obj [("paired",Bool True),("corpora",identity)])
  let updated = put "accept" accept paired
  saveConfig b updated
  pure (updated,obj [("approved",Bool True)])
@@ -181,10 +195,7 @@ processFrame b config frame = do
  time <- seconds
  if get config "peer"==Null then do
   proof <- constantEqual (at message "secret") (at config "secret")
-  require (at message "kind"=="pair" && expiry (get config "expires")>time && has message "secret" && proof) 400 "Invalid pairing proof"
-  let pending = get config "pending"
-  require (pending==Null || get pending "peer"==peer) 400 "Another phone is awaiting approval"
-  let updated = put "pending" (obj [("peer",peer),("id",get message "id"),("device_info",cleanDeviceInfo (get message "device_info"))]) config
+  updated <- validated (pairingProof time proof config peer message)
   saveConfig b updated
   pure (updated,Nothing)
  else do

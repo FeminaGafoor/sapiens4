@@ -1,7 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 module Routines
  ( Minutes, Routine(..), readRoutines, storeRoutine, initializeRoutines
- , save, setPaused, command, receipt, acknowledge, dispatch
+ , RoutineEdit(..), save, setPaused, command, receipt, acknowledge, dispatch
  ) where
 
 import Control.Monad
@@ -60,32 +60,52 @@ initializeRoutines s = do
   let group=findId (at r "owner") groups
       count=case group of Just g->length [t | t<-items g "tasks",get t "routine"==get r "id"]; Nothing->length [w | w<-works,get (get w "origin") "routine"==get r "id"]
   void (DB.saveRoutine s (merge r (obj [("runCount",num count),("paused",Bool (count>=1000))])))
-save :: Service -> Text -> Value -> Value -> Maybe Text -> Maybe Int -> Maybe Text -> IO Value
-save s owner minutes execution identity previous source = do
- body <- textField (obj [("prompt",execution)]) "prompt" 16000
- interval <- decodeValue 400 minutes
- require (body `notElem` ["PROMPT","TODO"]) 400 "Replace PROMPT with the work to execute"
+data RoutineEdit = AddRoutine (Maybe Text) | EditRoutine Text (Maybe Int)
+data RoutineWrite = NewRoutine (Maybe Text) | ReviseRoutine Value
+data RoutineSelection = RoutineReplay Value | RoutineChange RoutineWrite
+
+routineInput :: Value -> Value -> Validation (Text,Minutes)
+routineInput minutes execution = do
+ body <- validateValue 400 (textFieldP "prompt" 16000) (obj [("prompt",execution)])
+ interval <- validateValue 400 parseJSON minutes
+ check (body `notElem` ["PROMPT","TODO"]) 400 "Replace PROMPT with the work to execute"
+ pure (body,interval)
+selectRoutine :: RoutineEdit -> Value -> Text -> [Value] -> Validation RoutineSelection
+selectRoutine edit minutes body routines = case edit of
+ EditRoutine identity previous -> do
+  existing <- maybe (Left (APIError 404 "Unknown Scheduled Routine in this conversation")) Right (findId identity routines)
+  forM_ previous $ \old -> check (int (get existing "minutes")==old) 409 "Frequency changed; open Edit again for the current routine"
+  pure (RoutineChange (ReviseRoutine existing))
+ AddRoutine source -> case source >>= \call -> find (\r -> get r "sourceCall" == str call && get r "minutes" == minutes && at r "prompt" == body) routines of
+  Just existing -> Right (RoutineReplay existing)
+  Nothing -> Right (RoutineChange (NewRoutine source))
+routineValue :: UTCTime -> Text -> Minutes -> Text -> RoutineWrite -> Value
+routineValue time owner interval body change = merge initial (obj
+ [("owner",str owner),("title",str (T.unwords (take 7 (T.words body)))),("minutes",toJSON interval)
+ ,("prompt",str body),("updated",str (timestamp time)),("nextDue",str (timestamp (addUTCTime (intervalSeconds interval) time)))])
+ where
+ initial = case change of
+  ReviseRoutine existing -> existing
+  NewRoutine source -> obj ([("created",str (timestamp time)),("runCount",num 0),("paused",Bool False)] ++ [("sourceCall",str call) | call <- maybeToList source])
+
+save :: Service -> Text -> Value -> Value -> RoutineEdit -> IO Value
+save s owner minutes execution edit = do
+ (body,interval) <- validated (routineInput minutes execution)
  if "group_" `T.isPrefixOf` owner then do
   groups <- DB.values s DB.Groups
   g <- maybe (failure 404 "Unknown Group") pure (findId owner groups)
   require (not (boolean (get g "archived"))) 409 "Restore this Group before changing its work"
  else requireActive s owner
  routines <- filter ((==owner) . (`at` "owner")) <$> DB.values s DB.ScheduledRoutines
- let existing = identity >>= (`findId` routines)
- when (isJust identity) $ require (isJust existing) 404 "Unknown Scheduled Routine in this conversation"
- case (existing,previous) of
-  (Just r,Just old) -> require (int (get r "minutes")==old) 409 "Frequency changed; open Edit again for the current routine"
-  _ -> pure ()
- let prior = if isNothing identity && isJust source then find (\r -> get r "sourceCall" == maybe Null str source && get r "minutes" == minutes && at r "prompt" == body) routines else Nothing
- case prior of
-  Just r -> pure r
-  Nothing -> do
-   t <- getCurrentTime
-   let initial = fromMaybe (obj ([("created",str (timestamp t)),("runCount",num 0),("paused",Bool False)]++[("sourceCall",str c) | c <- maybeToList source])) existing
-       value=merge initial (obj [("owner",str owner),("title",str (T.unwords (take 7 (T.words body)))),("minutes",minutes),("prompt",str body),("updated",str (timestamp t)),("nextDue",str (timestamp (addUTCTime (intervalSeconds interval) t)))])
-   r <- DB.saveRoutine s value
-   DB.record s [owner] (at r "id") (if isJust identity then "routine.updated" else "routine.created") r "admin" Nothing
-   pure r
+ selected <- validated (selectRoutine edit minutes body routines)
+ case selected of
+  RoutineReplay existing -> pure existing
+  RoutineChange change -> do
+   time <- getCurrentTime
+   result <- DB.saveRoutine s (routineValue time owner interval body change)
+   let action = case change of NewRoutine _ -> "routine.created"; ReviseRoutine _ -> "routine.updated"
+   DB.record s [owner] (at result "id") action result "admin" Nothing
+   pure result
 setPaused :: Service -> Text -> Text -> Bool -> IO Value
 setPaused s owner identity paused = do
  routines <- readRoutines s
@@ -101,8 +121,8 @@ command s owner input attached = case C.interpret attached (T.unpack input) of
  Left error -> failure 400 (T.pack error)
  Right Nothing -> pure Nothing
  Right (Just c) -> Just <$> case c of
-  C.Create interval body -> save s owner (toJSON interval) (str (T.pack body)) Nothing Nothing Nothing
-  C.Edit i old interval body -> save s owner (toJSON interval) (str (T.pack body)) (Just (T.pack i)) (Just (fromIntegral old)) Nothing
+  C.Create interval body -> save s owner (toJSON interval) (str (T.pack body)) (AddRoutine Nothing)
+  C.Edit i old interval body -> save s owner (toJSON interval) (str (T.pack body)) (EditRoutine (T.pack i) (Just (fromIntegral old)))
   C.SetPaused i paused -> setPaused s owner (T.pack i) paused
 receipt :: Value -> Text -> Text
 receipt r input = action <> " @"<>at r "id"<>" ( "<>at r "title"<>" )\nStatus: "<>status<>" · "<>jsonText (get r "runCount")<>"/1000 runs\nFrequency: every "<>jsonText (get r "minutes")<>" minutes\nExecute: "<>at r "prompt"

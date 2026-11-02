@@ -126,4 +126,22 @@ RSpec.describe 'Domain validation through saved installation fixtures', :host do
     expect(body['error']).not_to be_empty
     expect(host.request('GET', '/api/health').first).to eq(200)
   end
+  it 'migrates schema two before recovery and retains the original backup across restarts' do
+    host.stop
+    old = @state.merge('schema_version' => 2, 'turns' => [@turn.merge(status: 'budget_blocked')],
+      'chat' => [{'role' => 'user', 'content' => 'Saved request', 'job' => 'fixture-call'}])
+    Contract.atomic_json(@file, old)
+    host.start
+    saved = JSON.parse(File.read(@file))
+    expect(saved['schema_version']).to eq(3)
+    expect(saved['turns'].first).to include('id' => 'fixture-call', 'status' => 'interrupted')
+    expect(saved['chat'].first).to include('turn' => 'fixture-call')
+    expect(saved['chat'].first).not_to have_key('job')
+    backup = File.join(File.dirname(@file), 'legacy-state-v2.json')
+    expect(JSON.parse(File.read(backup))).to eq(JSON.parse(JSON.generate(old)))
+    host.restart
+    expect(JSON.parse(File.read(backup))).to eq(JSON.parse(JSON.generate(old)))
+    expect(host.calls).to be_empty
+  end
+
 end

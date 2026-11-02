@@ -17,6 +17,7 @@ import Database.SQLite.Simple hiding (withTransaction)
 import qualified Database.SQLite.Simple as SQLite
 import System.FilePath
 import Text.Read (readMaybe)
+import qualified Data.List.NonEmpty as NE
 import Types
 
 -- Only these tables contain JSON documents; callers cannot interpolate SQL names.
@@ -100,11 +101,17 @@ initialize s = connection s $ \db -> do
  when (version `elem` [1,2]) $ execute_ db "INSERT OR IGNORE INTO turns SELECT * FROM jobs WHERE flow IN ('chat','computer')"
  execute_ db "PRAGMA user_version=8"
 agents :: Service -> IO [Value]
-agents s = queryRows s "SELECT * FROM agents ORDER BY created,id" ["id","name","role","color","face","created"] []
+agents s = map toJSON <$> agentProfiles s
+agentProfiles :: Service -> IO [AgentProfile]
+agentProfiles s = queryRows s "SELECT * FROM agents ORDER BY created,id" ["id","name","role","color","face","created"] [] >>= traverse (decodeValue 500)
 agent :: Service -> Text -> IO Value
 agent s i = agents s >>= maybe (failure 404 "Unknown Sapi") pure . findId i
 mainAgent :: Service -> IO Text
-mainAgent s = maybe "" (`at` "id") . listToMaybe <$> agents s
+mainAgent s = do
+ roster <- population s >>= maybe (failure 500 "CORPORA has no Chief Sapi") pure
+ pure (agentIdText (populationChief roster))
+population :: Service -> IO (Maybe Population)
+population s = fmap populationRoster . NE.nonEmpty . map profileId <$> agentProfiles s
 addAgent :: Service -> Value -> IO ()
 addAgent s v = executeSQL s "INSERT INTO agents VALUES (?,?,?,?,?,?)" [sql (get v k) | k <- ["id","name","role","color","face","created"]]
 attachments :: Service -> Text -> IO [Value]

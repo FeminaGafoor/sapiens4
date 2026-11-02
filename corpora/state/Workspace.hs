@@ -134,6 +134,20 @@ workspaceControl s a action d = do
    if action=="bookmark" then (\identity -> BookmarkTab identity tab) <$> newId else validated (workspaceEdit tab action d)
  persistWorkspace s a (editWorkspace sequence tid edit w) prefs
  workspace s a
+data BrowserObservation = BrowserObservation
+ { observedTitle :: Text, observedError :: Text, observedBack :: Bool
+ , observedForward :: Bool, observedLoading :: Bool
+ }
+-- Native clients historically omit fields; keep their established defaults here.
+browserObservation :: Value -> BrowserObservation
+browserObservation input = BrowserObservation (at input "title") (T.take 1000 (at input "error"))
+ (boolean (get input "can_back")) (boolean (get input "can_forward")) (boolean (get input "loading"))
+observeTab :: BrowserObservation -> Value -> Value -> Value
+observeTab observation destination tab = merge (remove ["path"] tab) $ merge destination $ obj
+ ([("can_back",Bool (observedBack observation)),("can_forward",Bool (observedForward observation))
+ ,("loading",Bool (observedLoading observation)),("error",str (observedError observation))]
+ ++ [("title",str (T.take 500 (observedTitle observation))) | not (T.null (T.strip (observedTitle observation)))])
+
 workspaceObserved :: Service -> Text -> Value -> IO Value
 workspaceObserved s a d = do
  prefs <- DB.singleton s DB.Preferences
@@ -141,8 +155,7 @@ workspaceObserved s a d = do
  case findId (at d "id") tabs of
   Just tab | get d "seq" == get (get tab "command") "seq" -> do
    dest <- destination s a (obj [("url",get d "url")]) False
-   let title = at d "title"; value = merge dest (obj ([(k,Bool (boolean (get d k))) | k <- ["can_back","can_forward","loading"]] ++ [("error",str (T.take 1000 (at d "error")))] ++ [("title",str (T.take 500 title)) | not (T.null (T.strip title))]))
-       updated = merge (remove ["path"] tab) value
+   let updated = observeTab (browserObservation d) dest tab
    when (updated /= tab) $ persistWorkspace s a (put "tabs" (arr [if get t "id" == get tab "id" then updated else t | t <- tabs]) w) prefs
    pure (obj [("saved",Bool True)])
   _ -> pure (obj [("saved",Bool False)])
