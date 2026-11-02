@@ -46,24 +46,6 @@ class Desktop
   end
 
   def tree(wait_for_window: false)
-    flatten = lambda do |node, path|
-      [node.reject { |key, _| key == 'children' }.merge('path' => path)] + node.fetch('children', []).each_with_index.flat_map do |child, i|
-        flatten.call(child, path.empty? ? i.to_s : "#{path}.#{i}")
-      end
-    end
-    unless Gem.win_platform?
-      # Inspecting macOS menu descendants can block AppKit in system keyboard services.
-      # Discover current window paths, then read only the controls the tests use.
-      windows = control('find', '--role', 'AXWindow', '--depth', '1', '--limit', '10000')
-      raise 'Accessibility window discovery truncated' if windows['truncated']
-      return windows.fetch('matches').flat_map do |window|
-        path = window.fetch('path')
-        result = control('tree', '--path', path, '--depth', '50', '--max-nodes', '10000')
-        raise 'Accessibility tree truncated' if result['truncated']
-        raise 'Accessibility window changed during discovery' unless result.fetch('tree')['role'] == 'AXWindow'
-        flatten.call(result.fetch('tree'), path)
-      end
-    end
     # WebView2 can invalidate a read while replacing its accessibility tree.
     # Retry only observations, never input, and still fail persistent errors.
     result = Contract.wait(description: 'stable accessibility tree') do
@@ -77,6 +59,11 @@ class Desktop
       end
     end
     raise 'Accessibility tree truncated' if result['truncated']
+    flatten = lambda do |node, path|
+      [node.reject { |key, _| key == 'children' }.merge('path' => path)] + node.fetch('children', []).each_with_index.flat_map do |child, i|
+        flatten.call(child, path.empty? ? i.to_s : "#{path}.#{i}")
+      end
+    end
     result.fetch('tree').fetch('children', []).each_with_index.flat_map do |child, index|
       child['role'] == 'AXWindow' ? flatten.call(child, index.to_s) : []
     end
