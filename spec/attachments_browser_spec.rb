@@ -1,5 +1,5 @@
 require 'tmpdir'
-require_relative 'support/desktop'
+require_relative 'support/file_picker'
 
 RSpec.describe 'Attaching files from the desktop picker', :desktop do
   PIXEL_PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='.unpack1('m0')
@@ -20,21 +20,6 @@ RSpec.describe 'Attaching files from the desktop picker', :desktop do
     desktop.find('Open', role: 'AXButton')
   end
 
-  # The open panel is native: navigate with Go to Folder, then confirm with Open.
-  def choose(path)
-    desktop.control('activate')
-    desktop.key('command+shift+g')
-    Contract.wait(description: 'Go to Folder field focus') do
-      %w[AXTextField AXComboBox].include?(desktop.control('focused')['role'])
-    rescue RuntimeError => error
-      raise unless error.message.include?('"code":"focus_unavailable"')
-      false
-    end
-    desktop.control('paste', '--text', path)
-    desktop.key('return')
-    desktop.press('Open')
-  end
-
   def draft(name)
     Contract.wait(description: "saved draft #{name}") do
       host.state.fetch('attachment_drafts', {}).fetch(chief, []).find { |item| item['name'] == name }
@@ -49,7 +34,7 @@ RSpec.describe 'Attaching files from the desktop picker', :desktop do
       path = File.join(@files, file[:name])
       File.binwrite(path, file[:bytes])
       open_picker(file[:kind])
-      choose(path)
+      choose_file(path)
       desktop.see(file[:name])
       expect(draft(file[:name])).to include('kind' => file[:stored], 'size' => file[:bytes].bytesize)
     end
@@ -63,5 +48,20 @@ RSpec.describe 'Attaching files from the desktop picker', :desktop do
     desktop.press('Send message')
     desktop.see('Contract test reply')
     expect(host.state.fetch('attachment_drafts', {}).fetch(chief, [])).to be_empty
+  end
+
+  it 'rejects an oversized file and allows a subsequent attachment' do
+    large = File.join(@files, 'large.txt')
+    File.binwrite(large, 'x' * (10 * 1024 * 1024 + 1))
+    open_picker('Document')
+    choose_file(large)
+    desktop.see('File is too large.')
+    expect(host.state.fetch('attachment_drafts', {}).fetch(chief, [])).to be_empty
+    small = File.join(@files, 'small.txt')
+    File.write(small, 'Retry')
+    desktop.press('Document')
+    choose_file(small)
+    desktop.see('small.txt')
+    expect(draft('small.txt')).to include('size' => 5)
   end
 end

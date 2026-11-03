@@ -8,6 +8,7 @@ import Data.Foldable (traverse_)
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.String as S
 import Data.Tuple (Tuple(..))
+import Data.Traversable (traverse)
 import Effect.Aff (Milliseconds(..), delay, try, throwError)
 import Effect.Class (liftEffect)
 import Effect.Exception (error, message)
@@ -138,8 +139,10 @@ handle runtime dispatch action = case action of
     m <- H.get
     E.withDialog \d -> E.attempt (do
       unless (D.b "secure" m.env) $ throwError $ error "Open this app over HTTPS."
-      file <- toAffE $ B.chooseFile "image/png,image/jpeg,image/webp" 10485760
-      if not (D.valid file) then pure D.null else toAffE $ B.decodeQR ("data:" <> D.s "mime" file <> ";base64," <> D.s "data" file) 1600) $ receiveQR d.identity
+      selected <- B.chooseFile "image/png,image/jpeg,image/webp" 10485760
+      traverse (\file -> toAffE $ B.decodeQR ("data:" <> fromMaybe "application/octet-stream" file.mime <> ";base64," <> file.data) 1600) selected) \result -> case result of
+        Left failure -> receiveQR d.identity $ Left failure
+        Right decoded -> traverse_ (receiveQR d.identity <<< Right) decoded
   StopScan -> yes do
     liftEffect do
       Ref.read runtime.camera >>= traverse_ B.cameraStop

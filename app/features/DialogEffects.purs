@@ -2,7 +2,7 @@ module Sapiens.DialogEffects where
 
 import Prelude
 import Control.Promise (toAffE)
-import Data.Argonaut.Core (Json)
+import Data.Argonaut.Core (Json, toString)
 import Data.Array as A
 import Data.Either (Either(..))
 import Data.Foldable (traverse_)
@@ -10,7 +10,7 @@ import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.String as S
 import Data.String.CodeUnits as CU
 import Data.Tuple (Tuple(..))
-import Effect.Aff (try, throwError)
+import Effect.Aff (Aff, try, throwError)
 import Effect.Class (liftEffect)
 import Effect.Exception (error, message)
 import Effect.Ref as Ref
@@ -63,8 +63,10 @@ handle runtime dispatch action = case action of
       unless (A.length (M.attachments m) >= 8) do
         H.modify_ _ {uploading=m.uploading+1}
         attach m do
-          file <- toAffE $ B.chooseFile (if kind == "image" then "image/png,image/jpeg,image/gif,image/webp" else ".pdf,.txt,.md,.csv,.json,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.rtf,.odt") 10485760
-          if not (D.valid file) then pure D.null else E.api runtime m (M.ownerPath m <> "/attachments") "POST" (D.json {kind, name: D.get "name" file, data: D.get "data" file})
+          selected <- B.chooseFile (if kind == "image" then "image/png,image/jpeg,image/gif,image/webp" else ".pdf,.txt,.md,.csv,.json,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.rtf,.odt") 10485760
+          case selected of
+            Nothing -> pure Nothing
+            Just file -> Just <$> E.api runtime m (M.ownerPath m <> "/attachments") "POST" (D.json {kind, name: file.name, data: file.data})
       when (A.length (M.attachments m) >= 8) $ E.notify "Attach up to 8 items per message."
   DialogCommand command value -> commandAction command value
   _ -> pure unit
@@ -73,19 +75,21 @@ handle runtime dispatch action = case action of
     H.modify_ \s -> s {uploading=max 0 $ current.uploading-1,dialog=map (_ {busy=false}) s.dialog}
     case result of
       Left failure -> E.notify $ message failure
-      Right item -> when (D.valid item) do
+      Right selected -> traverse_ (\item -> do
         H.modify_ \s -> s {attachments=O.alter (Just <<< flip A.snoc item <<< fromMaybe []) m.selected s.attachments}
         dispatch CloseDialog
-        E.save dispatch
+        E.save dispatch) selected
   updateField key value d =
     let fields = if key == "node" && d.kind == M.DecisionPrompts then fromMaybe d.fields $ A.find (( _ == value) <<< D.s "node") $ D.rows "prompts" d.content else D.put key (D.text value) d.fields
         withLead = if key == "lead" && d.kind == M.GroupSettings then D.put "members" (D.array $ map D.text $ A.nub $ A.snoc (D.strings $ D.get "members" fields) value) fields else fields
     in d {fields=withLead,error=""}
+  receive :: forall a. Int -> (a -> E.UI Unit) -> Aff a -> E.UI Unit
   receive id done operation = E.attempt operation \result -> E.inDialog id \_ -> do
     E.modifyDialog id _ {busy=false}
     case result of
       Left failure -> E.modifyDialog id _ {error=message failure}
       Right value -> done value
+  runDialog :: forall a. M.Dialog -> (a -> E.UI Unit) -> Aff a -> E.UI Unit
   runDialog d done operation = do
     E.modifyDialog d.identity _ {busy=true,error=""}
     receive d.identity done operation
@@ -98,7 +102,7 @@ handle runtime dispatch action = case action of
     M.Reference kind -> if A.length (M.attachments m) >= 8 then E.modifyDialog d.identity _ {error="Attach up to 8 items per message."} else do
       H.modify_ _ {uploading=m.uploading+1}
       E.modifyDialog d.identity _ {busy=true}
-      attach m $ E.api runtime m (M.ownerPath m <> "/attachments") "POST" $ D.json {kind, value: D.get "value" d.fields}
+      attach m $ Just <$> E.api runtime m (M.ownerPath m <> "/attachments") "POST" (D.json {kind, value: D.get "value" d.fields})
     M.DecisionPrompts -> dispatch $ Mutate ("/api/decision-prompts/" <> B.encodeURI (D.s "node" d.fields)) "PUT" (D.json {content: D.get "content" d.fields}) (SavedPrompt $ D.s "content" d.fields)
     M.CreateCorpora -> do
       E.modifyDialog d.identity _ {busy=true,error=""}
@@ -204,13 +208,15 @@ handle runtime dispatch action = case action of
     "relay-confirm" -> changeRelay d $ D.put "confirm_revoke" (D.bool true) $ D.get "change" d.record
     "relay-edit" -> runDialog d (push M.RelayAdd) $ C.json ("/api/host/relays/" <> B.encodeURI (D.s "id" value)) "GET" D.null
     "relay-archive" -> changeRelay d $ D.json {action: if D.b "archived" value then "restore" else "archive", id: D.get "id" value}
-    "relay-import" -> runDialog d (\imported -> E.modifyDialog d.identity \current -> current {fields=D.put "connection" (D.get "raw" imported) current.fields,error=""}) do
-      file <- toAffE $ B.chooseFile "application/json,.json" 4096
-      if not (D.valid file) then pure (D.json {raw: D.get "connection" d.fields}) else do
-        let raw = D.str $ B.base64Decode $ D.s "data" file
-        case parseRelay raw of
-          Left failure -> throwError $ error failure
-          Right _ -> pure $ D.json {raw}
+    "relay-import" -> runDialog d (traverse_ (\raw -> E.modifyDialog d.identity \current -> current {fields=D.put "connection" (D.text raw) current.fields,error=""})) do
+      selected <- B.chooseFile "application/json,.json" 4096
+      case selected of
+        Nothing -> pure Nothing
+        Just file -> case toString (B.base64Decode file.data) of
+          Nothing -> throwError $ error "Could not decode the connection file."
+          Just raw -> case parseRelay raw of
+            Left failure -> throwError $ error failure
+            Right _ -> pure $ Just raw
     "relay-done" -> do
       let current = D.find (D.s "selected" d.content) $ D.rows "servers" d.content
       if D.s "key" d.record == "" then dispatch CloseDialog else if D.b "beta" current && not (D.b "beta_accepted" d.content) then push M.RelayTerms d.record else dispatch $ OpenDialog M.HostPairing $ D.put "_ready" (D.bool true) d.record
