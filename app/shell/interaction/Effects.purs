@@ -7,6 +7,7 @@ import Data.Array as A
 import Data.Either (Either(..), either)
 import Data.Foldable (traverse_)
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
+import Data.String as S
 import Effect.Aff (Aff, Milliseconds(..), delay, try, throwError)
 import Effect.Class (liftEffect)
 import Effect.Exception (Error, error, message)
@@ -118,20 +119,24 @@ memoImages runtime document = do
     unless (D.valid $ D.get key m.imageUrls) $ attempt (imageRequest m source) \result -> inEpoch m.epoch \_ ->
       traverse_ (\uri -> H.modify_ \s -> s {imageUrls=D.put key (D.text uri) s.imageUrls}) result) $ Memo.imagePaths document
   where
-  imageRequest m source = do
-    let path = M.ownerPath m <> "/notes?image=" <> B.encodeURI source
-    result <- if M.remote m then do
-      client <- C.client runtime (M.activeRecord m)
-      R.request client 15000 $ D.json {kind: "request", op: "api", method: "GET", path}
-      else toAffE $ B.requestBytes ("/api/host/corpora/" <> B.encodeURI (D.s "id" $ M.activeRecord m) <> path) (D.json {"X-Sapiens-Local": "1"})
-    unless (D.n "status" result == 200.0 && D.matches "^image/(png|jpeg|gif|webp|svg\\+xml)(;|$)" (D.s "mime" result)) $ throwError $ error "Image unavailable"
-    pure $ "data:" <> D.s "mime" result <> ";base64," <> D.s "body" result
+  imageRequest m source = imageData runtime m (M.ownerPath m <> "/notes?image=" <> B.encodeURI source)
+
+-- | Fetches an image from the host, locally or through Remote Control, as a data: URL.
+imageData :: C.Runtime -> M.Model -> String -> Aff String
+imageData runtime m path = do
+  result <- if M.remote m then do
+    client <- C.client runtime (M.activeRecord m)
+    R.request client 15000 $ D.json {kind: "request", op: "api", method: "GET", path}
+    else toAffE $ B.requestBytes ("/api/host/corpora/" <> B.encodeURI (D.s "id" $ M.activeRecord m) <> path) (D.json {"X-Sapiens-Local": "1"})
+  unless (D.n "status" result == 200.0 && D.matches "^image/(png|jpeg|gif|webp|svg\\+xml)(;|$)" (D.s "mime" result)) $ throwError $ error "Image unavailable"
+  pure $ "data:" <> D.s "mime" result <> ";base64," <> D.s "body" result
 
 preview :: C.Runtime -> UI Unit
 preview runtime = do
   m <- H.get
   let tab = M.activeTab m
-      path = if D.s "path" tab == "" then "" else M.ownerPath m <> "/browser/" <> B.encodeURI (D.s "id" tab) <> "/content"
+      image = D.matches "\\.(png|jpe?g|gif|webp)$" (S.toLower $ D.s "path" tab)
+      path = if D.s "path" tab == "" then "" else M.ownerPath m <> "/browser/" <> B.encodeURI (D.s "id" tab) <> (if image then "/image" else "/content")
   unless (W.native m || path == "" || not (A.elem N.Workspace m.panes)) do
     let request = {epoch:m.epoch,sequence:m.sequence+1,key:D.s "id" tab,revision:D.encode $ D.get "command" tab,path}
         skip = case m.preview of
@@ -141,7 +146,7 @@ preview runtime = do
           _ -> false
     unless skip do
       H.modify_ _ { sequence=request.sequence,previewPath=path,preview=M.Loading request $ if path == m.previewPath then M.valueOf m.preview else Nothing }
-      attempt (api runtime m path "GET" D.null) \result -> inEpoch m.epoch \current ->
+      attempt (if image then (\uri -> D.json {image: uri}) <$> imageData runtime m path else api runtime m path "GET" D.null) \result -> inEpoch m.epoch \current ->
         when (current.previewPath == path && ((_.sequence <$> M.requestOf current.preview) == Just request.sequence)) $
           H.modify_ _ {preview=either (M.Failed request <<< message) (M.Ready request) result}
 

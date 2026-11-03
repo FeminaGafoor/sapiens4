@@ -45,6 +45,8 @@ view m = V.node "main" [V.cls "workspace",V.id "workspace-panel",V.label "Agent 
   ,V.node "div" [V.id "workspace-content",V.cls "workspace-content"] $ if native m then [V.text $ if D.valid tab then "" else "Open a URL or file to get started."] else
       if D.s "path" tab == "" then [V.text $ if D.valid tab && D.s "url" tab /= "about:blank" then "Open Sapiens4 desktop to browse this web page." else "Open a URL or file to get started."] else case m.preview of
         M.Failed _ error -> [V.div "" [V.p "empty" error,V.button "button" "Try again" RetryPreview]]
+        M.Ready _ value | D.s "image" value /= "" -> [picture value]
+        M.Loading _ (Just value) | D.s "image" value /= "" -> [picture value]
         _ -> [V.textNode "pre" [V.cls "workspace-text",V.label $ D.s "title" tab,V.style $ "font-size:" <> show ((if N.limit m.env < 3 then 12.6 else 13.0) * zoom) <> "px"] (case m.preview of
           M.Ready _ value -> D.s "content" value
           M.Loading _ (Just value) -> D.s "content" value
@@ -54,6 +56,7 @@ view m = V.node "main" [V.cls "workspace",V.id "workspace-panel",V.label "Agent 
   tabs = M.tabs m
   tab = M.activeTab m
   zoom = if D.n "zoom" tab > 0.0 then D.n "zoom" tab else 1.0
+  picture value = V.node "img" [V.cls "workspace-image",V.attr "alt" $ D.fallback "Image" $ D.s "title" tab,V.attr "src" $ D.s "image" value,V.style "max-width:100%;height:auto"] []
   newTab = Browser "open" $ D.json {url: "about:blank"}
   zoomButton caption glyph factor = V.control [V.label caption] (glyph) (Browser "zoom" $ D.json {factor})
   tabView all t =
