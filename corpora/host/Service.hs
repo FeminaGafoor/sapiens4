@@ -187,6 +187,7 @@ dispatch s method target body = locked s $ do
     Nothing -> json 200 (readMemo (workspaceRoot s a))
     Just name -> do (bytes,mime)<-memoImage (workspaceRoot s a) (T.pack (unEscapeString (T.unpack name))); pure (200,bytes,mime)
   ("GET",["api",kind,a,"browser",tab,"content"]) | kind `elem` ["agents","groups"] -> owner kind a >> json 200 (workspaceText s a tab)
+  ("GET",["api",kind,a,"browser",tab,"image"]) | kind `elem` ["agents","groups"] -> owner kind a >> do (bytes,mime)<-workspaceImage s a tab; pure (200,bytes,mime)
   ("GET",["api","groups"]) -> json 200 (obj . (:[]) . ("groups",) . arr <$> G.snapshotGroups s)
   ("GET",["api","groups",gid]) -> json 200 (G.getGroup s gid False)
   ("POST",["api","groups"]) -> json 201 (G.createGroup s d "admin")

@@ -14,6 +14,7 @@ import Data.Maybe
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
+import Memo (imageMime)
 import Network.URI
 import System.Directory
 import System.FilePath
@@ -122,16 +123,30 @@ workspaceObserved s a d = do
    when (updated /= tab) $ persistWorkspace s a (put "tabs" (arr [if get t "id" == get tab "id" then updated else t | t <- tabs]) w) prefs
    pure (obj [("saved",Bool True)])
   _ -> pure (obj [("saved",Bool False)])
-workspaceText :: Service -> Text -> Text -> IO Value
-workspaceText s a i = do
+-- | The path of a workspace tab that shows a local file.
+localTabPath :: Service -> Text -> Text -> IO FilePath
+localTabPath s a i = do
  w <- workspace s a
  tab <- maybe (failure 404 "Unknown local file tab") pure (findId i (items w "tabs"))
  require (has tab "path") 404 "Unknown local file tab"
- raw <- withBinaryFile (T.unpack (at tab "path")) ReadMode (`BS.hGet` 2000001) `catch` (\(_ :: IOException) -> failure 404 "File not found or unreadable")
+ pure (T.unpack (at tab "path"))
+workspaceText :: Service -> Text -> Text -> IO Value
+workspaceText s a i = do
+ path <- localTabPath s a i
+ raw <- withBinaryFile path ReadMode (`BS.hGet` 2000001) `catch` (\(_ :: IOException) -> failure 404 "File not found or unreadable")
  require (BS.length raw <= 2000000) 413 "This file is too large for the text preview; open it in the desktop app"
  content <- either (const (failure 415 "This file is not UTF-8 text; open it in the desktop app")) pure (TE.decodeUtf8' raw)
  require (not (T.any (== '\0') content)) 415 "This file is not UTF-8 text; open it in the desktop app"
- pure $ obj [("content",str (fromMaybe content (T.stripPrefix "\xfeff" content))),("path",get tab "path")]
+ pure $ obj [("content",str (fromMaybe content (T.stripPrefix "\xfeff" content))),("path",str (T.pack path))]
+-- | The bytes and type of an image tab, for previews that cannot open local files (Remote Control).
+workspaceImage :: Service -> Text -> Text -> IO (BL.ByteString,Text)
+workspaceImage s a i = do
+ path <- localTabPath s a i
+ mime <- maybe (failure 415 "Only images can be previewed here; open other files in the desktop app") pure (imageMime path)
+ size <- getFileSize path `catch` (\(_ :: IOException) -> failure 404 "File not found or unreadable")
+ require (size <= 10000000) 413 "This image is too large to preview; open it in the desktop app"
+ bytes <- BS.readFile path `catch` (\(_ :: IOException) -> failure 404 "File not found or unreadable")
+ pure (BL.fromStrict bytes,mime)
 createAttachment :: Service -> Text -> Value -> IO Value
 createAttachment s a d = do
  let kind = at d "kind"

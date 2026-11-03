@@ -99,7 +99,7 @@ memoImage :: FilePath -> Text -> IO (BL.ByteString,Text)
 memoImage root name = do
  p <- canonicalizePath (root </> T.unpack name)
  require (not (isAbsolute (T.unpack name)) && (addTrailingPathSeparator root) `isPrefix` p) 409 "Path escapes its store"
- let mime = lookup (map toLower (takeExtension p)) [(".png","image/png"),(".jpg","image/jpeg"),(".jpeg","image/jpeg"),(".gif","image/gif"),(".webp","image/webp")]
+ let mime = imageMime p
  exists <- doesFileExist p
  size <- if exists then getFileSize p else pure 0
  require (exists && size <= 10000000 && isJust mime) 404 "Notes image not found or too large"
@@ -107,3 +107,6 @@ memoImage root name = do
  bytes <- BL.readFile p
  pure (bytes,contentType)
  where isPrefix a b = take (length a) b == a
+-- | The type of an image file the app can show, from its extension.
+imageMime :: FilePath -> Maybe Text
+imageMime p = lookup (map toLower (takeExtension p)) [(".png","image/png"),(".jpg","image/jpeg"),(".jpeg","image/jpeg"),(".gif","image/gif"),(".webp","image/webp")]
