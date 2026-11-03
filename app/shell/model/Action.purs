@@ -52,6 +52,9 @@ data Action
   | Mutate String String Json Success
   | AttachmentKind String
   | RemoveAttachment String
+  | VoiceStart
+  | VoiceStop
+  | VoicePiece Json
   | Browser String Json
   | Address String
   | OpenAddress

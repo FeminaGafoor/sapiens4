@@ -10,6 +10,8 @@ import Data.Set as Set
 import Data.String as S
 import Data.Tuple (Tuple(..))
 import Foreign.Object as O
+import Halogen (SubscriptionId)
+import Libs4.Browser (Voice)
 import Libs4.Browser as B
 import Sapiens.Data as D
 import Sapiens.Navigation as N
@@ -27,11 +29,17 @@ corporaDialog kind = A.elem kind [CreateCorpora,EditCorpora,ConnectRemote,HostPa
 
 type Dialog = { kind :: DialogKind, title :: String, record :: Json, fields :: Json, content :: Json, error :: String, busy :: Boolean, identity :: Int }
 
+-- | One voice recording in progress. Pieces wait in 'queue' and are uploaded one at a time,
+-- | in order, to 'path' (captured when recording started, so switching chats cannot redirect them).
+type VoiceSession =
+  { owner :: String, path :: String, epoch :: Int, recorder :: Maybe Voice, subscription :: SubscriptionId
+  , queue :: Array Json, sending :: Boolean, attempts :: Int, pieces :: Int, stopping :: Boolean }
+
 type Model =
   { snapshot :: Json, agents :: Array Json, messages :: O.Object (Array Json)
   , selected :: String, activity :: N.Activity, scope :: N.Scope, groupView :: Maybe String
   , mention :: Maybe { start :: Int, end :: Int, choices :: Array Json, index :: Int }
-  , drafts :: O.Object String, attachments :: O.Object (Array Json), sending :: Set.Set String, uploading :: Int, clarification :: Maybe Json
+  , drafts :: O.Object String, attachments :: O.Object (Array Json), sending :: Set.Set String, uploading :: Int, clarification :: Maybe Json, voice :: Maybe VoiceSession
   , workspaces :: Json, workspaceRevision :: Number, documents :: O.Object (RemoteData Json), expanded :: Set.Set String
   , polling :: Boolean, pollGeneration :: Int, saving :: Boolean, lastPreview :: Number, nativeReporting :: Boolean, nativeReports :: Array Json
   , epoch :: Int, sequence :: Int, now :: Number, env :: Json
@@ -47,7 +55,7 @@ type Model =
 initial :: Json -> Model
 initial env =
   { snapshot:D.empty, agents:[], messages:O.empty, selected:"", activity:N.Chat N.Conversation, scope:N.All, groupView:Nothing
-  , mention:Nothing, drafts:O.empty, attachments:O.empty, sending:Set.empty, uploading:0, clarification:Nothing
+  , mention:Nothing, drafts:O.empty, attachments:O.empty, sending:Set.empty, uploading:0, clarification:Nothing, voice:Nothing
   , workspaces:D.empty, workspaceRevision:0.0, documents:O.empty, expanded:Set.empty
   , polling:false,pollGeneration:0,saving:false,lastPreview:0.0,nativeReporting:false,nativeReports:[]
   , epoch:0, sequence:0, now:0.0, env, panes:[N.ChatPane,N.Sidebar,N.Workspace], search:"", searchOpen:false, menu:Nothing, dialog:Nothing
