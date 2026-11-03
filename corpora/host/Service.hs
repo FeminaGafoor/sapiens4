@@ -29,6 +29,7 @@ import Types
 import qualified Store as DB
 import Population
 import Workspace
+import Voice (receivePiece)
 import Memo
 import qualified Management as Mgt
 import qualified Execution as E
@@ -203,6 +204,7 @@ dispatch s method target body = locked s $ do
   ("POST",["api","agents",a,"turns",tid,action]) -> json 200 (E.turnAction s a tid action)
   ("PUT",["api","preferences"]) -> json 200 (savePreferences s d)
   ("POST",["api",kind,a,"attachments"]) | kind `elem` ["agents","groups"] -> owner kind a >> json 201 (createAttachment s a d)
+  ("POST",["api",kind,a,"voice"]) | kind `elem` ["agents","groups"] -> owner kind a >> json 200 (receivePiece s a d)
   ("POST",["api",kind,a,"browser"]) | kind `elem` ["agents","groups"] -> owner kind a >> json 200 (workspaceObserved s a d)
   ("POST",["api","groups",gid,"control"]) -> do
    void (G.getGroup s gid True)
