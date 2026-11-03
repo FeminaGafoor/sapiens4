@@ -1,3 +1,4 @@
+require 'securerandom'
 RSpec.describe 'Local service contracts' do
   it 'persists identity, replies, drafts and execution mode without replaying completed work' do
     agent = host.agent
@@ -297,6 +298,50 @@ RSpec.describe 'Local service contracts' do
     end
   end
 
+  # A streamed voice piece: 16-bit PCM WAV, as the browser recorder sends it.
+  def voice_piece(seconds, rate: 16000, channels: 1)
+    pcm = ([0, 1000, 0, -1000] * (rate * seconds * channels / 4).to_i).pack('s<*')
+    header = ['RIFF', 36 + pcm.bytesize, 'WAVE', 'fmt ', 16, 1, channels, rate, rate * 2 * channels, 2 * channels, 16, 'data', pcm.bytesize].pack('a4Va4a4VvvVVvva4V')
+    [header + pcm].pack('m0')
+  end
+
+  it 'cuts streamed voice pieces into one-minute voice messages' do
+    recording = SecureRandom.uuid
+    path = "/api/agents/#{chief}/voice"
+    replies = (0..30).map { |i| host.api('POST', path, {recording: recording, index: i, final: i == 30, data: voice_piece(2)}, status: 200) }
+    messages = replies.flat_map { |reply| reply['messages'] }
+    expect(messages.map { |m| [m['kind'], m['part'], m['duration_ms']] }).to eq([['voice', 0, 60000], ['voice', 1, 2000]])
+    expect(replies[29]['messages'].size).to eq(1)
+    expect(messages.map { |m| m['transcript_status'] }).to all(eq('pending'))
+    audio = File.binread(messages.first['value'])
+    expect([audio.byteslice(0, 4), audio.bytesize]).to eq(['RIFF', 44 + 60 * 32000])
+  end
+
+  it 'ignores a resent voice piece and refuses a missing one' do
+    recording = SecureRandom.uuid
+    path = "/api/agents/#{chief}/voice"
+    piece = ->(index) { {recording: recording, index: index, final: false, data: voice_piece(2)} }
+    expect(host.api('POST', path, piece.(0), status: 200)['duplicate']).to be(false)
+    expect(host.api('POST', path, piece.(0), status: 200)['duplicate']).to be(true)
+    expect(host.request('POST', path, piece.(2)).first).to eq(409)
+    expect(host.api('POST', path, piece.(1), status: 200)['duplicate']).to be(false)
+  end
+
+  {
+    'a malformed recording id' => {recording: 'not-a-uuid'},
+    'a negative index' => {index: -1},
+    'a fractional index' => {index: 0.5},
+    'stereo audio' => {data: -> { voice_piece(2, channels: 2) }},
+    'the wrong sample rate' => {data: -> { voice_piece(2, rate: 8000) }},
+    'more than 5 seconds of audio' => {data: -> { voice_piece(6) }},
+    'data that is not base64' => {data: '***'}
+  }.each do |label, change|
+    it "rejects a voice piece with #{label}" do
+      body = {recording: SecureRandom.uuid, index: 0, final: false, data: voice_piece(2)}
+      change.each { |key, value| body[key] = value.respond_to?(:call) ? instance_exec(&value) : value }
+      expect(host.request('POST', "/api/agents/#{chief}/voice", body).first).to eq(400)
+    end
+  end
   %w[jobs workspaces execution].each do |field|
     it "refuses to grant runtime authority through the #{field} preference" do
       expect(host.request('PUT', '/api/preferences', {field => {}}).first).to eq(400)
