@@ -63,6 +63,29 @@ RSpec.describe 'Workspace and memory contracts' do
     File.delete(file)
     expect(host.request('GET', path).first).to eq(404)
   end
+  
+  it 'serves image tabs as bytes for remote previews and refuses everything else' do
+    owner, other = chief, host.agent
+    png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='.unpack1('m0')
+    image = File.join(host.workspace(owner), 'pixel.png')
+    File.binwrite(image, png)
+    tab = host.control(owner, 'workspace_open', path: image)['workspace']['tabs'].first
+    path = "/api/agents/#{owner}/browser/#{tab['id']}/image"
+    code, body, headers = host.request('GET', path)
+    expect([code, body.b]).to eq([200, png.b])
+    expect(headers['content-type'].first).to start_with('image/png')
+    expect(host.request('GET', path.sub(owner, other)).first).to eq(404)
+    expect(host.request('GET', path.sub(tab['id'], 'missing')).first).to eq(404)
+    File.binwrite(image, 'x' * 10_000_001)
+    expect(host.request('GET', path).first).to eq(413)
+    File.delete(image)
+    expect(host.request('GET', path).first).to eq(404)
+    text = File.join(host.workspace(owner), 'notes.txt')
+    File.write(text, 'Not an image')
+    tabs = host.control(owner, 'workspace_open', path: text)['workspace']['tabs']
+    text_tab = tabs.find { |t| File.basename(t['path'].to_s) == 'notes.txt' }
+    expect(host.request('GET', "/api/agents/#{owner}/browser/#{text_tab['id']}/image").first).to eq(415)
+  end
 
   it 'rejects oversized previews within a bounded heap and keeps the service usable' do
     @host.close

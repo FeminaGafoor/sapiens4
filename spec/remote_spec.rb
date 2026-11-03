@@ -120,6 +120,18 @@ RSpec.describe 'Encrypted remote service contracts' do
     expect(state['turns'].first).to include('input' => 'Encrypted phone message', 'output' => 'Contract test reply')
     expect(state['corpora']).to eq(host.state['corpora'])
   end
+  
+  it 'sends an image tab through the encrypted channel with its type' do
+    pair
+    png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='.unpack1('m0')
+    image = File.join(host.workspace(chief), 'pixel.png')
+    File.binwrite(image, png)
+    tab = host.control(chief, 'workspace_open', path: image)['workspace']['tabs'].first
+    send_frame(pack(op: 'api', method: 'GET', path: "/api/agents/#{chief}/browser/#{tab['id']}/image"))
+    reply = receive
+    expect(reply).to include('status' => 200, 'mime' => 'image/png', 'binary' => true)
+    expect(reply['body'].unpack1('m0')).to eq(png)
+  end
 
   it 'restores an unapproved QR, hides discovery on approval, and reuses saved relay setup after revocation' do
     invite
