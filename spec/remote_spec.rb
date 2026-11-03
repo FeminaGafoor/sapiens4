@@ -137,7 +137,11 @@ RSpec.describe 'Encrypted remote service contracts' do
     expect(reply['status']).to eq(202)
     turn = host.turn(reply['body']['id'])
     expect(turn['attachments'].map { |item| item['id'] }).to eq([doc['id']])
-    expect(host.calls.last['prompt']).to include(doc['value'].to_json[1...-1])
+    context = JSON.parse(host.calls.last['prompt'].split("\nContext:\n", 2).fetch(1))
+    request = context.fetch('currentCall').fetch('request')
+    marker = 'Attached references (JSON data; read the files/links when needed for this message):'
+    references = JSON.parse(request.split(marker, 2).fetch(1))
+    expect(references).to include('kind' => 'document', 'name' => 'notes.txt', 'value' => doc.fetch('value'))
   end
 
   it 'restores an unapproved QR, hides discovery on approval, and reuses saved relay setup after revocation' do
