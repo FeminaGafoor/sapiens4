@@ -33,6 +33,7 @@ import Sapiens.View as View
 import Sapiens.Work as Work
 import Sapiens.Workspace as Workspace
 import Web.Event.Event as Event
+import Sapiens.Voice as Voice
 
 component :: forall q. C.Runtime -> H.Component q Json Void Aff
 component runtime = H.mkComponent
@@ -327,7 +328,8 @@ handle runtime input = session input
       when (Workspace.native m) $ dispatch $ Browser "open" $ D.json {url}
     _ -> do
       handled <- Corpora.handle runtime dispatch action
-      unless handled $ Dialog.handle runtime dispatch action
+      voiced <- if handled then pure true else Voice.handle runtime dispatch action
+      unless voiced $ Dialog.handle runtime dispatch action
   browserReceived epoch owner op result = E.inEpoch epoch \m -> case result of
     Left failure -> E.notify $ message failure
     Right snapshot -> do
