@@ -132,6 +132,21 @@ RSpec.describe 'Encrypted remote service contracts' do
     send_frame(pack(op: 'api', method: 'GET', path: '/api/state'))
     expect(receive['body']).to have_key('turns')
   end
+  
+  it 'rejects a large changed command reusing a request ID without stalling the host' do
+    pair
+    upload = lambda do |content|
+      pack(id: 'large-reused', op: 'api', method: 'POST', path: "/api/agents/#{chief}/attachments",
+        data: {kind: 'document', name: 'large.txt', data: [content].pack('m0')})
+    end
+    send_frame(upload.call('a' * 1_048_576))
+    expect(receive['status']).to eq(201)
+    send_frame(upload.call('b' * 1_048_576))
+    send_frame(pack(op: 'api', method: 'GET', path: '/api/state'))
+    expect(receive['body']).to have_key('turns')
+    stored = Dir.glob(File.join(host.root, 'uploads', '**', 'large.txt'))
+    expect(stored.map { |path| File.read(path, 1) }).to eq(['a'])
+  end
 
   it 'restores an unapproved QR, hides discovery on approval, and reuses saved relay setup after revocation' do
     invite
