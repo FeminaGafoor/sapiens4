@@ -197,8 +197,9 @@ initialize application target address = do
     void (obj2 user "addScriptMessageHandler:name:" target channel)
     view <- allocated "WKWebView" >>= \o -> rectObj o "initWithFrame:configuration:" (0,0,1180,820) configuration
     writeIORef (shell (browser application)) view
-    unless (fixture application) $ do
-        void (obj1 view "setNavigationDelegate:" target); void (obj1 view "setUIDelegate:" target)
+    -- Fixtures keep native navigation off but need the UI delegate for file pickers.
+    void (obj1 view "setUIDelegate:" target)
+    unless (fixture application) $ void (obj1 view "setNavigationDelegate:" target)
     void (obj1 view "setAutoresizingMask:" (int 18))
     container <- allocated "NSView" >>= \o -> rect o "initWithFrame:" (0,0,1180,820)
     void (obj1 container "addSubview:" view)

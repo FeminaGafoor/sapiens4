@@ -121,6 +121,25 @@ RSpec.describe 'Encrypted remote service contracts' do
     expect(state['corpora']).to eq(host.state['corpora'])
   end
 
+  it 'uploads an attachment through the encrypted channel and sends it with a message' do
+    pair
+    data = ['Total: 42'].pack('m0')
+    frame = pack(op: 'api', method: 'POST', path: "/api/agents/#{chief}/attachments", data: {kind: 'document', name: 'notes.txt', data: data})
+    expect(JSON.generate(frame)).not_to include('notes.txt', data)
+    send_frame(frame)
+    upload = receive
+    expect(upload['status']).to eq(201)
+    doc = upload['body']
+    expect(doc).to include('kind' => 'document', 'name' => 'notes.txt', 'size' => 9)
+    expect(File.read(doc['value'])).to eq('Total: 42')
+    send_frame(pack(op: 'api', method: 'POST', path: "/api/agents/#{chief}/messages", data: {text: 'Summarize', attachments: [doc['id']]}))
+    reply = receive
+    expect(reply['status']).to eq(202)
+    turn = host.turn(reply['body']['id'])
+    expect(turn['attachments'].map { |item| item['id'] }).to eq([doc['id']])
+    expect(host.calls.last['prompt']).to include(doc['value'].to_json[1...-1])
+  end
+
   it 'restores an unapproved QR, hides discovery on approval, and reuses saved relay setup after revocation' do
     invite
     address = @invitation['public_id']
