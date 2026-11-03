@@ -186,7 +186,7 @@ RSpec.describe 'Encrypted remote service contracts' do
     pair
     frame = pack(id: 'legacy-receipt', expires: Time.now.to_i + 120, op: 'api', method: 'POST',
       path: "/api/agents/#{chief}/messages", data: {text: 'Résumé 中文 😎'},
-      metadata: {z: [1.25, -0.0], a: {second: true, first: 'é'}})
+      metadata: {z: [1.25, -0.0, 1, 1.0, 12345678901234567890, nil, false], a: {second: true, first: "é\n\"quoted\"\\"}})
     send_frame(frame)
     receipt = receive
     host.turn(receipt['body']['id'])
