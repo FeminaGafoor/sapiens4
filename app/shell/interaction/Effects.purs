@@ -134,10 +134,12 @@ preview runtime = do
       path = if D.s "path" tab == "" then "" else M.ownerPath m <> "/browser/" <> B.encodeURI (D.s "id" tab) <> "/content"
   unless (W.native m || path == "" || not (A.elem N.Workspace m.panes)) do
     let request = {epoch:m.epoch,sequence:m.sequence+1,key:D.s "id" tab,revision:D.encode $ D.get "command" tab,path}
-        pending = case m.preview of
+        skip = case m.preview of
           M.Loading _ _ -> true
+          -- A failed preview is not re-requested on every poll; the user retries it explicitly.
+          M.Failed failed _ -> failed.path == path && failed.revision == request.revision
           _ -> false
-    unless pending do
+    unless skip do
       H.modify_ _ { sequence=request.sequence,previewPath=path,preview=M.Loading request $ if path == m.previewPath then M.valueOf m.preview else Nothing }
       attempt (api runtime m path "GET" D.null) \result -> inEpoch m.epoch \current ->
         when (current.previewPath == path && ((_.sequence <$> M.requestOf current.preview) == Just request.sequence)) $

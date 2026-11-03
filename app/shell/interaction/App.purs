@@ -272,6 +272,7 @@ handle runtime input = session input
         H.modify_ _ {panes=[N.ChatPane,N.Sidebar,N.Workspace]}
         dispatch $ Select $ D.s "main_agent_id" m.snapshot
     RetryDocument key -> H.modify_ (\m -> m {documents=O.delete key m.documents}) *> E.requestDocument runtime
+    RetryPreview -> H.modify_ _ {preview=M.NotAsked} *> E.preview runtime
     Menu key -> do
       H.modify_ \m -> m {menu=if m.menu == Just key then Nothing else Just key,mention=Nothing}
       E.sync

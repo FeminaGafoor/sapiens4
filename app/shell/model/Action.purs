@@ -23,6 +23,7 @@ data Action
   | MessageKey Event
   | Send
   | RetryDocument String
+  | RetryPreview
   | ToggleExpanded String
   | Clarify Json
   | Menu String

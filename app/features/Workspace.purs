@@ -43,11 +43,12 @@ view m = V.node "main" [V.cls "workspace",V.id "workspace-panel",V.label "Agent 
     ,V.node "div" [V.id "browser-all-tabs",V.hidden $ m.menu /= Just "browser-tabs"] $ [V.div "browser-menu-label" [V.text $ "Open tabs · " <> show (A.length tabs)]] <> map (tabView true) tabs
     ,V.span [V.id "browser-status",V.attr "role" "status"] (D.fallback (if D.b "loading" tab then "Loading…" else "") $ D.s "error" tab)]
   ,V.node "div" [V.id "workspace-content",V.cls "workspace-content"] $ if native m then [V.text $ if D.valid tab then "" else "Open a URL or file to get started."] else
-      if D.s "path" tab == "" then [V.text $ if D.valid tab && D.s "url" tab /= "about:blank" then "Open Sapiens4 desktop to browse this web page." else "Open a URL or file to get started."] else [V.textNode "pre" [V.cls "workspace-text",V.label $ D.s "title" tab,V.style $ "font-size:" <> show ((if N.limit m.env < 3 then 12.6 else 13.0) * zoom) <> "px"] (case m.preview of
-        M.Ready _ value -> D.s "content" value
-        M.Loading _ (Just value) -> D.s "content" value
-        M.Failed _ error -> error
-        _ -> "Loading…")]
+      if D.s "path" tab == "" then [V.text $ if D.valid tab && D.s "url" tab /= "about:blank" then "Open Sapiens4 desktop to browse this web page." else "Open a URL or file to get started."] else case m.preview of
+        M.Failed _ error -> [V.div "" [V.p "empty" error,V.button "button" "Try again" RetryPreview]]
+        _ -> [V.textNode "pre" [V.cls "workspace-text",V.label $ D.s "title" tab,V.style $ "font-size:" <> show ((if N.limit m.env < 3 then 12.6 else 13.0) * zoom) <> "px"] (case m.preview of
+          M.Ready _ value -> D.s "content" value
+          M.Loading _ (Just value) -> D.s "content" value
+          _ -> "Loading…")]
   ,V.node "footer" [V.cls "workspace-footer"] [V.link "https://sapiens4.ai" "sapiens4.ai ↗"]]
   where
   tabs = M.tabs m
