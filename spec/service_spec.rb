@@ -1,5 +1,9 @@
 require 'securerandom'
+require_relative 'support/voice'
+
 RSpec.describe 'Local service contracts' do
+  include VoiceAudio
+
   it 'persists identity, replies, drafts and execution mode without replaying completed work' do
     agent = host.agent
     original = host.state
@@ -298,12 +302,6 @@ RSpec.describe 'Local service contracts' do
     end
   end
 
-  # A streamed voice piece: 16-bit PCM WAV, as the browser recorder sends it.
-  def voice_piece(seconds, rate: 16000, channels: 1)
-    pcm = ([0, 1000, 0, -1000] * (rate * seconds * channels / 4).to_i).pack('s<*')
-    header = ['RIFF', 36 + pcm.bytesize, 'WAVE', 'fmt ', 16, 1, channels, rate, rate * 2 * channels, 2 * channels, 16, 'data', pcm.bytesize].pack('a4Va4a4VvvVVvva4V')
-    [header + pcm].pack('m0')
-  end
 
   it 'cuts streamed voice pieces into one-minute voice messages' do
     recording = SecureRandom.uuid
@@ -342,6 +340,7 @@ RSpec.describe 'Local service contracts' do
       expect(host.request('POST', "/api/agents/#{chief}/voice", body).first).to eq(400)
     end
   end
+
   %w[jobs workspaces execution].each do |field|
     it "refuses to grant runtime authority through the #{field} preference" do
       expect(host.request('PUT', '/api/preferences', {field => {}}).first).to eq(400)

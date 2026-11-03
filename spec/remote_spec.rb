@@ -1,8 +1,10 @@
 require_relative 'support/relay'
+require_relative 'support/voice'
 require 'sqlite3'
 require 'digest'
 
 RSpec.describe 'Encrypted remote service contracts' do
+  include VoiceAudio
   before do
     @relay = Relay.new
     @host = Host.new
@@ -119,6 +121,22 @@ RSpec.describe 'Encrypted remote service contracts' do
     state = receive['body']
     expect(state['turns'].first).to include('input' => 'Encrypted phone message', 'output' => 'Contract test reply')
     expect(state['corpora']).to eq(host.state['corpora'])
+  end
+
+  it 'streams voice pieces through the encrypted channel into one-minute voice messages' do
+    pair
+    recording = SecureRandom.uuid
+    piece = ->(index) { {recording: recording, index: index, final: index == 30, data: voice_piece(2)} }
+    replies = (0..30).map do |index|
+      send_frame(pack(op: 'api', method: 'POST', path: "/api/agents/#{chief}/voice", data: piece.(index)))
+      receive
+    end
+    expect(replies.map { |reply| reply['status'] }).to all(eq(200))
+    messages = replies.flat_map { |reply| reply['body']['messages'] }
+    expect(messages.map { |m| [m['kind'], m['part'], m['duration_ms']] }).to eq([['voice', 0, 60000], ['voice', 1, 2000]])
+    # The phone resends the last piece after a reconnect, with a new request id.
+    send_frame(pack(op: 'api', method: 'POST', path: "/api/agents/#{chief}/voice", data: piece.(30)))
+    expect(receive['body']).to include('duplicate' => true, 'messages' => [])
   end
 
   it 'restores an unapproved QR, hides discovery on approval, and reuses saved relay setup after revocation' do
