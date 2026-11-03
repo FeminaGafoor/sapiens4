@@ -186,17 +186,19 @@ processFrame b config frame = do
     else do
      let path = serviceRoot (bridgeService b) </> "remote-receipts.sqlite3"
          currentDigest = hash (BL.toStrict (encode (obj (sortOn fst (pairs message)))))
-         digest = either (const currentDigest) hash (legacyJSON plaintext)
+         -- Only needed to verify receipts stored in the Python-era format;
+         -- legacyJSON is too slow to run on every write (large attachments hang).
+         legacyDigest = either (const currentDigest) hash (legacyJSON plaintext)
          room = at current "room"; ident = at message "id"
      receipt <- withDB path $ \db -> withTransaction db $ do
       execute_ db "CREATE TABLE IF NOT EXISTS receipts (room TEXT,id TEXT,hash TEXT,reply TEXT,created REAL,PRIMARY KEY(room,id))"
       execute db "DELETE FROM receipts WHERE created < ?" (Only (time-86400))
       rows <- query db "SELECT hash,reply FROM receipts WHERE room=? AND id=?" (room,ident) :: IO [(Text,Maybe Text)]
-      when (null rows) (execute db "INSERT INTO receipts VALUES (?,?,?,NULL,?)" (room,ident,digest,time))
+      when (null rows) (execute db "INSERT INTO receipts VALUES (?,?,?,NULL,?)" (room,ident,currentDigest,time))
       pure rows
      case receipt of
       (saved,raw):_ -> do
-       require (saved==digest || saved==currentDigest) 400 "Request ID was reused"
+       require (saved==currentDigest || saved==legacyDigest) 400 "Request ID was reused"
        maybe (replyFrame current ident (obj [("error",str "Outcome uncertain after interruption. Check desktop history before sending again.")])) (pure . parseJSONText) raw
       [] -> do
        result <- executeReply b current message

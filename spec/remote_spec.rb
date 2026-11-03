@@ -120,6 +120,18 @@ RSpec.describe 'Encrypted remote service contracts' do
     expect(state['turns'].first).to include('input' => 'Encrypted phone message', 'output' => 'Contract test reply')
     expect(state['corpora']).to eq(host.state['corpora'])
   end
+  
+  it 'uploads a large attachment through the encrypted channel without stalling the host' do
+    pair
+    bytes = 'x' * 1_048_576
+    send_frame(pack(op: 'api', method: 'POST', path: "/api/agents/#{chief}/attachments",
+      data: {kind: 'document', name: 'large.txt', data: [bytes].pack('m0')}))
+    upload = receive
+    expect(upload['status']).to eq(201)
+    expect(upload['body']).to include('name' => 'large.txt', 'size' => bytes.bytesize)
+    send_frame(pack(op: 'api', method: 'GET', path: '/api/state'))
+    expect(receive['body']).to have_key('turns')
+  end
 
   it 'restores an unapproved QR, hides discovery on approval, and reuses saved relay setup after revocation' do
     invite
