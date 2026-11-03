@@ -65,7 +65,7 @@ handle runtime dispatch action = case action of
     m <- H.get
     if A.elem kind [X.LinkAttachment,X.FileAttachment] then dispatch $ OpenDialog (M.Reference kind) F.NoRecord else do
       unless (A.length (M.attachments m) >= 8) do
-        H.modify_ _ {uploading=m.uploading+1}
+        H.modify_ _ {uploading=m.uploading+1,dialog=map (M.setDialogError "") m.dialog}
         attach m do
           selected <- B.chooseFile (if kind == X.ImageAttachment then "image/png,image/jpeg,image/gif,image/webp" else ".pdf,.txt,.md,.csv,.json,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.rtf,.odt") 10485760
           case selected of
@@ -76,9 +76,13 @@ handle runtime dispatch action = case action of
   _ -> pure unit
   where
   attach m operation = E.attempt operation \result -> E.inEpoch m.epoch \current -> do
-    H.modify_ \s -> s {uploading=max 0 $ current.uploading-1,dialog=map ((M.setDialogBusy false)) s.dialog}
+    H.modify_ _ {uploading=max 0 $ current.uploading-1}
+    traverse_ (\d -> E.modifyDialog d.identity (M.setDialogBusy false)) m.dialog
     case result of
-      Left failure -> E.notify $ message failure
+      Left failure -> case m.dialog, current.dialog of
+        Just requested, Just active | requested.identity == active.identity ->
+          E.modifyDialog requested.identity $ M.setDialogError $ message failure
+        _, _ -> E.notify $ message failure
       Right selected -> traverse_ (\item -> do
         H.modify_ \s -> s {attachments=O.alter (Just <<< flip A.snoc (X.attachment item) <<< fromMaybe []) m.selected s.attachments}
         dispatch CloseDialog
