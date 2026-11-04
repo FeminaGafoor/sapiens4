@@ -5,3 +5,4 @@
 [submodule "libs4"]
 	path = submodules/libs4
 	url = https://github.com/aleski-green/libs4.git
+	branch = main
