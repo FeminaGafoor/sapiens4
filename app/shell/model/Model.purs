@@ -84,17 +84,35 @@ connectionResult reachable = case _ of
   ChangingLifecycle _ -> ChangingLifecycle reachable
   _ -> if reachable then Online else Offline
 
+-- | Where a recording is in its life. The recorder exists only while recording, and how it
+-- | ends is decided once, when Stop or Send is pressed.
+data RecordingPhase = Starting | Recording Voice | Stopping StopAction
+
+-- | What happens when recording stops: keep the voice messages for review, or send them.
+data StopAction = Review | SendAfter
+derive instance eqStopAction :: Eq StopAction
+
+isStopping :: RecordingPhase -> Boolean
+isStopping = case _ of
+  Stopping _ -> true
+  _ -> false
+
+phaseRecorder :: RecordingPhase -> Maybe Voice
+phaseRecorder = case _ of
+  Recording recorder -> Just recorder
+  _ -> Nothing
+
 -- | One voice recording in progress. Pieces wait in 'queue' and are uploaded one at a time,
 -- | in order, to 'path' (captured when recording started, so switching chats cannot redirect them).
+-- | Uploading runs alongside recording, so its state stays separate from 'phase'.
 type VoiceSession =
-  { owner :: String, path :: String, epoch :: Int, recorder :: Maybe Voice, subscription :: SubscriptionId
-  , queue :: Array Json, sending :: Boolean, attempts :: Int, pieces :: Int, stopping :: Boolean
-  , recording :: String, startedAt :: Number, elapsed :: Number
-  -- | True when the person pressed Send while recording: the voice messages are sent as soon as recording finishes.
-  , thenSend :: Boolean }
+  { owner :: String, path :: String, epoch :: Int, phase :: RecordingPhase, subscription :: SubscriptionId
+  , queue :: Array X.VoicePiece, sending :: Boolean, attempts :: Int, pieces :: Int
+  , recording :: String, startedAt :: Number, elapsed :: Number }
 
--- | Voice messages being sent one by one, in order, each as soon as its own transcript is ready.
-type Outbox = { owner :: String, path :: String, text :: String, others :: Array String, voices :: Array String, sending :: Boolean }
+-- | One chat's voice messages being sent one by one, in order, each as soon as its own
+-- | transcript is ready. Kept per chat ('outboxes'), so one chat never blocks another.
+type Outbox = { path :: String, text :: String, others :: Array String, voices :: Array String, sending :: Boolean }
 
 type Model = Record (InterfaceState (ContentState SessionState))
 
@@ -121,13 +139,13 @@ type SessionState =
   , epoch :: Int, sequence :: Int, now :: Number, env :: Environment
   , records :: Array X.Corpora, active :: String, connection :: ConnectionState
   , localAvailable :: Boolean, showArchived :: Boolean, installRequired :: Boolean
-  , preferencesSaved :: String, voice :: Maybe VoiceSession, outbox :: Maybe Outbox
+  , preferencesSaved :: String, voice :: Maybe VoiceSession, outboxes :: O.Object Outbox
   )
 
 initial :: Environment -> Model
 initial env =
   { snapshot:X.emptySnapshot, agents:[], messages:O.empty, selected:"", activity:N.Chat N.Conversation, scope:N.All, groupView:Nothing
-  , mention:Nothing, drafts:O.empty, attachments:O.empty, sending:Set.empty, uploading:0, clarification:Nothing, voice:Nothing, outbox:Nothing
+  , mention:Nothing, drafts:O.empty, attachments:O.empty, sending:Set.empty, uploading:0, clarification:Nothing, voice:Nothing, outboxes:O.empty
   , workspaces:O.empty, workspaceRevision:0.0, documents:O.empty, expanded:Set.empty
   , polling:false,pollGeneration:0,saving:false,lastPreview:0.0,nativeReporting:false,nativeReports:[]
   , epoch:0, sequence:0, now:0.0, env, panes:[N.ChatPane,N.Sidebar,N.Workspace], search:"", searchOpen:false, menu:Nothing, dialog:Nothing

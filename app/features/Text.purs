@@ -92,26 +92,27 @@ time = B.formatDate "" $ D.json {hour: "2-digit", minute: "2-digit"}
 attachment :: X.Attachment -> V.Html
 attachment item = case item.kind of
   X.LinkAttachment -> V.link (item.value) (caption <> " ↗")
-  X.VoiceAttachment -> V.node "span" [V.cls "attachment-item voice-card",V.attr "title" item.name]
+  X.VoiceAttachment note -> V.node "span" [V.cls "attachment-item voice-card",V.attr "title" item.name]
     [V.node "span" [V.cls "voice-head"]
       [V.textNode "span" [V.cls "voice-icon",V.attr "aria-hidden" "true"] "🎤"
       ,V.textNode "strong" [] "Voice message"
-      ,V.textNode "span" [V.cls "voice-length"] (clock item.durationMs)
-      ,V.textNode "span" [V.cls ("voice-status " <> status)] statusLabel]
-    ,V.when (status /= "pending") $ V.textNode "span" [V.cls "voice-transcript"] transcript]
+      ,V.textNode "span" [V.cls "voice-length"] (clock note.durationMs)
+      ,V.textNode "span" [V.cls ("voice-status " <> (voiceStatus note.transcription).css)] (voiceStatus note.transcription).label]
+    ,case note.transcription of
+      X.TranscriptPending -> V.empty
+      X.Transcribed words -> V.textNode "span" [V.cls "voice-transcript"] (D.fallback "(No speech detected)" words)
+      X.TranscriptFailed _ -> V.textNode "span" [V.cls "voice-transcript"] "Couldn't transcribe this voice message. Retry it, or remove it."]
   _ -> V.span [V.cls "attachment-item",V.attr "title" (item.value)] (caption)
   where
   kind = X.attachmentKindName item.kind
   caption = S.toUpper (S.take 1 kind) <> S.drop 1 kind <> " · " <> item.name
-  status = case item.transcriptStatus of
-    "done" -> "done"
-    "failed" -> "failed"
-    _ -> "pending"
-  statusLabel = case status of
-    "done" -> "Transcribed"
-    "failed" -> "Failed"
-    _ -> "Transcribing…"
-  transcript = if status == "failed" then "Couldn't transcribe this one. The audio is still attached." else D.fallback "(No speech detected)" item.transcript
+
+-- | The badge on a voice card: its CSS state and its label.
+voiceStatus :: X.Transcription -> { css :: String, label :: String }
+voiceStatus = case _ of
+  X.TranscriptPending -> { css: "pending", label: "Transcribing…" }
+  X.Transcribed _ -> { css: "done", label: "Transcribed" }
+  X.TranscriptFailed _ -> { css: "failed", label: "Failed" }
 
 -- | Milliseconds as a clock: 65000.0 → "1:05".
 clock :: Number -> String

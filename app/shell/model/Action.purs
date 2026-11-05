@@ -61,11 +61,13 @@ data Action
   | VoiceStart
   | VoiceStop
   | VoiceStopSend
-  | VoicePiece Json
+  | VoicePiece X.VoicePiece
+  | VoicePieceRejected String
   | VoiceCancel
   | VoiceTick
   | VoiceSend
-  | VoiceFlush
+  | VoiceFlush String
+  | VoiceRetry String
   | Address String
   | OpenAddress
   | EditAddress
