@@ -106,6 +106,34 @@ verify the resulting draft; focus and foreground are checked during input.
 Password controls remain inaccessible. Unicode still works through editable
 AT-SPI controls and owned headless Chromium/Firefox sessions.
 
+### Chromium startup and diagnostics
+
+Launch Chromium with `--force-renderer-accessibility` before attaching the native
+driver. Passing the flag to a second invocation does not reconfigure an existing
+browser process. A window visible in `apps` does not establish that its page
+controls are accessible. A null AT-SPI element is an incomplete observation;
+rediscover the target and check how the browser was launched before input.
+
+Run the native desktop in the normal desktop user namespace. Wrapping the whole
+host in a user namespace can make root-owned Chromium sandbox helpers appear to
+be owned by an unmapped user, causing child browser launches to fail. Install the
+documented GTK/WebKit dependencies rather than disabling the browser sandbox.
+An `open` acknowledgment from the system URL handler is not page-load evidence;
+inspect the existing browser to confirm navigation.
+
+To exercise guarded address-bar navigation and immediate accessibility reads,
+launch a separate disposable Chrome profile with accessibility enabled, obtain
+its PID from `blindly4 apps`, then run:
+
+```sh
+SAPIENS_TEST_CHROME_PID=PID ruby submodules/libs4/ruby/bundle.rb exec rspec spec/linux_chrome_regression_spec.rb
+```
+
+This opt-in test takes foreground control and navigates that profile between
+example.com and WhatsApp Web six times. It does not sign in or send messages.
+Passing it is regression evidence, not proof that intermittent browser crashes
+have been eliminated.
+
 The external-browser fixtures launch browsers in headed mode, then exercise
 Blindly4 native accessibility and keyboard input. The pinned Playwright builds
 and the official Mozilla Firefox 153.6.0esr archive have separate evidence below.

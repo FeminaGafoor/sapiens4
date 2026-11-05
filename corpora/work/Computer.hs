@@ -98,7 +98,10 @@ readComputer binary supplied maximumSize = do
    let totalDepth=(if T.null path then 0 else length (T.splitOn "." path))+depth
    require (totalDepth<=64) 400 "Total depth exceeds 64"
    (code,out,err) <- invoke binary ["tree","--pid",show pid,"--depth",show totalDepth,"--max-nodes","5000"] 30
-   require (code==ExitSuccess) 400 ("Blindly read failed: "<>T.take 300 (T.pack err))
+   let diagnostic = case get (parseJSONText (T.pack out)) "error" of
+        String message | not (T.null message) -> message
+        _ -> T.strip (T.pack (if null err then out else err))
+   require (code==ExitSuccess) 400 ("Blindly read failed: "<>T.take 300 diagnostic)
    let value=parseJSONText (T.pack out)
        allRows=filter (\v -> T.null path || at v "path"==path || (path<>".") `T.isPrefixOf` at v "path") (flatten "" (get value "tree"))
        rows=filter (\v -> at v "path"==path || any (\k -> get v k `notElem` [Null,str "",arr []]) ["title","description","value","identifier","actions"]) allRows

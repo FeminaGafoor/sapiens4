@@ -97,6 +97,10 @@ RSpec.describe 'Haskell command-line contracts', :host do
       out, _, code = Contract.capture(Contract::BINARY, 'computer', 'read', '--pid', '123', chdir: folder, env: env)
       expect(code).to eq(1)
       expect(JSON.parse(out)['error']).to include('invalid accessibility tree')
+      File.write(binary, "#!#{RbConfig.ruby}\nputs #{JSON.generate(code: 'accessibility_error', error: 'Application returned a null accessibility element').inspect}\nexit 77\n")
+      out, _, code = Contract.capture(Contract::BINARY, 'computer', 'read', '--pid', '123', chdir: folder, env: env)
+      expect(code).to eq(1)
+      expect(JSON.parse(out)['error']).to include('Blindly read failed: Application returned a null accessibility element')
     end
   end
 end
