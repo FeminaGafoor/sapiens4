@@ -5,12 +5,12 @@
 module Voice
  ( Pcm, pcmBytes, pcmFromWav, wavFromPcm
  , Progress(..), Cut(..), PiecePlan(..), startProgress, planPiece
- , receivePiece
+ , receivePiece, cancelRecording, retryTranscription, draftable
  , transcribeLoop
  ) where
 
 import Control.Concurrent (threadDelay)
-import Control.Exception (SomeException, fromException, try)
+import Control.Exception (IOException, SomeException, fromException, try)
 import Control.Monad
 import Data.Aeson hiding (pairs)
 import qualified Data.ByteString as BS
@@ -75,6 +75,12 @@ wavFromPcm pcm = BL.toStrict $ BB.toLazyByteString $ mconcat
 -- number, how many audio bytes wait for the next cut, and whether it has ended.
 data Progress = Progress { nextPiece :: Int, nextPart :: Int, buffered :: Int, finished :: Bool } deriving (Eq, Show)
 
+-- | Strict reading of saved progress: every field must be present with the right type
+-- (aeson refuses a fractional or out-of-range Int). Nothing is defaulted.
+instance FromJSON Progress where
+ parseJSON = withObject "voice progress" $ \o ->
+  Progress <$> o .: "next_piece" <*> o .: "next_part" <*> o .: "buffered" <*> o .: "finished"
+
 startProgress :: Progress
 startProgress = Progress 0 0 0 False
 
@@ -100,61 +106,147 @@ planPiece progress index final size
  remaining = if final then 0 else rest
 
 -- | The adapter: validate the request, apply the plan, save any finished voice messages.
+--
+-- Safe to retry at every step. A piece is applied in this order:
+--   1. save each finished voice message once (keyed by recording and part number)
+--   2. write the leftover audio to a NEW buffer file for the next piece
+--   3. save progress.json  ← the commit point
+--   4. delete the old buffer file
+-- A crash before step 3 leaves the previous progress and its buffer untouched, so the
+-- resent piece replays exactly; step 1 then finds the parts already saved and reuses them.
 receivePiece :: Service -> Text -> Value -> IO Value
 receivePiece s a d = do
  let recording = at d "recording"
      final = get d "final" == Bool True
- require (T.length recording == 36 && T.all (\c -> isHexDigit c || c == '-') recording) 400 "Invalid voice recording id"
+ validRecording recording
  index <- case get d "index" of
   Number n | n >= 0 && n <= 100000 && n == fromIntegral (round n :: Int) -> pure (round n)
   _ -> failure 400 "Voice piece index must be a whole number"
  require (case get d "data" of String t -> T.length t <= 300000; _ -> False) 413 "Voice pieces must be 5 seconds or shorter"
  wav <- either (const (failure 400 "Invalid voice data")) pure (B64.decode (TE.encodeUtf8 (at d "data")))
  pcm <- either (failure 400) pure (pcmFromWav wav)
- let dir = serviceRoot s </> "uploads" </> T.unpack a </> "voice" </> T.unpack recording
-     bufferFile = dir </> "buffer.pcm"
+ let dir = recordingDir s a recording
      progressFile = dir </> "progress.json"
  createDirectoryIfMissing True dir
  progress <- readProgress progressFile
  case planPiece progress index final (BS.length (pcmBytes pcm)) of
   Left problem -> failure 409 problem
-  Right DuplicatePiece -> pure (reply recording True [])
+  -- The phone resent a piece because the first reply was lost: answer with the voice
+  -- messages that piece created the first time, so the phone still learns their ids.
+  Right DuplicatePiece -> reply recording True . filter (createdBy index) <$> recordingParts s a recording
   Right (AppendPiece next cuts) -> do
-   waiting <- readIfPresent bufferFile
+   waiting <- readIfPresent (bufferFile dir (nextPiece progress))
+   when (BS.length waiting < buffered progress) $ failure 500 "Voice recording state is damaged"
    let audio = BS.take (buffered progress) waiting <> pcmBytes pcm
-   (rows, leftover) <- foldM (saveCut s a recording) ([], audio) cuts
-   atomicBytes bufferFile (BL.fromStrict leftover)
+   saved <- recordingParts s a recording
+   (rows, leftover) <- foldM (saveCut s a recording index saved) ([], audio) cuts
+   atomicBytes (bufferFile dir (nextPiece next)) (BL.fromStrict leftover)
    atomicBytes progressFile (encode (progressJSON next))
-   pure (reply recording False (reverse rows))
+   removeIfPresent (bufferFile dir (nextPiece progress))
+   when (finished next) $ removeIfPresent (bufferFile dir (nextPiece next))
+   pure (reply recording False (filter draftable (reverse rows)))
  where
  reply recording duplicate rows = obj [("recording",str recording),("duplicate",Bool duplicate),("messages",arr rows)]
+ createdBy i v = draftable v && get v "piece" == num i
 
-saveCut :: Service -> Text -> Text -> ([Value], BS.ByteString) -> Cut -> IO ([Value], BS.ByteString)
-saveCut s a recording (rows, audio) cut = do
+-- | Save one finished voice message, exactly once. If this recording already has this part
+-- (a retry after a crash), the saved row is reused instead of creating a duplicate.
+saveCut :: Service -> Text -> Text -> Int -> [Value] -> ([Value], BS.ByteString) -> Cut -> IO ([Value], BS.ByteString)
+saveCut s a recording piece saved (rows, audio) cut = do
  let (part, rest) = BS.splitAt (cutBytes cut) audio
-     name = "voice-" <> T.pack (show (cutPart cut + 1)) <> ".wav"
- i <- newId
- let path = serviceRoot s </> "uploads" </> T.unpack a </> T.unpack i </> T.unpack name
- atomicBytes path (BL.fromStrict (wavFromPcm part))
- let row = obj [("id",str i),("agent",str a),("kind",str "voice"),("name",str name),("value",str (T.pack path))
-               ,("size",num (BS.length part + 44)),("recording",str recording),("part",num (cutPart cut))
-               ,("duration_ms",num (BS.length part * 1000 `div` bytesPerSecond)),("transcript_status",str "pending")]
- DB.saveAttachment s row
- pure (row : rows, rest)
+ case filter (\v -> get v "part" == num (cutPart cut)) saved of
+  existing : _ -> pure (existing : rows, rest)
+  [] -> do
+   let name = "voice-" <> T.pack (show (cutPart cut + 1)) <> ".wav"
+   i <- newId
+   let path = serviceRoot s </> "uploads" </> T.unpack a </> T.unpack i </> T.unpack name
+   atomicBytes path (BL.fromStrict (wavFromPcm part))
+   let row = obj [("id",str i),("agent",str a),("kind",str "voice"),("name",str name),("value",str (T.pack path))
+                 ,("size",num (BS.length part + 44)),("recording",str recording),("part",num (cutPart cut)),("piece",num piece)
+                 ,("duration_ms",num (BS.length part * 1000 `div` bytesPerSecond)),("transcript_status",str "pending")]
+   DB.saveAttachment s row
+   pure (row : rows, rest)
+
+-- | Every saved voice message of one recording.
+recordingParts :: Service -> Text -> Text -> IO [Value]
+recordingParts s a recording = filter (\v -> at v "kind" == "voice" && at v "recording" == recording) <$> DB.attachments s a
+
+-- | Still a draft: neither sent nor cancelled. Only drafts may wait in a composer, be returned
+-- to a phone, or be sent; sent and cancelled voice messages must never come back.
+draftable :: Value -> Bool
+draftable v = get v "sent" /= Bool True && get v "cancelled" /= Bool True
+
+validRecording :: Text -> IO ()
+validRecording recording = require (T.length recording == 36 && T.all (\c -> isHexDigit c || c == '-') recording) 400 "Invalid voice recording id"
+
+-- | Where a recording's progress and buffered audio live until it is cut.
+recordingDir :: Service -> Text -> Text -> FilePath
+recordingDir s a recording = serviceRoot s </> "uploads" </> T.unpack a </> "voice" </> T.unpack recording
+
+-- | Cancel a recording (the person pressed Cancel). Every voice message of it that is still a
+-- draft is marked "cancelled" (so it can never be transcribed, sent or brought back by a stale
+-- device) and its audio is deleted; the recording is closed so a late piece is refused.
+-- Voice messages already sent are history and stay. Safe to repeat.
+cancelRecording :: Service -> Text -> Text -> IO Value
+cancelRecording s a recording = do
+ validRecording recording
+ let dir = recordingDir s a recording
+ createDirectoryIfMissing True dir
+ atomicBytes (dir </> "progress.json") (encode (progressJSON startProgress { finished = True }))
+ buffers <- filter (\name -> takeExtension name == ".pcm") <$> listDirectory dir
+ forM_ buffers (removeIfPresent . (dir </>))
+ drafts <- filter draftable <$> recordingParts s a recording
+ forM_ drafts $ \row -> DB.updateAttachment s (put "cancelled" (Bool True) row)
+ DB.dropDrafts s a drafts
+ forM_ drafts $ \row -> do
+  let audio = T.unpack (at row "value")
+  removeIfPresent audio
+  void (try (removeDirectory (takeDirectory audio)) :: IO (Either IOException ()))
+ pure (obj [("recording",str recording),("cancelled",arr (map (`get` "id") drafts))])
+
+-- | Try a failed transcription again: the voice message goes back to "pending" and the
+-- background worker picks it up. Only a failed voice message that is still a draft qualifies.
+retryTranscription :: Service -> Text -> Text -> IO Value
+retryTranscription s a i = do
+ row <- maybe (failure 404 "Unknown voice message") pure . findId i =<< DB.attachments s a
+ require (at row "kind" == "voice" && draftable row) 404 "Unknown voice message"
+ require (at row "transcript_status" == "failed") 409 "Only a failed transcription can be retried"
+ let retried = remove ["transcript_error"] (put "transcript_status" (str "pending") row)
+ DB.updateAttachment s retried
+ pure retried
+
+-- | Audio waiting for the next cut, one file per piece number, so a new buffer never
+-- overwrites the one the saved progress still points to.
+bufferFile :: FilePath -> Int -> FilePath
+bufferFile dir piece = dir </> ("buffer-" <> show piece <> ".pcm")
 
 progressJSON :: Progress -> Value
 progressJSON p = obj [("next_piece",num (nextPiece p)),("next_part",num (nextPart p)),("buffered",num (buffered p)),("finished",Bool (finished p))]
 
+-- | Read saved progress strictly. Damaged or impossible state is an explicit error (logged),
+-- never silently turned into zeros, because it decides piece order and voice message numbers.
 readProgress :: FilePath -> IO Progress
 readProgress path = do
  exists <- doesFileExist path
  if not exists then pure startProgress else do
-  value <- maybe (failure 500 "Voice recording state is damaged") pure . decode . BL.fromStrict =<< BS.readFile path
-  pure (Progress (whole value "next_piece") (whole value "next_part") (whole value "buffered") (get value "finished" == Bool True))
- where whole v k = case get v k of Number n -> round n; _ -> 0
+  decoded <- eitherDecodeStrict <$> BS.readFile path
+  case decoded of
+   Right p | sane p -> pure p
+   Right p -> damaged ("impossible values " <> show p)
+   Left problem -> damaged problem
+ where
+ damaged problem = do
+  hPutStrLn stderr ("Voice recording state is damaged (" <> path <> "): " <> take 300 problem)
+  failure 500 "Voice recording state is damaged"
+ sane p = nextPiece p >= 0 && nextPart p >= 0 && nextPart p <= maxParts
+       && buffered p >= 0 && buffered p < messageLimit && even (buffered p)
+       && (not (finished p) || buffered p == 0)
 
 readIfPresent :: FilePath -> IO BS.ByteString
 readIfPresent path = doesFileExist path >>= \exists -> if exists then BS.readFile path else pure BS.empty
+
+removeIfPresent :: FilePath -> IO ()
+removeIfPresent path = doesFileExist path >>= \exists -> when exists (removeFile path)
 
 -- | Background transcription. Voice messages saved as "pending" are sent, one at a time, to
 -- whisper-server on this computer (the audio never leaves it); the text is saved on the

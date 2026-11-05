@@ -206,6 +206,11 @@ resolveAttachments s a ids checkFiles = do
  identities <- validated (attachmentIds ids)
  rows <- DB.attachments s a
  result <- validated (traverse (\i -> maybe (Left (APIError 400 "Unknown attachment for this Sapi")) Right (findId i rows)) identities)
+ -- Sending (checkFiles): a Sapi only ever gets a voice message's words, so it must be
+ -- transcribed, and a cancelled recording can never be sent.
+ when checkFiles $ forM_ result $ \row -> when (at row "kind" == "voice") $ do
+  require (get row "cancelled" /= Bool True) 409 ("This voice message was cancelled: " <> at row "name")
+  require (at row "transcript_status" == "done") 409 ("This voice message is not transcribed yet: " <> at row "name")
  when checkFiles $ forM_ result $ \row -> when (at row "kind" /= "link") $ doesFileExist (T.unpack (at row "value")) >>= \ok -> require ok 400 ("Attached file is no longer available: " <> at row "name")
  pure result
 attachmentPrompt :: Service -> [Value] -> IO Text

@@ -163,7 +163,7 @@ RSpec.describe 'Encrypted remote service contracts' do
     expect(messages.map { |m| [m['kind'], m['part'], m['duration_ms']] }).to eq([['voice', 0, 60000], ['voice', 1, 2000]])
     # The phone resends the last piece after a reconnect, with a new request id.
     send_frame(pack(op: 'api', method: 'POST', path: "/api/agents/#{chief}/voice", data: piece.(30)))
-    expect(receive['body']).to include('duplicate' => true, 'messages' => [])
+    expect(receive['body']).to include('duplicate' => true, 'messages' => replies.last['body']['messages'])
   end
 
   it 'keeps voice audio and its request unreadable on the relay' do

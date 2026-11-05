@@ -2,12 +2,13 @@ require 'socket'
 require 'json'
 
 # A stand-in for whisper-server on this computer. It answers every /inference request with the
-# same text, so voice specs do not need the real model, and notes whether audio arrived.
+# same text, so voice specs do not need the real model, and notes whether audio arrived and how
+# many requests came. With status: 500 it plays a Whisper that fails to transcribe.
 class WhisperStub
-  attr_reader :url
+  attr_reader :url, :requests
 
-  def initialize(text)
-    @text, @audio = text, false
+  def initialize(text, status: 200)
+    @text, @status, @audio, @requests = text, status, false, 0
     @server = TCPServer.new('127.0.0.1', 0)
     @url = "http://127.0.0.1:#{@server.addr[1]}"
     @thread = Thread.new do
@@ -35,8 +36,9 @@ class WhisperStub
     end
     body = headers['transfer-encoding'].to_s.include?('chunked') ? chunked(client) : client.read(headers['content-length'].to_i)
     @audio ||= request_line.include?('/inference') && body.to_s.b.include?('RIFF')
-    reply = JSON.generate(text: @text)
-    client.write("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: #{reply.bytesize}\r\nConnection: close\r\n\r\n#{reply}")
+    @requests += 1
+    reply = JSON.generate(@status == 200 ? {text: @text} : {error: 'stub failure'})
+    client.write("HTTP/1.1 #{@status} #{@status == 200 ? 'OK' : 'Error'}\r\nContent-Type: application/json\r\nContent-Length: #{reply.bytesize}\r\nConnection: close\r\n\r\n#{reply}")
   ensure
     client.close
   end

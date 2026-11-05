@@ -121,10 +121,11 @@ attachmentTable a = if "group_" `T.isPrefixOf` a then "group_attachments" else "
 saveAttachment :: Service -> Value -> IO ()
 saveAttachment s v = executeSQL s ("INSERT INTO " <> attachmentTable (at v "agent") <> " VALUES (?,?,?)") [sql (get v "id"),sql (get v "agent"),SQLText (jsonText v)]
 
--- | Voice messages still waiting for a transcript, across Sapis and groups.
+-- | Voice messages still waiting for a transcript, across Sapis and groups. A cancelled
+-- recording's voice messages are skipped: their audio is gone and nobody will send them.
 pendingVoices :: Service -> IO [Value]
 pendingVoices s = filter waiting . map (parseJSONText . (`at` "value")) <$> queryRows s "SELECT value FROM attachments UNION ALL SELECT value FROM group_attachments" ["value"] []
- where waiting v = at v "kind" == "voice" && at v "transcript_status" == "pending"
+ where waiting v = at v "kind" == "voice" && at v "transcript_status" == "pending" && get v "cancelled" /= Bool True
 -- | Replace a saved attachment's JSON (used to store a voice transcript).
 updateAttachment :: Service -> Value -> IO ()
 updateAttachment s v = executeSQL s ("UPDATE " <> attachmentTable (at v "agent") <> " SET value=? WHERE id=?") [SQLText (jsonText v), sql (get v "id")]
@@ -203,6 +204,12 @@ forgetDrafts :: Service -> Text -> [Value] -> IO ()
 forgetDrafts _ _ [] = pure ()
 forgetDrafts s owner rows = do
  forM_ rows $ \row -> updateAttachment s (put "sent" (Bool True) row)
+ dropDrafts s owner rows
+
+-- | Take these attachments out of the owner's composer drafts (sent or cancelled ones).
+dropDrafts :: Service -> Text -> [Value] -> IO ()
+dropDrafts _ _ [] = pure ()
+dropDrafts s owner rows = do
  prefs <- singleton s Preferences
  let drafts = get prefs "attachment_drafts"
      ids = map (`get` "id") rows
