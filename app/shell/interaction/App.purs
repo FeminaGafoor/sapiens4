@@ -128,7 +128,6 @@ handle runtime input = session input
       traverse_ (E.runUpdate runtime dispatch) plan.actions
     Send -> E.runUpdate runtime dispatch U.Send
     ToggleExpanded key -> E.runUpdate runtime dispatch $ U.ToggleExpanded key
-    Clarify work -> dispatch (Select work.owner) *> E.runUpdate runtime dispatch (U.SetClarification work)
     RemoveAttachment id -> E.runUpdate runtime dispatch $ U.RemoveAttachment id
     PrepareDraft preset placeholder -> E.captureScroll *> E.runUpdate runtime dispatch (U.PrepareDraft preset placeholder)
     Feedback -> do

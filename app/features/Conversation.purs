@@ -83,7 +83,6 @@ rows m =
   <> map (\msg -> Tuple (msg.chatKey) $ message m msg) messages
   <> [Tuple "empty" $ V.when (A.null messages) $ V.div "empty" [V.text $ if M.isGroup a then "Message the Group to reach " <> (M.agent m a.lead).name <> ", or @mention a member." else "Start a conversation."]]
   <> (if M.isGroup a then map groupProgress (A.filter (\r -> A.elem (r.status) [X.Queued,X.Running,X.Failed,X.Interrupted]) $ a.requests) else map personalProgress (A.filter (\t -> t.agent == m.selected && M.blocksChat t && (t.batch_id == "" || t.batch_id == t.id)) $ m.snapshot.turns))
-  <> map (\w -> Tuple ("clarify:" <> w.id) $ V.button "button" "Answer Chief" $ Clarify w) (A.filter (\w -> w.state == X.WorkWaitingForAdmin && A.elem m.selected [w.owner,w.origin.agent]) $ m.snapshot.workloads)
   where
   a = M.selected m
   messages = fromMaybe [] $ O.lookup m.selected m.messages
@@ -127,7 +126,5 @@ composer m = V.node "div" [V.cls "composer-area",V.id "composer-area",V.hidden $
           Just (X.TranscriptFailed _) -> [V.button "button voice-retry" "Retry" (VoiceRetry item.id)]
           _ -> [])
     <> [V.icon ("Remove " <> item.name) "×" $ RemoveAttachment $ item.id]
-  placeholder = case m.clarification of
-    Just work | work.owner == m.selected -> "Clarify " <> work.taskId <> " for Chief…"
-    _ -> if N.limit m.env < 3 then "Message…" else "Message " <> a.name <> "…"
+  placeholder = if N.limit m.env < 3 then "Message…" else "Message " <> a.name <> "…"
   blocked = not (M.online m) || (M.busy m) || a.retired || a.archived || A.elem (m.snapshot.corpora.status) [X.Paused,X.Archived] || Set.member m.selected m.sending || m.uploading > 0 || M.voiceBusy m
