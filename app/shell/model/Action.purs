@@ -29,7 +29,6 @@ data Action
   | Send
   | RetryDocument String
   | ToggleExpanded String
-  | Clarify X.Workload
   | Menu String
   | CloseMenu
   | OpenDialog DialogKind F.Context

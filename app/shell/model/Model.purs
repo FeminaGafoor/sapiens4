@@ -109,7 +109,7 @@ type ContentState r =
   ( snapshot :: X.Snapshot, agents :: Array X.Entity, messages :: O.Object (Array X.Message)
   , mention :: Maybe { start :: Int, end :: Int, choices :: Array X.Entity, index :: Int }
   , drafts :: O.Object String, attachments :: O.Object (Array X.Attachment), sending :: Set.Set String
-  , uploading :: Int, clarification :: Maybe X.Workload
+  , uploading :: Int
   , workspaces :: O.Object X.Workspace, workspaceRevision :: Number, documents :: O.Object (RemoteData String X.Document)
   , expanded :: Set.Set String, imageUrls :: O.Object String, preview :: RemoteData PreviewError String
   , scrollPosition :: Maybe Browser.ScrollPosition, restoringScroll :: Boolean
@@ -127,7 +127,7 @@ type SessionState =
 initial :: Environment -> Model
 initial env =
   { snapshot:X.emptySnapshot, agents:[], messages:O.empty, selected:"", activity:N.Chat N.Conversation, scope:N.All, groupView:Nothing
-  , mention:Nothing, drafts:O.empty, attachments:O.empty, sending:Set.empty, uploading:0, clarification:Nothing, voice:Nothing, outbox:Nothing
+  , mention:Nothing, drafts:O.empty, attachments:O.empty, sending:Set.empty, uploading:0, voice:Nothing, outbox:Nothing
   , workspaces:O.empty, workspaceRevision:0.0, documents:O.empty, expanded:Set.empty
   , polling:false,pollGeneration:0,saving:false,lastPreview:0.0,nativeReporting:false,nativeReports:[]
   , epoch:0, sequence:0, now:0.0, env, panes:[N.ChatPane,N.Sidebar,N.Workspace], search:"", searchOpen:false, menu:Nothing, dialog:Nothing
@@ -244,7 +244,7 @@ reset raw old = case X.decodeSnapshot raw of
 resetSnapshot :: X.Snapshot -> Model -> Model
 resetSnapshot snapshot old = projectSnapshot snapshot old
   {selected=p.selected,activity=p.activity,scope=p.scope,groupView=p.groupView,drafts=p.drafts
-  ,attachments=snapshot.attachment_drafts,sending=Set.empty,uploading=0,clarification=Nothing,documents=O.empty,expanded=Set.empty,epoch=old.epoch+1
+  ,attachments=snapshot.attachment_drafts,sending=Set.empty,uploading=0,documents=O.empty,expanded=Set.empty,epoch=old.epoch+1
   ,panes=p.panes,workspaces=p.workspaces,workspaceRevision=p.workspaceRevision,search="",searchOpen=false
   ,preview=NotAsked,address="",scrollPosition=p.scrollPosition,restoringScroll=p.scrollPosition /= Nothing}
   where
