@@ -52,10 +52,15 @@ handle runtime dispatch action = case action of
                                    , recording: "", startedAt, elapsed: 0.0 } }
         E.later 1000.0 (dispatch VoiceTick)
         E.attempt (toAffE $ B.voiceStart "/voice-worklet.js" pieceSeconds (HS.notify listener)) case _ of
+          -- Like the success branch: only the recording that asked may react. A late failure from a
+          -- cancelled recording must not clear a newer one.
           Left err -> do
             H.unsubscribe subscription
-            H.modify_ _ { voice = Nothing }
-            E.notify ("Microphone unavailable: " <> message err)
+            H.gets _.voice >>= case _ of
+              Just w | w.subscription == subscription -> do
+                H.modify_ _ { voice = Nothing }
+                E.notify ("Microphone unavailable: " <> message err)
+              _ -> pure unit
           Right recorder -> H.gets _.voice >>= case _ of
             Just w | w.subscription == subscription -> case w.phase of
               M.Starting -> H.modify_ _ { voice = Just w { phase = M.Recording recorder } }
