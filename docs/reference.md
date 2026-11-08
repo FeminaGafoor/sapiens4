@@ -31,10 +31,14 @@ sections; about/map enter model context and the model reads relevant content as
 needed. Store media as separate files. Link to them from Notes.html with a relative workspace
 path or an HTTP(S) URL. Inline images and data URLs are unsupported.
 
+A restored tab loads its native browser view the first time it becomes visible. Switching away keeps its page and history in memory until the tab closes.
+
 Native desktop tabs open websites, local files and bookmarks. Text/source files
 render literally; HTML, PDF and media use the native browser. Closing a tab does
 not delete its file. Remote clients can preview text files and control the host's
 tabs, but do not stream native browser views.
+
+Local Workspace windows receive change notifications over a same-origin WebSocket and fetch a snapshot when needed. A hidden window disconnects and catches up when shown. Hosts without the updates endpoint fall back to periodic HTTP requests. Remote relay connections keep their existing refresh behavior.
 
 ## Configuration
 
@@ -85,6 +89,7 @@ a supplied Origin must match the loopback Host. Common entrypoints:
 | Method | Path | Purpose |
 | --- | --- | --- |
 | GET | `/api/health`, `/api/state` | Readiness and current state |
+| WebSocket | `/api/host/corpora/<id>/api/updates` | Current revision on subscribe and after local changes. Compare with `updates_revision` in the state response. |
 | POST / PUT | `/api/agents`, `/api/agents/<id>` | Create/update Sapis |
 | POST | `/api/agents/<id>/messages`, `/api/agents/<id>/attachments` | Submit chat or attachments |
 | GET | `/api/agents/<id>/notes` | Memo and file metadata |

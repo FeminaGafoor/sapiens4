@@ -70,7 +70,9 @@ recentPulses s = queryRows s "SELECT value FROM pulse_calls ORDER BY sequence DE
 decodeStored :: FromJSON a => Text -> IO a
 decodeStored raw = either (failure 500 . T.pack) pure (eitherDecodeStrict (Data.Text.Encoding.encodeUtf8 raw))
 putValue :: Service -> Collection -> Text -> Value -> IO ()
-putValue s table i v = connection s $ \db -> putValueOn db table i v
+putValue s table i v = do
+ changed <- connection s $ \db -> putValueOn db table i v >> changes db
+ when (changed > 0) (notifyChange s)
 putValueOn :: Connection -> Collection -> Text -> Value -> IO ()
 putValueOn db table i v = executeOn db ("INSERT INTO " <> tableName table <> " VALUES (?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value WHERE value IS NOT excluded.value") [SQLText i,SQLText (jsonText v)]
 singleton :: Service -> Collection -> IO Value
@@ -123,7 +125,9 @@ saveAttachment s v = executeSQL s ("INSERT INTO " <> attachmentTable (at v "agen
 message :: Service -> Text -> Text -> [Value] -> IO ()
 message s i t as = executeSQL s "INSERT OR IGNORE INTO message_inputs VALUES (?,?,?)" [SQLText i,SQLText t,SQLText (jsonText (arr as))]
 record :: Service -> [Text] -> Text -> Text -> Value -> Text -> Maybe Text -> IO ()
-record s owners entity event details suppliedActor suppliedAgency = connection s $ \db -> SQLite.withTransaction db $ recordOn s db owners entity event details suppliedActor suppliedAgency
+record s owners entity event details suppliedActor suppliedAgency = do
+ connection s $ \db -> SQLite.withTransaction db $ recordOn s db owners entity event details suppliedActor suppliedAgency
+ notifyChange s
 recordOn :: Service -> Connection -> [Text] -> Text -> Text -> Value -> Text -> Maybe Text -> IO ()
 recordOn s db owners entity event details suppliedActor suppliedAgency = do
  (source,kind) <- currentActor s
@@ -151,10 +155,15 @@ projectTurn owner state turn = TurnProjection status origin owners actor output
  output=listToMaybe [get m "content" | m<-items (stateJSON state) "chat",get m "turn"==toJSON (turnId turn),at m "role"=="agent"]
 
 project :: Service -> Text -> IO ()
-project s a = do
+project s a = void (projectArchives s a)
+
+-- The update subscription needs the archive inputs even if a large state cannot
+-- be retained in the bounded projection cache.
+projectArchives :: Service -> Text -> IO [Turn]
+projectArchives s a = do
  input <- agentStateInput s a
  case cachedProjection input of
-  ProjectionCommitted [] -> pure ()
+  ProjectionCommitted [] -> pure []
   cached -> do
    let state = cachedState input
        pending = case cached of
@@ -179,6 +188,7 @@ project s a = do
      pure (if archiveNeeded then Just typed else Nothing))
    -- Promote only after commit; archive files remain authoritative on cache hits.
    modifyMVar_ (serviceStates s) $ pure . M.adjust (\entry -> if cachedBytes entry == cachedBytes input then entry {cachedProjection=ProjectionCommitted archiveTurns} else entry) a
+   pure archiveTurns
 turns :: Service -> IO [Value]
 turns s = do
  rows <- queryRows s "SELECT id,agent,flow,input,status,output,error,created FROM turns ORDER BY created,id" ["id","agent","flow","input","status","output","error","created"] []

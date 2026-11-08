@@ -207,12 +207,16 @@ applyLatest browser = do
         dead <- readIORef (disposed browser)
         unless dead $ do
           current <- readIORef (tabs browser)
-          let use tab = applySpec browser tab spec >> apply remaining
-          maybe (createTab browser owner identity use) (\tab -> applyTheme browser tab >> use tab) (M.lookup (owner ++ "/" ++ identity) current)
+          let use fresh tab = applySpec browser fresh tab spec >> apply remaining
+          case M.lookup (owner ++ "/" ++ identity) current of
+            Just tab -> applyTheme browser tab >> use False tab
+            Nothing | boolean (field "visible" message) && owner == string (field "owner" message) && identity == string (field "active" message) ->
+              createTab browser owner identity (use True)
+            Nothing -> apply remaining
   apply desired `catch` \(errorValue :: SomeException) -> writeIORef (syncing browser) False >> windowTitle (window browser) ("Sapiens4 — " ++ displayException errorValue)
 
-applySpec :: Browser -> Tab -> Value -> IO ()
-applySpec browser tab spec = do
+applySpec :: Browser -> Bool -> Tab -> Value -> IO ()
+applySpec browser fresh tab spec = do
   when (field "zoom" spec /= Null) $ zoom (tabView tab) $ number $ field "zoom" spec
   command <- case field "command" spec of
     Null -> pure Nothing
@@ -220,7 +224,8 @@ applySpec browser tab spec = do
       Success parsed -> pure (Just parsed)
       Error reason -> ioError (userError reason)
   oldSequence <- readIORef (tabSequence tab)
-  case browserTransition (T.pack oldSequence) command of
+  let transition = if fresh then BrowserExecute (BrowserCommand (maybe "" browserSequence command) Navigate) else browserTransition (T.pack oldSequence) command
+  case transition of
     BrowserUnchanged -> pure ()
     BrowserExecute instruction -> do
       writeIORef (tabSequence tab) (T.unpack (browserSequence instruction))

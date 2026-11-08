@@ -8,6 +8,7 @@ module Types (module Types, module Domain) where
 import Domain
 
 import Control.Concurrent
+import Control.Concurrent.STM (TVar, atomically, modifyTVar')
 import Control.Concurrent.Async
 import Control.Exception
 import Control.Monad
@@ -19,6 +20,7 @@ import qualified Data.ByteString as BS
 import Data.IORef
 import Data.List (find)
 import Data.Map.Strict (Map)
+import Data.Set (Set)
 import qualified Data.Map.Strict as M
 import Data.Maybe
 import Data.Text (Text)
@@ -54,7 +56,11 @@ data RunFailure = RunFailure Text [Value] deriving (Show,Typeable)
 instance Exception RunFailure
 
 data Run = Run { runOwner :: AgentId, runId :: RunId, runSlot :: Int, runCancel :: IORef Bool, runProcess :: MVar (Maybe ProcessHandle), runActivity :: IORef Value, runDeadline :: Word64 }
-data Service = Service { serviceRoot :: FilePath, repositoryRoot :: FilePath, serviceGuard :: MVar (), serviceFileLock :: FileLock, serviceStopping :: IORef Bool, serviceWorker :: MVar (Maybe (Async ())), serviceRuns :: MVar (Map RunId Run), serviceLease :: IORef (Maybe (AgentId, RunId)), serviceEndpoint :: IORef Text, servicePulse :: IORef Value, serviceActors :: MVar (Map ThreadId (Text,Maybe Text)), serviceDatabase :: MVar (Maybe Connection), serviceStates :: MVar (Map Text CachedAgentState) }
+data Service = Service { serviceRoot :: FilePath, repositoryRoot :: FilePath, serviceGuard :: MVar (), serviceFileLock :: FileLock, serviceStopping :: IORef Bool, serviceWorker :: MVar (Maybe (Async ())), serviceRuns :: MVar (Map RunId Run), serviceLease :: IORef (Maybe (AgentId, RunId)), serviceEndpoint :: IORef Text, servicePulse :: IORef Value, serviceActors :: MVar (Map ThreadId (Text,Maybe Text)), serviceDatabase :: MVar (Maybe Connection), serviceStates :: MVar (Map Text CachedAgentState)
+ , serviceRevision :: TVar Integer, updateSubscribers :: TVar Int, snapshotFiles :: IORef (Set FilePath) }
+
+notifyChange :: Service -> IO ()
+notifyChange s = atomically $ modifyTVar' (serviceRevision s) (+1)
 
 -- Committed projections retain only turns that still depend on archive output.
 data ProjectionStatus = ProjectionPending | ProjectionCommitted [Turn]

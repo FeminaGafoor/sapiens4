@@ -47,6 +47,7 @@ handle runtime input = session input
   session action = case action of
     Initialize -> do
       H.modify_ _ {feedback="Connecting…"}
+      void $ H.subscribe $ const Poll <$> runtime.updates.events
       traverse_ (\(Tuple target event) -> void $ H.subscribe $ (Global <<< Browser.globalEvent event) <$> HS.makeEmitter (B.subscribe target event))
         [Tuple "window" "error",Tuple "window" "unhandledrejection",Tuple "window" "resize",Tuple "viewport" "resize",Tuple "window" "online",Tuple "window" "storage",Tuple "window" "pagehide",Tuple "window" "pageshow",Tuple "window" "popstate",Tuple "window" "beforeinstallprompt",Tuple "document" "visibilitychange",Tuple "document" "click"]
       void $ H.subscribe $ GlobalEvent "keydown" <$> HS.makeEmitter (B.subscribeEvent "document" "keydown")

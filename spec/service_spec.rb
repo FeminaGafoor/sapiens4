@@ -19,6 +19,15 @@ RSpec.describe 'Local service contracts' do
     end
   end
 
+  it 'requires a trusted origin and a known local corpora for update subscriptions' do
+    id = host.api('GET', '/api/corpora').fetch('id')
+    path = "/api/host/corpora/#{id}/api/updates"
+    expect(host.request('GET', path).first).to eq(403)
+    expect(host.request('GET', path, nil, {'Origin' => 'https://example.org'}).first).to eq(403)
+    expect(host.request('GET', path + '?token=x', nil, {'Origin' => host.url}).first).to eq(403)
+    expect(host.request('GET', path.sub(id, 'missing'), nil, {'Origin' => host.url}).first).to eq(404)
+  end
+
   it 'reports health, serves the complete UI and refuses a second host for the same workspace' do
     code, health, headers = host.request('GET', '/api/health')
     expect(code).to eq(200)

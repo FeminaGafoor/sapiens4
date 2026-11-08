@@ -65,6 +65,7 @@ data Action
 
 data Command
   = SaveRegistry (Array X.Corpora)
+  | StopUpdates
   | SaveActive String
   | ConnectRecord X.Corpora
   | ChangeLifecycle X.LifecycleIntent
@@ -135,7 +136,7 @@ update action m = case action of
           localPair = not (M.remote m) && S.contains (S.Pattern "pairing=local") m.env.search
           local = A.find ((_ == X.Local) <<< _.location) registry.records
           connect = case selected of
-            Nothing -> []
+            Nothing -> [StopUpdates]
             Just record -> [if record.key == m.active then ConnectRecord record else Dispatch $ Shell.EnterCorpora record.key]
           pairing = if localPair then [ReplaceHistory m.env.path] <> (case local of
             Nothing -> []
@@ -206,7 +207,7 @@ update action m = case action of
                       tab = M.activeTab current
                   in current {snapshotContent=Just content,records=map (\r -> if r.key == active then X.updateCorpora r snapshot.corpora else r) m.records
                     ,address=if m.addressOpen then m.address else D.fallback (if tab.url == "about:blank" then "" else tab.url) $ tab.path}
-              previewDue = now - m.lastPreview >= 2000.0
+              previewDue = (M.activeRecord m).location == X.Local || now - m.lastPreview >= 2000.0
               updated = projected {polling=false,now=now,connection=M.connectionResult true m.connection,feedback="",lastPreview=if previewDue then now else m.lastPreview}
               previews = if previewDue then [LoadPreview] else []
               commands = case change of
@@ -336,7 +337,10 @@ update action m = case action of
   ReceivePreview requested result -> case m.preview of
     M.Loading pending _
       | requested.epoch == m.epoch && requested == pending ->
-          Changed (m {preview=either (M.Failed requested) (M.Ready requested) result}) []
+          let stale = case M.currentPreview m of
+                Just current -> current.path /= requested.path || current.revision /= requested.revision
+                Nothing -> false
+          in Changed (m {preview=either (M.Failed requested) (M.Ready requested) result}) (if stale then [LoadPreview] else [])
     _ -> Unchanged
 
 type KeyPlan = {prevent :: Boolean, stop :: Boolean, actions :: Array Action}

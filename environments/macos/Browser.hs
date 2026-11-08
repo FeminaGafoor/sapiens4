@@ -77,6 +77,8 @@ createTab browser owner ident = do
     void (obj1 view "setAllowsBackForwardNavigationGestures:" (int 1))
     void (obj1 view "setHidden:" (int 1))
     forM_ ["title", "URL"] $ \name -> str name >>= \s -> void (obj4 view "addObserver:forKeyPath:options:context:" target s (int 1) nullPtr)
+    void (obj0 scriptObject "release")
+    void (obj0 configuration "release")
     pure (Tab owner ident view "" Nothing Nothing "" False Set.empty)
 
 returnFocus browser view = do
@@ -104,6 +106,7 @@ load browser tab address = do
             parts <- new "NSURLComponents"
             setText parts "setScheme:" "sapiens-file"; setText parts "setHost:" "local"; setText parts "setPath:" path
             obj0 parts "URL" >>= \local -> textProp local "absoluteString" >>= loadURL (tabView tab)
+            void (obj0 parts "release")
       else when (scheme `elem` ["http","https"] || address == "about:blank") $ loadURL (tabView tab) address
 
 sync browser input = do
@@ -115,48 +118,55 @@ sync browser input = do
         visible = bool (field "visible" input)
     previousDark <- atomicModifyIORef' (dark browser) (\old -> (isDark,old))
     writeIORef (current browser) selected
-    alive <- fmap concat $ forM workspaces $ \(owner,workspace) -> forM (array (field "tabs" workspace)) $ \item -> do
-        let ident = text (field "id" item); address = text (field "url" item)
-            identity = owner <> ":" <> ident
-        command <- case field "command" item of
-            Null -> pure Nothing
-            value -> case fromJSON value of
-                Success parsed -> pure (Just parsed)
-                Error reason -> ioError (userError reason)
-        let sequence = maybe "" browserSequence command
-        stored <- Map.lookup identity <$> readIORef (tabs browser)
-        tab <- maybe (createTab browser owner ident) pure stored
-        when (isNothing stored) $ do
-            save browser tab
-            void (obj3 container "addSubview:positioned:relativeTo:" (tabView tab) (int 1) sh)
-        appearance <- cls "NSAppearance" >>= \c -> str (if isDark then "NSAppearanceNameDarkAqua" else "NSAppearanceNameAqua") >>= obj1 c "appearanceNamed:"
-        void (obj1 (tabView tab) "setAppearance:" appearance)
-        color <- cls "NSColor" >>= \c -> obj0 c (if isDark then "blackColor" else "whiteColor")
-        void (obj1 (tabView tab) "setUnderPageBackgroundColor:" color)
-        when (isDark /= previousDark) $ script (tabView tab) ("window.sapiensDocumentTheme?.({dark:" <> (if isDark then "true" else "false") <> "})")
-        setNumber (tabView tab) "setPageZoom:" (numeric 1 (field "zoom" item) :: Double)
-        when (tabSequence tab /= sequence) $ do
-            let pending = tab { tabSequence = sequence, tabError = "", tabAwaiting = True }
-            save browser pending
-            if isNothing stored || fmap browserAction command == Just Navigate then load browser pending address else case fmap browserAction command of
-                Just Reload -> do
-                    u <- obj0 (tabView tab) "URL"; raw <- textProp u "absoluteString"; normal <- fileAddress raw; actual <- url normal; scheme <- textProp actual "scheme"
-                    if scheme == "file" then load browser pending normal else void (obj0 (tabView tab) "reload")
-                Just Back -> history browser pending "canGoBack" "goBack"
-                Just Forward -> history browser pending "canGoForward" "goForward"
-                Just Navigate -> load browser pending address
-                Nothing -> pure ()
-        let hidden = identity /= selected || not visible
-        when hidden $ returnFocus browser (tabView tab)
-        void (obj1 (tabView tab) "setHidden:" (flag hidden))
-        pure identity
     existing <- readIORef (tabs browser)
-    forM_ (Map.toList existing) $ \(identity,tab) -> unless (identity `elem` alive) $ do
+    let specs = [(owner,item) | (owner,workspace) <- workspaces, item <- array (field "tabs" workspace)]
+        identity owner item = owner <> ":" <> text (field "id" item)
+        alive = Set.fromList [identity owner item | (owner,item) <- specs]
+    forM_ specs $ \(owner,item) -> do
+        let ident = text (field "id" item); address = text (field "url" item)
+            tabKey = identity owner item
+            stored = Map.lookup tabKey existing
+            shown = visible && tabKey == selected
+        when (shown || isJust stored) $ do
+            command <- case field "command" item of
+                Null -> pure Nothing
+                value -> case fromJSON value of
+                    Success parsed -> pure (Just parsed)
+                    Error reason -> ioError (userError reason)
+            let sequence = maybe "" browserSequence command
+            tab <- maybe (createTab browser owner ident) pure stored
+            when (isNothing stored) $ do
+                save browser tab
+                void (obj3 container "addSubview:positioned:relativeTo:" (tabView tab) (int 1) sh)
+            appearance <- cls "NSAppearance" >>= \c -> str (if isDark then "NSAppearanceNameDarkAqua" else "NSAppearanceNameAqua") >>= obj1 c "appearanceNamed:"
+            void (obj1 (tabView tab) "setAppearance:" appearance)
+            color <- cls "NSColor" >>= \c -> obj0 c (if isDark then "blackColor" else "whiteColor")
+            void (obj1 (tabView tab) "setUnderPageBackgroundColor:" color)
+            when (isDark /= previousDark) $ script (tabView tab) ("window.sapiensDocumentTheme?.({dark:" <> (if isDark then "true" else "false") <> "})")
+            setNumber (tabView tab) "setPageZoom:" (numeric 1 (field "zoom" item) :: Double)
+            when (isNothing stored || tabSequence tab /= sequence) $ do
+                let pending = tab { tabSequence = sequence, tabError = "", tabAwaiting = True }
+                save browser pending
+                if isNothing stored || fmap browserAction command == Just Navigate then load browser pending address else case fmap browserAction command of
+                    Just Reload -> do
+                        u <- obj0 (tabView tab) "URL"; raw <- textProp u "absoluteString"; normal <- fileAddress raw; actual <- url normal; scheme <- textProp actual "scheme"
+                        if scheme == "file" then load browser pending normal else void (obj0 (tabView tab) "reload")
+                    Just Back -> history browser pending "canGoBack" "goBack"
+                    Just Forward -> history browser pending "canGoForward" "goForward"
+                    Just Navigate -> load browser pending address
+                    Nothing -> pure ()
+            let hidden = not shown
+            when hidden $ returnFocus browser (tabView tab)
+            void (obj1 (tabView tab) "setHidden:" (flag hidden))
+    forM_ (Map.toList existing) $ \(identity,tab) -> unless (Set.member identity alive) $ do
         returnFocus browser (tabView tab)
         target <- readIORef (delegate browser)
         forM_ ["title","URL"] $ \name -> str name >>= \s -> void (obj2 (tabView tab) "removeObserver:forKeyPath:" target s)
         void (obj0 (tabView tab) "stopLoading"); void (obj0 (tabView tab) "removeFromSuperview")
         modifyIORef' (tabs browser) (Map.delete identity)
+        void (obj1 (tabView tab) "setNavigationDelegate:" nullPtr)
+        void (obj1 (tabView tab) "setUIDelegate:" nullPtr)
+        void (obj0 (tabView tab) "release")
     let bounds = field "rect" input
         x = numeric 0 (field "x" bounds); y = numeric 0 (field "y" bounds)
         w = numeric 0 (field "width" bounds); h = numeric 0 (field "height" bounds)
@@ -285,6 +295,7 @@ serveFile browser view task = do
             response <- allocated "NSURLResponse" >>= \o -> obj4 o "initWithURL:MIMEType:expectedContentLength:textEncodingName:" u mime (int (B.length content)) encoding
             body <- dataObject content
             void (obj1 task "didReceiveResponse:" response); void (obj1 task "didReceiveData:" body); void (obj0 task "didFinish")
+            void (obj0 response "release")
 
 openPanel parameters completion = do
     panel <- new "NSOpenPanel"

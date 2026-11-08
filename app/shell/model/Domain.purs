@@ -17,7 +17,7 @@ derive newtype instance eqSnapshotContent :: Eq SnapshotContent
 
 -- Pulse counters are not consumed by Snapshot.
 snapshotContent :: Json -> SnapshotContent
-snapshotContent = SnapshotContent <<< D.encode <<< D.remove "pulse" <<< D.remove "pulses"
+snapshotContent = SnapshotContent <<< D.encode <<< D.remove "updates_revision" <<< D.remove "pulse" <<< D.remove "pulses"
 
 data EntityKind = Sapi | Group
 derive instance eqEntityKind :: Eq EntityKind

@@ -4,6 +4,7 @@
 module Service (Service, APIError(..), openService, startService, closeService, serviceRoot, attachEndpoint, dispatch, snapshot, corporaIdentity) where
 
 import Control.Concurrent
+import Control.Concurrent.STM (newTVarIO, readTVarIO)
 import Control.Concurrent.Async
 import Control.Exception
 import Control.Monad
@@ -11,6 +12,7 @@ import Data.Aeson hiding (pairs)
 import qualified Data.ByteString.Lazy as BL
 import Data.IORef
 import qualified Data.Map.Strict as M
+import qualified Data.Set as Set
 import Data.Maybe
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -58,7 +60,10 @@ openService path = do
       pulse <- newIORef empty
       actors <- newMVar M.empty
       states <- newMVar M.empty
-      let s=Service root repo guard lock stopping worker runs lease endpoint pulse actors database states
+      revision <- newTVarIO 0
+      subscribers <- newTVarIO 0
+      files <- newIORef Set.empty
+      let s=Service root repo guard lock stopping worker runs lease endpoint pulse actors database states revision subscribers files
       DB.initialize s
       migrateWorkspaces s
       let identityPath=root </> "corpora-identity.json"
@@ -112,8 +117,12 @@ snapshot :: Service -> IO Value
 snapshot s = locked s (snapshotUnlocked s)
 snapshotUnlocked :: Service -> IO Value
 snapshotUnlocked s = do
+ revision <- readTVarIO (serviceRevision s)
  rows <- DB.agents s
- mapM_ (DB.project s . (`at` "id")) rows
+ archives <- fmap concat $ forM rows $ \row -> do
+  let owner = at row "id"
+  turns <- DB.projectArchives s owner
+  pure [archivePath s owner ("runs/" <> runIdText (turnId t)) | t <- turns]
  GC.reconcileGroups s
  turns <- DB.turns s
  prefs <- DB.singleton s DB.Preferences
@@ -143,7 +152,14 @@ snapshotUnlocked s = do
   pure (run,merge value (obj [("turn",str (runIdText (runId run))),("stopping",Bool stopping),("agencyKind",str "chatInput"),("slot",num (runSlot run))]))
  let groupTurns=M.fromList [(at request "id",at g "id") | g<-groups,request<-items g "requests"]
      projected=[maybe t (\gid->put "group" (str gid) t) (M.lookup (at t "id") groupTurns) | t<-turns]
- pure $ obj [("agents",arr agentRows),("turns",arr projected),("preferences",prefs),("corpora",corpora),("groups",arr groups),("routines",arr routines),("creation_template",str (T.strip creation)),("computer",obj [("owner",owner),("built",Bool built),("platform",str (if os=="mingw32" then "win32" else T.pack os))]),("pulses",arr pulses),("events",events),("pulse",pulse),("provider",str "codex"),("activity",obj [(agentIdText (runOwner r),v) | (r,v)<-activity]),("run_activity",obj [(runIdText (runId r),v) | (r,v)<-activity]),("main_agent_id",str chief),("workloads",arr (D.workSummaries works)),("attachment_drafts",obj drafts),("orchestration",obj orchestration)]
+ -- Watch metadata for inputs that may be edited without going through the API.
+ binary <- blindly s
+ let owners = map (`at` "id") rows
+     stateFiles = [agentRoot s a </> f | a <- owners, f <- ["state.json","host.json","run-settings.json","execution.json"]]
+     notes = [workspaceRoot s (at row "id") </> f | row <- rows ++ groups, f <- ["Notes.html","Notes.history.json"]]
+     documents = [T.unpack (at t "path") | (_,w) <- pairs (get prefs "workspaces"), t <- items w "tabs", has t "path"]
+ writeIORef (snapshotFiles s) $! Set.fromList $ [binary,repositoryRoot s </> "corpora/prompts/creation-request.md",serviceRoot s </> "corpora-settings.json",serviceRoot s </> "agentpy/corpora/directory.json"] ++ stateFiles ++ notes ++ archives ++ documents
+ pure $ obj [("updates_revision",toJSON revision),("agents",arr agentRows),("turns",arr projected),("preferences",prefs),("corpora",corpora),("groups",arr groups),("routines",arr routines),("creation_template",str (T.strip creation)),("computer",obj [("owner",owner),("built",Bool built),("platform",str (if os=="mingw32" then "win32" else T.pack os))]),("pulses",arr pulses),("events",events),("pulse",pulse),("provider",str "codex"),("activity",obj [(agentIdText (runOwner r),v) | (r,v)<-activity]),("run_activity",obj [(runIdText (runId r),v) | (r,v)<-activity]),("main_agent_id",str chief),("workloads",arr (D.workSummaries works)),("attachment_drafts",obj drafts),("orchestration",obj orchestration)]
 validatePreferenceShape :: Value -> Validation ()
 validatePreferenceShape d = do
  check (all (`elem` ["selected","panel","scope","groupView","panes","drafts","attachment_drafts"]) (keys d)) 400 "Unknown preference field"
@@ -175,7 +191,7 @@ dispatch s method target body = locked s $ do
  when write $ require (case d of Object _->True; _->False) 400 "Expected a JSON object"
  cfg <- corporaSettings s
  when (write && corporaStatus cfg/=Active && ("/messages" `T.isSuffixOf` path || "/run" `T.isSuffixOf` path || "/turns/" `T.isInfixOf` path)) $ failure 409 "Activate this corpora before starting work"
- let json code action = do value<-action; pure (code,encode value,"application/json; charset=utf-8")
+ let json code action = do value<-action; when write (notifyChange s); pure (code,encode value,"application/json; charset=utf-8")
      owner kind a=if kind=="groups" then void (G.getGroup s a False) else void (DB.agent s a)
  case (method,parts) of
   ("GET",["api","health"]) -> json 200 (pure (obj [("status",str "ok"),("provider",str "codex")]))

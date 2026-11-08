@@ -11,10 +11,27 @@ RSpec.describe 'Working with browser tabs and documents', :desktop do
     end
     @host = desktop_host
     host.control(chief, 'workspace_open', url: @pages.url + '/first')
+    # Restore two tabs, with the second one in the background.
+    if RSpec.current_example.metadata[:lazy_tabs]
+      first = host.state.dig('preferences', 'workspaces', chief, 'activeTab')
+      host.control(chief, 'workspace_open', url: @pages.url + '/second')
+      host.control(chief, 'workspace_focus', id: first)
+    end
     start_desktop
     desktop.see('Play First')
   end
   after { @pages&.close }
+
+  it 'loads restored background tabs only on selection and retains visited pages', :lazy_tabs do
+    expect(@pages.requests.map { |r| r[:path] }).not_to include('/second')
+    desktop.fill('First input', 'Keep this page')
+    second = host.state.dig('preferences', 'workspaces', chief, 'tabs').find { |t| t['url'].end_with?('/second') }
+    host.control(chief, 'workspace_focus', id: second.fetch('id'))
+    desktop.see('Play Second')
+    desktop.press('First player')
+    expect(desktop.find('First input', role: 'AXTextField')['value']).to eq('Keep this page')
+    expect(@pages.requests.count { |r| r[:path] == '/first' }).to eq(1)
+  end
 
   it 'opens a site that forbids framing and follows its links' do
     desktop.click('Play First')

@@ -5,10 +5,12 @@ import Data.Argonaut.Core (Json)
 import Data.Array as A
 import Data.Either (Either(..), either)
 import Data.Foldable (traverse_)
-import Data.Maybe (Maybe(..), maybe)
+import Data.Maybe (Maybe(..), maybe, isJust)
 import Data.Tuple (Tuple(..))
 import Effect.Aff (Aff, Milliseconds(..), delay, try, throwError)
 import Effect.Class (liftEffect)
+import Effect.Ref as Ref
+import Sapiens.Updates as Updates
 import Effect.Exception (Error, error, message)
 import Halogen as H
 import Sapiens.Browser as Browser
@@ -45,18 +47,21 @@ modifyDialog :: Int -> (M.Dialog -> M.Dialog) -> UI Unit
 modifyDialog id f = H.modify_ \m -> m {dialog=map (\d -> if d.identity == id then f d else d) m.dialog}
 
 refresh :: C.Runtime -> Dispatch -> M.Model -> Aff Json -> UI Unit
-refresh runtime dispatch requested operation = attempt operation \result -> inEpoch requested.epoch \m ->
-  when (requested.active == m.active) $ case result of
-    Left failure -> runUpdate runtime dispatch $ U.SnapshotReceived requested.epoch requested.active $ Left $ message failure
-    Right raw -> do
-      let content = X.snapshotContent raw
-      now <- liftEffect B.now
-      incoming <- if m.snapshotContent == Just content then pure $ Right U.KeepSnapshot else do
-        captureScroll
-        decorated <- liftEffect $ if m.snapshot.corpora.id /= "" && m.snapshot.corpora.id == D.str (D.at ["corpora","id"] raw) then pure raw else C.decorate requested.active raw
-        pure $ (\snapshot -> U.ReplaceSnapshot {snapshot,content}) <$> X.decodeSnapshot decorated
-      traverse_ (const $ liftEffect $ C.cacheSnapshot runtime requested.active content raw) incoming
-      runUpdate runtime dispatch $ U.SnapshotReceived requested.epoch requested.active $ (\change -> {change,now}) <$> incoming
+refresh runtime dispatch requested operation = do
+  source <- liftEffect $ Updates.beginRefresh runtime.updates
+  attempt operation \result -> inEpoch requested.epoch \m ->
+    when (requested.active == m.active) $ case result of
+      Left failure -> runUpdate runtime dispatch $ U.SnapshotReceived requested.epoch requested.active $ Left $ message failure
+      Right raw -> do
+        liftEffect $ Updates.acceptRevision runtime.updates source (D.n "updates_revision" raw)
+        let content = X.snapshotContent raw
+        now <- liftEffect B.now
+        incoming <- if m.snapshotContent == Just content then pure $ Right U.KeepSnapshot else do
+          captureScroll
+          decorated <- liftEffect $ if m.snapshot.corpora.id /= "" && m.snapshot.corpora.id == D.str (D.at ["corpora","id"] raw) then pure raw else C.decorate requested.active raw
+          pure $ (\snapshot -> U.ReplaceSnapshot {snapshot,content}) <$> X.decodeSnapshot decorated
+        traverse_ (const $ liftEffect $ C.cacheSnapshot runtime requested.active content raw) incoming
+        runUpdate runtime dispatch $ U.SnapshotReceived requested.epoch requested.active $ (\change -> {change,now}) <$> incoming
 
 api :: C.Runtime -> M.Model -> String -> String -> Json -> Aff Json
 api runtime m path method body = do
@@ -94,11 +99,13 @@ runUpdate runtime dispatch action = do
     U.Commands commands -> traverse_ (execute requested) commands
   where
   execute requested = case _ of
+    U.StopUpdates -> liftEffect $ Updates.stop runtime.updates
     U.SaveRegistry records -> void $ liftEffect $ C.write "s4.records" $ D.json records
     U.SaveActive key -> void $ liftEffect $ C.write "s4.active" $ D.text key
     U.ReplaceHistory path -> liftEffect $ B.historyReplace path
     U.ConnectRecord record -> do
       current <- H.get
+      liftEffect $ Updates.stop runtime.updates
       refresh runtime dispatch current $ C.authenticate runtime (M.remote current) record *> C.request runtime (M.remote current) record "/api/state" "GET" D.null
     U.ChangeLifecycle command -> attempt (C.reconcile runtime (M.remote requested) requested.records requested.active *> C.lifecycle runtime (M.remote requested) (M.activeRecord requested) (X.lifecycleName command)) $
       runUpdate runtime dispatch <<< U.LifecycleReceived requested.epoch <<< either (Left <<< message) (Right <<< X.corpora)
@@ -107,6 +114,7 @@ runUpdate runtime dispatch action = do
       env <- liftEffect Platform.environment
       execute requested $ if env.hidden then U.Suspend else U.Resume
     U.Suspend -> do
+      liftEffect $ Updates.stop runtime.updates
       captureScroll
       persistLocal
       env <- liftEffect Platform.environment
@@ -119,7 +127,26 @@ runUpdate runtime dispatch action = do
       in attempt (api runtime requested (path <> if report.op == "" then "/browser" else "/control") "POST" body *> api runtime requested "/api/state" "GET" D.null) $
         runUpdate runtime dispatch <<< U.NativeCompleted requested.epoch report <<< either (Left <<< message) Right
     U.FetchSnapshot generation -> refresh runtime dispatch (requested {polling=true,pollGeneration=generation}) $ api runtime requested "/api/state" "GET" D.null
-    U.SchedulePoll epoch active generation ms -> later ms $ inEpoch epoch \current -> when (current.active == active && current.pollGeneration == generation) $ dispatch Poll
+    U.SchedulePoll epoch active generation ms -> do
+      m <- H.get
+      when (M.online m && (M.activeRecord m).location == X.Local && A.any M.blocksChat m.snapshot.turns) tickProgress
+      if M.remote m || (M.activeRecord m).location /= X.Local then later ms fallback
+      else do
+        liftEffect $ Updates.connect runtime.updates (D.replace "^http" "ws" m.env.origin <> "/api/host/corpora/" <> B.encodeURI (M.activeRecord m).id <> "/api/updates")
+        feed <- liftEffect $ Ref.read runtime.updates.feed
+        now <- liftEffect B.now
+        if M.online m && isJust feed.revision then when feed.dirty (dispatch Poll)
+        else later (max 2000.0 (feed.retryAt-now)) do
+          latest <- liftEffect $ Ref.read runtime.updates.feed
+          online <- H.gets M.online
+          unless (online && isJust latest.revision) fallback
+      where
+      -- Elapsed time can change while a provider is silent; it needs no network request.
+      tickProgress = later 1000.0 $ inEpoch epoch \m -> when (m.active == active && m.pollGeneration == generation && not m.env.hidden) do
+        now <- liftEffect B.now
+        H.modify_ _ {now=now}
+        tickProgress
+      fallback = inEpoch epoch \current -> when (current.active == active && current.pollGeneration == generation) $ dispatch Poll
     U.SaveLocal -> persistLocal
     U.StorePreferences value payload -> attempt (api runtime requested "/api/preferences" "PUT" payload) $
       runUpdate runtime dispatch <<< U.Persisted requested.epoch value <<< either (Left <<< message) Right

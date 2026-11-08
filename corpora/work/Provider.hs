@@ -166,6 +166,7 @@ invokeModel s run input = do
  environment <- getEnvironment
  started <- realToFrac . (*1000) <$> getPOSIXTime :: IO Double
  writeIORef (runActivity run) (obj [("started",toJSON started),("updated",toJSON started),("phase",str "Waiting for model"),("last_action",str "")])
+ notifyChange s
  bracket (createProcess (proc binary args) { cwd=Just workdir,env=Just (("SAPIENS_AGENCY_RUN",T.unpack (runIdText (runId run))):filter ((/="SAPIENS_AGENCY_RUN") . fst) environment),std_in=CreatePipe,std_out=CreatePipe,std_err=CreatePipe,create_group=True,use_process_jobs=True,detach_console=os=="mingw32" }) cleanup $ \handles -> do
   (hin,hout,herr,ph) <- case handles of
    (Just inputHandle,Just outputHandle,Just errorHandle,process) -> pure (inputHandle,outputHandle,errorHandle,process)
@@ -189,6 +190,7 @@ invokeModel s run input = do
          (updated,reported) <- validated (providerStep time event state activity)
          writeIORef stream updated
          writeIORef (runActivity run) reported
+         when (reported /= activity) (notifyChange s)
       drain h f = let loop = do eof <- hIsEOF h; unless eof (BC.hGetLine h >>= f . TE.decodeUtf8With (\_ _ -> Just '\xfffd') >> loop) in loop
   withAsync ((BS.hPut hin (TE.encodeUtf8 input) `catch` (\(_::IOException) -> pure ())) `finally` hClose hin) $ \writer ->
    withAsync (drain herr (append errors)) $ \stderrReader ->
