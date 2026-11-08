@@ -36,6 +36,11 @@ class Desktop
     wait_for_navigation if @navigation_events
     Contract.wait(description: 'packaged desktop window') { !tree(wait_for_window: true).empty? } unless ready
     control('activate')
+  rescue Exception
+    # A failed constructor never reaches @desktop, so the example cannot close it.
+    # Dispose only a process created here; a borrowed host belongs to its caller.
+    @process.close if @owns_process && @process
+    raise
   end
 
   def control(command, *args)
@@ -117,8 +122,7 @@ class Desktop
         act_on(text, role: editable) { |current| control('key', '--key', 'backspace', '--target-path', current.fetch('path'), '--require-value', previous) }
         self.value(text, '')
       end
-      node = find(text, role: editable)
-      control('paste', '--target-path', node.fetch('path'), '--text', value)
+      act_on(text, role: editable) { |node| control('paste', '--target-path', node.fetch('path'), '--text', value) }
     end
     self.value(text, value)
     # UIA SetValue can blur WebView2; establish keyboard focus after it completes.
@@ -141,7 +145,7 @@ class Desktop
       begin
         yield find(text, role: role)
       rescue RuntimeError => error
-        raise unless error.message.match?(/Path .* (does not|no longer) exist|press target does not match --expect-description|\ABlindly4 set-value: Error: Target is not a writable text control\s*\z|\ABlindly4 set-value: \{"code":"usage_error","error":"Target is not a writable UI Automation text control"\}\s*\z/)
+        raise unless error.message.match?(/Path .* (does not|no longer) exist|press target does not match --expect-description|\ABlindly4 paste: Error: Paste target is not a writable text control\s*\z|\ABlindly4 set-value: Error: Target is not a writable text control\s*\z|\ABlindly4 set-value: \{"code":"usage_error","error":"Target is not a writable UI Automation text control"\}\s*\z/)
         false
       end
     end

@@ -12,6 +12,7 @@ import Control.Concurrent.Async
 import Control.Exception
 import Control.Monad
 import Data.Aeson hiding (pairs)
+import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
 import Data.Char
 import Data.IORef
@@ -208,11 +209,13 @@ processFrame b config frame = do
     else do
      let path = serviceRoot (bridgeService b) </> "remote-receipts.sqlite3"
          currentDigest = hash (BL.toStrict (encode (obj (sortOn fst (pairs message)))))
-         -- New receipts are versioned. Only receipts saved before v2 (they expire
-         -- within a day) need the slow Python-era digest from legacyJSON.
+         -- New receipts and matching pre-v2 canonical receipts never need legacyJSON.
+         -- Limit the slow Python-era fallback to 4 KiB during the one-day migration
+         -- window. Oversized mismatches are rejected without parsing or re-execution.
          stored = "v2:" <> currentDigest
          legacyDigest = either (const currentDigest) hash (legacyJSON plaintext)
-         matches saved = if "v2:" `T.isPrefixOf` saved then saved == stored else saved == currentDigest || saved == legacyDigest
+         matches saved = if "v2:" `T.isPrefixOf` saved then saved == stored
+          else saved == currentDigest || (BS.length plaintext <= 4096 && saved == legacyDigest)
          room = at current "room"; ident = at message "id"
      receipt <- withDB path $ \db -> withTransaction db $ do
       execute_ db "CREATE TABLE IF NOT EXISTS receipts (room TEXT,id TEXT,hash TEXT,reply TEXT,created REAL,PRIMARY KEY(room,id))"

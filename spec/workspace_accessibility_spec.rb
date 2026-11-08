@@ -87,12 +87,62 @@ RSpec.describe 'Working with browser tabs and documents', :desktop do
     expect(desktop.see('Revised research finding')).not_to include('A literal <b>research finding</b>')
   end
 
+  # Only this example intentionally moves the window immediately before a click.
+  def click_after_resize(text)
+    node = desktop.find(text, role: 'AXLink')
+    previous = nil
+    Contract.wait(description: "stable click target #{desktop.label(node).inspect}") do
+      snapshot = desktop.tree
+      current = snapshot.find { |item| item['path'] == node['path'] }
+      unless current && current['role'] == node['role'] && desktop.label(current) == desktop.label(node)
+        raise "Click target changed before input: #{desktop.label(node).inspect}"
+      end
+      windows = snapshot.select { |item| item['role'] == 'AXWindow' }
+      geometry = [current.values_at('position', 'size'), windows.map { |w| w.values_at('position', 'size') }]
+      # Resizing is asynchronous. Observe stable native bounds before input.
+      if geometry != previous
+        previous = geometry
+        next false
+      end
+      raise 'Cannot click a disabled or empty control' if current['enabled'] == false ||
+        current.fetch('size')['width'] <= 0 || current['size']['height'] <= 0
+      x = current.fetch('position')['x'] + current.fetch('size')['width'] / 2
+      y = current['position']['y'] + current['size']['height'] / 2
+      inside = windows.any? do |window|
+        origin, size = window.values_at('position', 'size')
+        x >= origin['x'] && x < origin['x'] + size['width'] &&
+          y >= origin['y'] && y < origin['y'] + size['height']
+      end
+      raise "Cannot click #{desktop.label(current).inspect}: target at (#{x}, #{y}) is outside the fixture window #{windows.map { |w| w.slice('position', 'size') }}" unless inside
+      begin
+        desktop.control('click', '--x', x.to_i.to_s, '--y', y.to_i.to_s)
+        true
+      rescue RuntimeError => error
+        # Verified in blindly4/macos/src/native.rs: this exact rejection precedes
+        # event creation and injection. Never retry a successful click or any
+        # error whose input outcome is uncertain; retain every driver guard.
+        prefix = 'Blindly4 click: '
+        refusal = if error.message.start_with?(prefix)
+          begin
+            JSON.parse(error.message.delete_prefix(prefix))
+          rescue JSON::ParserError
+            nil
+          end
+        end
+        raise unless RUBY_PLATFORM.include?('darwin') && refusal.is_a?(Hash) &&
+          refusal['code'] == 'accessibility_error' && refusal['error'] == 'Click point belongs to another process'
+        previous = nil
+        false
+      end
+    end
+  end
+
   it 'keeps guest controls operable after resizing the desktop window' do
     @desktop.process.input.puts(JSON.generate(width: 1100, height: 740))
-    desktop.click('Play First')
+    click_after_resize('Play First')
     expect(desktop.see('Pause First')).to include('First player')
     @desktop.process.input.puts(JSON.generate(width: 1300, height: 900, top: 44))
-    desktop.click('Pause First')
+    click_after_resize('Pause First')
     expect(desktop.see('Play First')).to include('First player')
   end
 end

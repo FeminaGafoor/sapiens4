@@ -45,6 +45,19 @@ RSpec.describe 'Encrypted remote service contracts' do
     expect(receive).to include('paired' => true)
   end
 
+  def legacy_receipt_digest(frame)
+    saved = JSON.parse(File.read(File.join(host.root, 'remote-device.json')))
+    plaintext = @peer.call('unpack', private: saved['private'], public: @keys['public'], frame: frame)
+    canonical = lambda do |value|
+      case value
+      when Hash then '{' + value.keys.sort.map { |key| key.to_json(ascii_only: true) + ': ' + canonical.call(value[key]) }.join(', ') + '}'
+      when Array then '[' + value.map { |item| canonical.call(item) }.join(', ') + ']'
+      else value.to_json(ascii_only: true)
+      end
+    end
+    Digest::SHA256.hexdigest(canonical.call(plaintext))
+  end
+
   it 'requires the invitation secret and explicit approval of the full phone identity' do
     invite
     @peer.call('connect', name: 'phone', url: @relay.url, room: @invitation['room'], token: @invitation['token'])
@@ -148,6 +161,47 @@ RSpec.describe 'Encrypted remote service contracts' do
     expect(receive['body']).to have_key('turns')
     stored = Dir.glob(File.join(host.root, 'uploads', '**', 'large.txt'))
     expect(stored.map { |path| File.read(path, 1) }).to eq(['a'])
+  end
+
+  %w[canonical python].each do |format|
+    it "rejects oversized mismatched retries of a pre-v2 #{format} receipt without stalling" do
+      pair
+      upload = lambda do |content|
+        pack(id: 'pre-v2-large', op: 'api', method: 'POST', path: "/api/agents/#{chief}/attachments",
+          data: {kind: 'document', name: 'legacy-large.txt', data: [content].pack('m0')})
+      end
+      original = upload.call('a' * 1_048_576)
+      changed = upload.call('b' * 1_048_576)
+      send_frame(original)
+      receipt = receive
+      expect(receipt['status']).to eq(201)
+      host.stop
+      database = File.join(host.root, 'remote-receipts.sqlite3')
+      python_digest = legacy_receipt_digest(original) if format == 'python'
+      before = SQLite3::Database.open(database) do |db|
+        digest = python_digest || db.get_first_value('SELECT hash FROM receipts WHERE id=?', ['pre-v2-large']).delete_prefix('v2:')
+        db.execute('UPDATE receipts SET hash=? WHERE id=?', [digest, 'pre-v2-large'])
+        db.get_first_row('SELECT hash,reply FROM receipts WHERE id=?', ['pre-v2-large'])
+      end
+      host.start
+      send_frame(changed)
+      send_frame(pack(op: 'api', method: 'GET', path: '/api/state'))
+      expect(receive['body']).to have_key('turns')
+      send_frame(original)
+      if format == 'canonical'
+        expect(receive).to eq(receipt)
+      else
+        # An oversized Python-format retry also stays bounded, even if unchanged.
+        send_frame(pack(op: 'api', method: 'GET', path: '/api/state'))
+        expect(receive['body']).to have_key('turns')
+      end
+      stored = Dir.glob(File.join(host.root, 'uploads', '**', 'legacy-large.txt'))
+      expect(stored.size).to eq(1)
+      expect(File.binread(stored.first)).to eq('a' * 1_048_576)
+      SQLite3::Database.open(database) do |db|
+        expect(db.get_first_row('SELECT hash,reply FROM receipts WHERE id=?', ['pre-v2-large'])).to eq(before)
+      end
+    end
   end
 
   it 'streams voice pieces through the encrypted channel into one-minute voice messages' do
@@ -272,16 +326,7 @@ RSpec.describe 'Encrypted remote service contracts' do
     receipt = receive
     host.turn(receipt['body']['id'])
     host.stop
-    saved = JSON.parse(File.read(File.join(host.root, 'remote-device.json')))
-    plaintext = @peer.call('unpack', private: saved['private'], public: @keys['public'], frame: frame)
-    canonical = lambda do |value|
-      case value
-      when Hash then '{' + value.keys.sort.map { |key| key.to_json(ascii_only: true) + ': ' + canonical.call(value[key]) }.join(', ') + '}'
-      when Array then '[' + value.map { |item| canonical.call(item) }.join(', ') + ']'
-      else value.to_json(ascii_only: true)
-      end
-    end
-    digest = Digest::SHA256.hexdigest(canonical.call(plaintext))
+    digest = legacy_receipt_digest(frame)
     SQLite3::Database.open(File.join(host.root, 'remote-receipts.sqlite3')) do |db|
       db.execute('UPDATE receipts SET hash=? WHERE id=?', [digest, 'legacy-receipt'])
     end
