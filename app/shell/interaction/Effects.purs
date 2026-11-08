@@ -9,9 +9,10 @@ import Data.Either (Either(..), either)
 import Data.Foldable (traverse_)
 import Data.Maybe (Maybe(..), maybe)
 import Data.Tuple (Tuple(..))
-import Effect.Aff (Aff, Milliseconds(..), delay, try, throwError)
+import Effect.Aff (Aff, Milliseconds(..), delay, try, throwError, cancelWith, effectCanceler)
 import Effect.Class (liftEffect)
 import Effect.Exception (Error, error, message)
+import Effect.Ref as Ref
 import Halogen as H
 import Foreign.Object as O
 import Sapiens.Browser as Browser
@@ -101,11 +102,19 @@ memoImages runtime request document = do
       H.modify_ \s -> s {imageUrls=O.filterWithKey (\key _ -> A.elem key keys) s.imageUrls}
     traverse_ (\source -> do
       let key = prefix <> source
-      unless (O.member key m.imageUrls) $ attempt (imageRequest remote record source) (receiveImage epoch key)) sources
+      cached <- H.gets $ O.member key <<< _.imageUrls
+      unless cached do
+        claimed <- liftEffect $ Ref.modify' (\pending ->
+          if O.lookup key pending == Just request then {state:pending,value:false}
+          else {state:O.insert key request pending,value:true}) runtime.imageRequests
+        when claimed $ attempt (cancelWith (imageRequest remote record source) (effectCanceler $ releaseImage key)) (receiveImage epoch key)) sources
   where
-  receiveImage epoch key result = inEpoch epoch \current ->
-    when ((_.key <$> M.currentDocument current) == Just request.key && (O.lookup request.key current.documents >>= M.requestOf) == Just request) $
-      traverse_ (\uri -> H.modify_ \s -> s {imageUrls=O.insert key uri s.imageUrls}) result
+  releaseImage key = Ref.modify_ (\pending -> if O.lookup key pending == Just request then O.delete key pending else pending) runtime.imageRequests
+  receiveImage epoch key result = do
+    inEpoch epoch \current ->
+      when ((_.key <$> M.currentDocument current) == Just request.key && (O.lookup request.key current.documents >>= M.requestOf) == Just request) $
+        traverse_ (\uri -> H.modify_ \s -> s {imageUrls=O.insert key uri s.imageUrls}) result
+    liftEffect $ releaseImage key
   imageRequest remote record source = do
     let path = request.path <> "?image=" <> B.encodeURI source
     result <- if remote then do
