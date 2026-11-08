@@ -26,40 +26,6 @@ url base value = decodeURL $ B.parseURL base value
 decodeURL :: Json -> URL
 decodeURL value = {href:D.s "href" value,origin:D.s "origin" value,protocol:D.s "protocol" value,host:D.s "host" value,path:D.s "path" value,search:D.s "search" value,hash:D.s "hash" value,username:D.s "username" value,password:D.s "password" value}
 
-data Node = Text String | Element {tag :: String, attrs :: O.Object String, children :: Array Node, text :: String, source :: String}
-
-markup :: String -> Array Node
-markup = map node <<< D.arr <<< B.parseMarkup
-
-node :: Json -> Node
-node value = if D.s "tag" value == "" then Text $ D.s "text" value else
-  Element {tag:D.s "tag" value,attrs:D.objectStrings $ D.get "attrs" value,children:map node $ D.rows "children" value,text:D.s "text" value,source:D.s "source" value}
-
-tag :: Node -> String
-tag = case _ of
-  Text _ -> ""
-  Element value -> value.tag
-
-text :: Node -> String
-text = case _ of
-  Text value -> value
-  Element value -> value.text
-
-source :: Node -> String
-source = case _ of
-  Text _ -> ""
-  Element value -> value.source
-
-children :: Node -> Array Node
-children = case _ of
-  Text _ -> []
-  Element value -> value.children
-
-attribute :: String -> Node -> String
-attribute name = case _ of
-  Text _ -> ""
-  Element value -> fromMaybe "" $ O.lookup name value.attrs
-
 type WorkerRequest = {method :: String, origin :: String, localOrigin :: String, path :: String, mode :: String, url :: String}
 
 workerRequest :: Json -> WorkerRequest
@@ -113,7 +79,7 @@ nativeReport value =
 data Destination = WebAddress String | FilePath String
 derive instance eqDestination :: Eq Destination
 
-data Command = Open Destination (Maybe String) | FocusTab String | CloseTab String | GoBack | GoForward | Reload | Zoom Number | SaveBookmark String | RemoveBookmark String
+data Command = OpenMemo | Open Destination (Maybe String) | FocusTab String | CloseTab String | GoBack | GoForward | Reload | Zoom Number | SaveBookmark String | RemoveBookmark String
 derive instance eqCommand :: Eq Command
 
 openDestination :: String -> Command
@@ -127,6 +93,7 @@ addressCommand raw id = let value = S.trim raw in if value == "" then Nothing el
 
 request :: Command -> {op :: String, fields :: Json}
 request = case _ of
+  OpenMemo -> {op:"memo",fields:D.empty}
   Open target id -> {op:"open",fields:D.obj $ [case target of
     WebAddress value -> Tuple "url" $ D.text value
     FilePath value -> Tuple "path" $ D.text value] <> maybe [] (\value -> [Tuple "id" $ D.text value]) id}

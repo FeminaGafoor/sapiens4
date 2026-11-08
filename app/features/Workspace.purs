@@ -50,7 +50,11 @@ view m = V.node "main" [V.cls "workspace",V.id "workspace-panel",V.label "Agent 
     ,V.node "div" [V.id "browser-all-tabs",V.hidden $ m.menu /= Just "browser-tabs"] $ [V.div "browser-menu-label" [V.text $ "Open tabs · " <> show (A.length tabs)]] <> map (tabView true) tabs
     ,V.span [V.id "browser-status",V.attr "role" "status"] (D.fallback (if tab.loading then "Loading…" else "") $ tab.error)]
   ,V.node "div" [V.id "workspace-content",V.cls "workspace-content"] $ if native m then [V.text $ if tab.id /= "" then "" else "Open a URL or file to get started."] else
-      if tab.path == "" then [V.text $ if tab.id /= "" && tab.url /= "about:blank" then "Open Sapiens4 desktop to browse this web page." else "Open a URL or file to get started."] else [V.textNode "pre" [V.cls "workspace-text",V.label $ tab.title,V.style $ "font-size:" <> show ((if N.limit m.env < 3 then 12.6 else 13.0) * zoom) <> "px"] (case m.preview of
+      if tab.path == "" then [V.text $ if tab.id /= "" && tab.url /= "about:blank" then "Open Sapiens4 desktop to browse this web page." else "Open a URL or file to get started."] else if M.memoTab m then case m.preview of
+        M.Ready request html | request.key == tab.id -> [V.node "iframe" [V.cls "workspace-document",V.attr "title" tab.title,V.attr "sandbox" "",V.attr "srcdoc" html] []]
+        M.Failed _ error -> [V.text $ M.previewError error]
+        _ -> [V.text "Loading…"]
+      else [V.textNode "pre" [V.cls "workspace-text",V.label $ tab.title,V.style $ "font-size:" <> show ((if N.limit m.env < 3 then 12.6 else 13.0) * zoom) <> "px"] (case m.preview of
         M.Ready _ value -> value
         M.Loading _ (Just value) -> value
         M.Failed _ error -> M.previewError error

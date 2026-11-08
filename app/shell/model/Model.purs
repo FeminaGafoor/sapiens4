@@ -97,7 +97,7 @@ type ContentState r =
   , drafts :: O.Object String, attachments :: O.Object (Array X.Attachment), sending :: Set.Set String
   , uploading :: Int, clarification :: Maybe X.Workload
   , workspaces :: O.Object X.Workspace, workspaceRevision :: Number, documents :: O.Object (RemoteData String X.Document)
-  , expanded :: Set.Set String, imageUrls :: O.Object String, preview :: RemoteData PreviewError String
+  , expanded :: Set.Set String, preview :: RemoteData PreviewError String
   , scrollPosition :: Maybe Browser.ScrollPosition, restoringScroll :: Boolean
   | r )
 
@@ -119,7 +119,7 @@ initial env =
   , epoch:0, sequence:0, now:0.0, env, panes:[N.ChatPane,N.Sidebar,N.Workspace], search:"", searchOpen:false, menu:Nothing, dialog:Nothing
   , records:[], active:"", connection:Offline, localAvailable:false, showArchived:false
   , toast:"", feedback:"", theme:if env.dark then "dark" else "light", installRequired:false
-  , dialogStack:[], imageUrls:O.empty, preview:NotAsked, address:"", addressOpen:false, scrollPosition:Nothing, restoringScroll:false, preferencesSaved:""
+  , dialogStack:[], preview:NotAsked, address:"", addressOpen:false, scrollPosition:Nothing, restoringScroll:false, preferencesSaved:""
   }
 
 agent :: Model -> String -> X.Entity
@@ -182,7 +182,7 @@ project :: Json -> Model -> Model
 project raw m = projectSnapshot (X.snapshot raw) m
 
 projectSnapshot :: X.Snapshot -> Model -> Model
-projectSnapshot snapshot m = withWorkspaces snapshot.preferences m { snapshot=snapshot, agents=agents, messages=messages, selected=id, imageUrls=if id == m.selected then m.imageUrls else O.empty, groupView=groupView, scope=scope }
+projectSnapshot snapshot m = withWorkspaces snapshot.preferences m { snapshot=snapshot, agents=agents, messages=messages, selected=id, groupView=groupView, scope=scope }
   where
   personal = map (\a -> a {busy=A.any (\t -> t.agent == a.id && t.status == X.Running) turns
     , lastActivity=B.parseTime $ D.fallback a.created $ fromMaybe "" $ _.created <$> A.last (A.filter (\t -> t.agent == a.id) turns)
@@ -218,7 +218,7 @@ reset raw old = case X.decodeSnapshot raw of
 resetSnapshot :: X.Snapshot -> Model -> Model
 resetSnapshot snapshot old = projectSnapshot snapshot old
   {selected=p.selected,activity=p.activity,scope=p.scope,groupView=p.groupView,drafts=p.drafts
-  ,snapshotContent=Nothing,attachments=snapshot.attachment_drafts,sending=Set.empty,uploading=0,clarification=Nothing,documents=O.empty,expanded=Set.empty,imageUrls=O.empty,epoch=old.epoch+1
+  ,snapshotContent=Nothing,attachments=snapshot.attachment_drafts,sending=Set.empty,uploading=0,clarification=Nothing,documents=O.empty,expanded=Set.empty,epoch=old.epoch+1
   ,panes=p.panes,workspaces=p.workspaces,workspaceRevision=p.workspaceRevision,search="",searchOpen=false
   ,preview=NotAsked,address="",scrollPosition=p.scrollPosition,restoringScroll=p.scrollPosition /= Nothing}
   where
@@ -229,7 +229,7 @@ select id m = if target.id == "" then m else m
   { selected=id, activity=N.Chat N.Conversation, search="", groupView=if group then Just id else Nothing
   , scope=if group then N.Groups else if m.groupView /= Nothing || m.scope == N.Groups then N.All else m.scope
   , menu=Nothing, dialog=Nothing, addressOpen=false, address="", panes=N.togglePane false (N.limit m.env) (hasTab m) N.ChatPane m.panes
-  , scrollPosition=Nothing, restoringScroll=false, preview=NotAsked, imageUrls=O.empty
+  , scrollPosition=Nothing, restoringScroll=false, preview=NotAsked
   }
   where
   target = fromMaybe X.emptyEntity $ X.findEntity id m.agents
@@ -258,22 +258,23 @@ preferences m = D.merge (N.encodeActivity m.activity) $ D.json
 
 currentDocument :: Model -> Maybe Request
 currentDocument m = case m.activity of
-  N.Work N.Memo _ | info.revision /= "missing" -> Just $ make "memo" (info.revision) "/notes"
   N.Work view _ | A.elem view [N.Tasks,N.Automated] && not (isGroup a) -> Just $ make "tasks" (D.encode $ D.json $ map _.revision $ A.filter (\w -> A.elem m.selected w.participants) m.snapshot.workloads) "/tasks?format=json"
   _ -> Nothing
   where
   a = selected m
-  info = notes m
   make kind revision suffix = {key:kind <> ":" <> m.selected,revision,path:ownerPath m <> suffix,epoch:m.epoch,sequence:m.sequence+1}
 
 nativeWorkspace :: Model -> Boolean
 nativeWorkspace m = m.env.native && (activeRecord m).location /= X.Remote
 
+memoTab :: Model -> Boolean
+memoTab m = (activeTab m).path /= "" && (activeTab m).path == (notes m).path
+
 currentPreview :: Model -> Maybe Request
 currentPreview m =
   let tab = activeTab m
   in if nativeWorkspace m || tab.path == "" || not (A.elem N.Workspace m.panes) then Nothing
-     else Just {epoch:m.epoch,sequence:m.sequence+1,key:tab.id,revision:D.encode $ D.json tab.command,path:ownerPath m <> "/browser/" <> B.encodeURI (tab.id) <> "/content"}
+     else Just {epoch:m.epoch,sequence:m.sequence+1,key:tab.id,revision:D.encode (D.json tab.command) <> (if memoTab m then (notes m).revision else ""),path:ownerPath m <> "/browser/" <> B.encodeURI (tab.id) <> "/content" <> if memoTab m then "?view=html" else ""}
 
 requestOf :: forall error a. RemoteData error a -> Maybe Request
 requestOf = case _ of
@@ -287,6 +288,3 @@ valueOf = case _ of
   Loading _ value -> value
   Ready _ value -> Just value
   _ -> Nothing
-
-decodeDocument :: Request -> Json -> Either String X.Document
-decodeDocument r = X.decodeDocument (S.take 5 r.key == "tasks")

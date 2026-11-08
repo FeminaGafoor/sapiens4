@@ -111,7 +111,6 @@ handle runtime input = session input
       when prevent $ liftEffect $ Event.preventDefault event
       liftEffect $ Event.stopPropagation event
       dispatch next
-    NoteAnchor id -> liftEffect $ B.scrollIntoView $ "#" <> id
     _ -> conversation action
   conversation action = case action of
     Draft value -> E.runUpdate runtime dispatch $ U.Draft value
@@ -145,6 +144,7 @@ handle runtime input = session input
       m <- H.get
       dispatch $ Select $ m.snapshot.main_agent_id
       E.runUpdate runtime dispatch $ U.SetScope scope
+    Navigate (N.Work N.Memo _) -> dispatch CloseMenu *> dispatch (Browser Browser.OpenMemo)
     Navigate activity -> E.captureScroll *> E.runUpdate runtime dispatch (U.Navigate activity)
     DefaultWork -> H.get >>= dispatch <<< Navigate <<< Work.defaultActivity
     SetPeriod period -> E.runUpdate runtime dispatch $ U.SetPeriod period

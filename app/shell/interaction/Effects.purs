@@ -1,20 +1,16 @@
 module Sapiens.Effects where
 
 import Prelude
-import Control.Promise (toAffE)
 import Data.Argonaut.Core (Json)
 import Data.Array as A
-import Data.String as S
 import Data.Either (Either(..), either)
 import Data.Foldable (traverse_)
 import Data.Maybe (Maybe(..), maybe)
 import Data.Tuple (Tuple(..))
-import Effect.Aff (Aff, Milliseconds(..), delay, try, throwError, cancelWith, effectCanceler)
+import Effect.Aff (Aff, Milliseconds(..), delay, try, throwError)
 import Effect.Class (liftEffect)
 import Effect.Exception (Error, error, message)
-import Effect.Ref as Ref
 import Halogen as H
-import Foreign.Object as O
 import Sapiens.Browser as Browser
 import Sapiens.Platform as Platform
 import Libs4.Browser as B
@@ -22,10 +18,8 @@ import Sapiens.Action (Action(..))
 import Sapiens.Connections as C
 import Sapiens.Data as D
 import Sapiens.Domain as X
-import Sapiens.Memo as Memo
 import Sapiens.Model as M
 import Sapiens.Navigation as N
-import Sapiens.Remote as R
 import Sapiens.Workspace as W
 import Sapiens.Update as U
 
@@ -88,42 +82,6 @@ save dispatch = persistLocal *> later 300.0 (dispatch Persist)
 requestDocument :: C.Runtime -> Dispatch -> UI Unit
 requestDocument runtime dispatch = runUpdate runtime dispatch U.RequestDocument
 
-memoImages :: C.Runtime -> M.Request -> X.MemoDocument -> UI Unit
-memoImages runtime request document = do
-  m <- H.get
-  when ((_.key <$> M.currentDocument m) == Just request.key) do
-    let prefix = S.drop 5 request.key <> ":"
-        sources = Memo.imagePaths document
-        keys = map (prefix <> _) sources
-        epoch = m.epoch
-        remote = M.remote m
-        record = M.activeRecord m
-    when (A.any (\key -> not $ A.elem key keys) (O.keys m.imageUrls)) $
-      H.modify_ \s -> s {imageUrls=O.filterWithKey (\key _ -> A.elem key keys) s.imageUrls}
-    traverse_ (\source -> do
-      let key = prefix <> source
-      cached <- H.gets $ O.member key <<< _.imageUrls
-      unless cached do
-        claimed <- liftEffect $ Ref.modify' (\pending ->
-          if O.lookup key pending == Just request then {state:pending,value:false}
-          else {state:O.insert key request pending,value:true}) runtime.imageRequests
-        when claimed $ attempt (cancelWith (imageRequest remote record source) (effectCanceler $ releaseImage key)) (receiveImage epoch key)) sources
-  where
-  releaseImage key = Ref.modify_ (\pending -> if O.lookup key pending == Just request then O.delete key pending else pending) runtime.imageRequests
-  receiveImage epoch key result = do
-    inEpoch epoch \current ->
-      when ((_.key <$> M.currentDocument current) == Just request.key && (O.lookup request.key current.documents >>= M.requestOf) == Just request) $
-        traverse_ (\uri -> H.modify_ \s -> s {imageUrls=O.insert key uri s.imageUrls}) result
-    liftEffect $ releaseImage key
-  imageRequest remote record source = do
-    let path = request.path <> "?image=" <> B.encodeURI source
-    result <- if remote then do
-      client <- C.client runtime record
-      R.request client 15000 $ D.json {kind: "request", op: "api", method: "GET", path}
-      else toAffE $ B.requestBytes ("/api/host/corpora/" <> B.encodeURI record.id <> path) (D.json {"X-Sapiens-Local": "1"})
-    unless (D.n "status" result == 200.0 && D.matches "^image/(png|jpeg|gif|webp|svg\\+xml)(;|$)" (D.s "mime" result)) $ throwError $ error "Image unavailable"
-    pure $ "data:" <> D.s "mime" result <> ";base64," <> D.s "body" result
-
 preview :: C.Runtime -> Dispatch -> UI Unit
 preview runtime dispatch = runUpdate runtime dispatch U.RequestPreview
 
@@ -172,8 +130,7 @@ runUpdate runtime dispatch action = do
     U.Sync -> sync
     U.PersistTheme theme -> void $ liftEffect $ B.storageWrite "sapi-color-theme" theme
     U.FetchDocument request -> attempt (api runtime requested request.path "GET" D.null) $
-      runUpdate runtime dispatch <<< U.ReceiveDocument request <<< either (Left <<< message) (M.decodeDocument request)
-    U.LoadMemoImages request document -> memoImages runtime request document
+      runUpdate runtime dispatch <<< U.ReceiveDocument request <<< either (Left <<< message) X.decodeDocument
     U.SendMessage request ->
       let payload = D.obj $ [Tuple "text" (D.text request.text),Tuple "attachments" (D.array $ map D.text request.attachments)] <> maybe [] (\id -> [Tuple "workload" $ D.text id]) request.workload
       in attempt (api runtime requested request.path "POST" payload) $

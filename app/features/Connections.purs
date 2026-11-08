@@ -18,12 +18,11 @@ import Foreign.Object as O
 import Libs4.Browser as B
 import Sapiens.Data as D
 import Sapiens.Domain as X
-import Sapiens.Model (Request)
 import Sapiens.Remote as R
 
 data Pairing = NoPairing | LocalPairing String | RemotePairing R.Transport
 
-type Runtime = { clients :: Ref.Ref (O.Object R.Transport), credentials :: Ref.Ref (O.Object Json), camera :: Ref.Ref (Maybe B.Camera), pairing :: Ref.Ref Pairing, persistedSnapshot :: Ref.Ref (Maybe {key :: String, content :: X.SnapshotContent}), imageRequests :: Ref.Ref (O.Object Request) }
+type Runtime = { clients :: Ref.Ref (O.Object R.Transport), credentials :: Ref.Ref (O.Object Json), camera :: Ref.Ref (Maybe B.Camera), pairing :: Ref.Ref Pairing, persistedSnapshot :: Ref.Ref (Maybe {key :: String, content :: X.SnapshotContent}) }
 type Registry = { records :: Array X.Corpora, localAvailable :: Boolean }
 
 create :: Effect Runtime
@@ -33,8 +32,7 @@ create = ado
   camera <- Ref.new Nothing
   pairing <- Ref.new NoPairing
   persistedSnapshot <- Ref.new Nothing
-  imageRequests <- Ref.new O.empty
-  in {clients,credentials,camera,pairing,persistedSnapshot,imageRequests}
+  in {clients,credentials,camera,pairing,persistedSnapshot}
 
 read :: String -> Effect Json
 read key = D.parse <$> B.storageRead key
@@ -171,7 +169,6 @@ register runtime transport = do
 
 dispose :: Runtime -> Effect Unit
 dispose runtime = do
-  Ref.write O.empty runtime.imageRequests
   Ref.write Nothing runtime.persistedSnapshot
   Ref.read runtime.clients >>= traverse_ R.close <<< O.values
   Ref.read runtime.camera >>= traverse_ B.cameraStop

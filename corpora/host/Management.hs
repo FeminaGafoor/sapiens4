@@ -49,7 +49,7 @@ prepare s a = do
  writeText (agentRoot s a </> "manifests/host-facts.md") (jsonText (put "notes" notes facts))
  let context= obj [("currentSapi",str a),("chief",get facts "main_agent_id"),("groups",get facts "groups"),("team",get facts "team"),("workspace",obj [("path",str (T.pack (workspaceRoot s a)))])]
  writeText (agentRoot s a </> "manifests/corpora-state.md") (jsonText context)
-data WorkspaceOperation = OpenWorkspace | ZoomWorkspace | CloseWorkspace | FocusWorkspace | ReloadWorkspace | BackWorkspace | ForwardWorkspace | BookmarkWorkspace | UnbookmarkWorkspace deriving (Eq, Show)
+data WorkspaceOperation = OpenMemo | OpenWorkspace | ZoomWorkspace | CloseWorkspace | FocusWorkspace | ReloadWorkspace | BackWorkspace | ForwardWorkspace | BookmarkWorkspace | UnbookmarkWorkspace deriving (Eq, Show)
 data Operation = ReadCorpora | UpdateCorpora | Batch | ReadStatus | Delegate | ReadRoutines | CreateRoutine | UpdateRoutine | PauseRoutine | ResumeRoutine | CreateAgent | RetireAgent | RehireAgent | AcquireComputer | ChangeManager | ReadWorkspace | GroupCommand G.GroupOperation | WorkspaceCommand WorkspaceOperation deriving (Eq, Show)
 operationSchema :: [(Text,Operation,[Text])]
 operationSchema =
@@ -76,6 +76,7 @@ operationSchema =
  , ("computer_acquire", AcquireComputer, [])
  , ("manager", ChangeManager, ["manager","target"])
  , ("workspace", ReadWorkspace, ["group"])
+ , ("workspace_memo", WorkspaceCommand OpenMemo, ["group"])
  , ("workspace_open", WorkspaceCommand OpenWorkspace, ["url","path","id","group"])
  , ("workspace_zoom", WorkspaceCommand ZoomWorkspace, ["id","factor","group"])
  , ("workspace_close", WorkspaceCommand CloseWorkspace, ["id","group"])
@@ -91,6 +92,7 @@ decodeOperation input = case [(operation,fields) | (name,operation,fields) <- op
  _ -> Left (APIError 400 "Unknown operation or field")
 workspaceOperationName :: WorkspaceOperation -> Text
 workspaceOperationName operation = case operation of
+ OpenMemo -> "memo"
  OpenWorkspace -> "open"
  ZoomWorkspace -> "zoom"
  CloseWorkspace -> "close"

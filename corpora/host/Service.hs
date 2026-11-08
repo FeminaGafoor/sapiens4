@@ -61,6 +61,7 @@ openService path = do
       states <- newMVar M.empty
       let s=Service root repo guard lock stopping worker runs lease endpoint pulse actors database states
       DB.initialize s
+      migrateWorkspaces s
       let identityPath=root </> "corpora-identity.json"
       exists <- doesFileExist identityPath
       unless exists $ do i<-UUID.toText <$> UUID.nextRandom; writeJSON identityPath (obj [("version",num 1),("corpora_id",str i)])
@@ -78,7 +79,6 @@ openService path = do
       prefs <- DB.singleton s DB.Preferences
       let panel=at prefs "panel"; updated=if panel=="mindmap" then put "panel" (str "notes") prefs else if panel `elem` ["cron","log"] then put "panel" (str "chat") prefs else prefs
       DB.saveSingleton s DB.Preferences (remove ["work_views"] updated)
-      migrateWorkspaces s
       savedPulse <- DB.singleton s DB.SystemPulse
       identityPulse <- if has savedPulse "pulse" then pure (at savedPulse "pulse") else ("pulse_" <>) <$> newId
       cfg <- corporaSettings s
@@ -195,7 +195,7 @@ dispatch s method target body = locked s $ do
    case image of
     Nothing -> json 200 (readMemo (workspaceRoot s a))
     Just name -> do (bytes,mime)<-memoImage (workspaceRoot s a) (T.pack (unEscapeString (T.unpack name))); pure (200,bytes,mime)
-  ("GET",["api",kind,a,"browser",tab,"content"]) | kind `elem` ["agents","groups"] -> owner kind a >> json 200 (workspaceText s a tab)
+  ("GET",["api",kind,a,"browser",tab,"content"]) | kind `elem` ["agents","groups"] -> owner kind a >> json 200 (workspaceText s a tab (query=="?view=html"))
   ("GET",["api","groups"]) -> json 200 (obj . (:[]) . ("groups",) . arr <$> G.snapshotGroups s)
   ("GET",["api","groups",gid]) -> json 200 (G.getGroup s gid False)
   ("POST",["api","groups"]) -> json 201 (G.createGroup s d "admin")

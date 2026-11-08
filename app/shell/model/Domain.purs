@@ -345,17 +345,12 @@ emptyEntity = entity D.empty
 emptySnapshot :: Snapshot
 emptySnapshot = snapshot D.empty
 
-data Document = TaskDocument (Array Task) | MemoDocument MemoDocument
-derive instance eqDocument :: Eq Document
+type Document = Array Task
 
-decodeDocument :: Boolean -> Json -> Either String Document
-decodeDocument tasks value
-  | tasks = case toArray $ D.get "tasks" value of
-      Nothing -> Left "Invalid tasks response"
-      Just rows -> TaskDocument <$> traverse decodeTask rows
-  | isJust (toString $ D.get "content" value) && isJust (toString $ D.get "path" value) =
-      Right $ MemoDocument {content:D.s "content" value,path:D.s "path" value,metadata:noteMetadata $ D.get "metadata" value}
-  | otherwise = Left "Invalid Memo response"
+decodeDocument :: Json -> Either String Document
+decodeDocument value = case toArray $ D.get "tasks" value of
+  Nothing -> Left "Invalid tasks response"
+  Just rows -> traverse decodeTask rows
 
 decodeTask :: Json -> Either String Task
 decodeTask row = if A.all (\key -> isJust $ toString $ D.get key row) ["id","title","body","state","owner","sender"]
@@ -611,19 +606,6 @@ decodeSnapshot value = case check value of
     ,optional "routines" (list checkRoutine),optional "orchestration" (mapValues checkOrchestration)
     ,optional "activity" (mapValues checkActivity),optional "run_activity" (mapValues checkActivity)
     ,optional "attachment_drafts" (mapValues $ list checkAttachment)]
-
-type MemoDocument = {content :: String, path :: String, metadata :: NoteMetadata}
-
-type NoteMetadata = { revision :: Maybe String, path :: Maybe String, workspace :: Maybe String, modified_at :: Maybe String, modified_by :: Maybe String, created_at :: Maybe String, created_by :: Maybe String }
-
-noteMetadata :: Json -> NoteMetadata
-noteMetadata value = { revision: metadataField "revision" value, path: metadataField "path" value, workspace: metadataField "workspace" value, modified_at: metadataField "modified_at" value, modified_by: metadataField "modified_by" value, created_at: metadataField "created_at" value, created_by: metadataField "created_by" value }
-
-metadataField :: String -> Json -> Maybe String
-metadataField key value = if O.member key (fromMaybe O.empty $ toObject value) then Just $ D.s key value else Nothing
-
-withMetadata :: Notes -> NoteMetadata -> Notes
-withMetadata original patch = { revision: fromMaybe original.revision patch.revision, path: fromMaybe original.path patch.path, workspace: fromMaybe original.workspace patch.workspace, modified_at: fromMaybe original.modified_at patch.modified_at, modified_by: fromMaybe original.modified_by patch.modified_by, created_at: fromMaybe original.created_at patch.created_at, created_by: fromMaybe original.created_by patch.created_by }
 
 data AttachmentKind = ImageAttachment | DocumentAttachment | LinkAttachment | FileAttachment | OtherAttachment String
 derive instance eqAttachmentKind :: Eq AttachmentKind

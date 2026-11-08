@@ -13,7 +13,7 @@ RSpec.describe 'Workspace and memory contracts' do
     tab = host.control(owner, 'workspace_open', path: file)['workspace']['tabs'].first
     host.control(owner, 'workspace_zoom', factor: 1.5)
     2.times { host.control(owner, 'workspace_bookmark') }
-    expect(host.control(owner, 'workspace')['bookmarks'].size).to eq(1)
+    expect(host.control(owner, 'workspace')['bookmarks'].map { |b| b['title'] }).to contain_exactly('Notes.html', File.basename(file))
     host.control(owner, 'workspace_open', url: 'https://example.com')
     host.control(owner, 'workspace_focus', id: tab['id'])
     host.control(owner, 'workspace_reload')
@@ -22,10 +22,47 @@ RSpec.describe 'Workspace and memory contracts' do
     expect(workspace['active_tab']).to eq(tab['id'])
     expect(workspace['tabs'].first).to include('zoom' => 1.5)
     expect(File.identical?(workspace['tabs'].first['path'], file)).to eq(true)
-    expect(File.identical?(workspace['bookmarks'].first['path'], file)).to eq(true)
+    expect(File.identical?(workspace['bookmarks'].find { |b| b['title'] == File.basename(file) }.fetch('path'), file)).to eq(true)
     host.control(owner, 'workspace_close', id: tab['id'])
     expect(File.read(file)).to eq("# Notes\n<script>literal</script>")
     expect(host.control(owner, 'workspace')['tabs'].size).to eq(1)
+  end
+
+  it 'seeds one Memo bookmark per Sapi without opening tabs and reuses an existing Notes tab' do
+    researcher = host.agent('Researcher')
+    [chief, researcher].each do |owner|
+      workspace = host.control(owner, 'workspace')
+      expect(workspace['tabs']).to be_empty
+      expect(workspace['bookmarks'].length).to eq(1)
+      expect(File.identical?(workspace['bookmarks'].first['path'], File.join(host.workspace(owner), 'Notes.html'))).to be(true)
+    end
+    tab = host.control(researcher, 'workspace_open', path: 'Notes.html')['workspace']['tabs'].first
+    host.control(researcher, 'workspace_open', url: 'about:blank')
+    2.times do
+      workspace = host.control(researcher, 'workspace_memo')['workspace']
+      expect(workspace['active_tab']).to eq(tab['id'])
+      expect(workspace['tabs'].find { |t| t['id'] == tab['id'] }).to eq(tab)
+      expect(workspace['tabs'].size).to eq(2)
+    end
+    host.control(researcher, 'workspace_close', id: tab['id'])
+    host.restart
+    reopened = host.control(researcher, 'workspace_memo')['workspace']
+    expect(reopened['active_tab']).not_to eq(tab['id'])
+    expect(reopened['bookmarks'].length).to eq(1)
+    expect(host.control(chief, 'workspace')['tabs']).to be_empty
+  end
+
+  it 'renders the active Memo preview with workspace images and refuses images outside that workspace' do
+    path = File.join(host.workspace(chief), 'Notes.html')
+    File.write(path, memo('<img src="sample.png"><img src="../private.png">'))
+    File.binwrite(File.join(host.workspace(chief), 'sample.png'), "sample image")
+    File.binwrite(File.join(File.dirname(host.workspace(chief)), 'private.png'), "private image")
+    tab = host.control(chief, 'workspace_memo')['workspace']['active_tab']
+    endpoint = "/api/agents/#{chief}/browser/#{tab}/content"
+    expect(host.api('GET', endpoint)['content']).to eq(File.read(path))
+    preview = host.api('GET', endpoint + '?view=html').fetch('content')
+    expect(preview).to include('Content-Security-Policy', 'data:image/png;base64,c2FtcGxlIGltYWdl')
+    expect(preview).not_to include('private.png', 'cHJpdmF0ZSBpbWFnZQ')
   end
 
   it 'rejects invalid edits atomically and selects the last remaining tab on close' do
