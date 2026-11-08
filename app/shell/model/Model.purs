@@ -182,7 +182,7 @@ project :: Json -> Model -> Model
 project raw m = projectSnapshot (X.snapshot raw) m
 
 projectSnapshot :: X.Snapshot -> Model -> Model
-projectSnapshot snapshot m = withWorkspaces snapshot.preferences m { snapshot=snapshot, agents=agents, messages=messages, selected=id, groupView=groupView, scope=scope }
+projectSnapshot snapshot m = withWorkspaces snapshot.preferences m { snapshot=snapshot, agents=agents, messages=messages, selected=id, imageUrls=if id == m.selected then m.imageUrls else O.empty, groupView=groupView, scope=scope }
   where
   personal = map (\a -> a {busy=A.any (\t -> t.agent == a.id && t.status == X.Running) turns
     , lastActivity=B.parseTime $ D.fallback a.created $ fromMaybe "" $ _.created <$> A.last (A.filter (\t -> t.agent == a.id) turns)
@@ -229,7 +229,7 @@ select id m = if target.id == "" then m else m
   { selected=id, activity=N.Chat N.Conversation, search="", groupView=if group then Just id else Nothing
   , scope=if group then N.Groups else if m.groupView /= Nothing || m.scope == N.Groups then N.All else m.scope
   , menu=Nothing, dialog=Nothing, addressOpen=false, address="", panes=N.togglePane false (N.limit m.env) (hasTab m) N.ChatPane m.panes
-  , scrollPosition=Nothing, restoringScroll=false, preview=NotAsked
+  , scrollPosition=Nothing, restoringScroll=false, preview=NotAsked, imageUrls=O.empty
   }
   where
   target = fromMaybe X.emptyEntity $ X.findEntity id m.agents

@@ -90,22 +90,28 @@ requestDocument runtime dispatch = runUpdate runtime dispatch U.RequestDocument
 memoImages :: C.Runtime -> M.Request -> X.MemoDocument -> UI Unit
 memoImages runtime request document = do
   m <- H.get
-  let prefix = S.drop 5 request.key <> ":"
-      sources = Memo.imagePaths document
-      keys = map (prefix <> _) sources
-  H.modify_ \s -> s {imageUrls=O.filterWithKey (\key _ -> S.take (S.length prefix) key /= prefix || A.elem key keys) s.imageUrls}
-  traverse_ (\source -> do
-    let key = prefix <> source
-    unless (O.member key m.imageUrls) $ attempt (imageRequest m source) \result -> inEpoch m.epoch \current ->
-      when ((O.lookup request.key current.documents >>= M.requestOf) == Just request) $
-        traverse_ (\uri -> H.modify_ \s -> s {imageUrls=O.insert key uri s.imageUrls}) result) sources
+  when ((_.key <$> M.currentDocument m) == Just request.key) do
+    let prefix = S.drop 5 request.key <> ":"
+        sources = Memo.imagePaths document
+        keys = map (prefix <> _) sources
+        epoch = m.epoch
+        remote = M.remote m
+        record = M.activeRecord m
+    when (A.any (\key -> not $ A.elem key keys) (O.keys m.imageUrls)) $
+      H.modify_ \s -> s {imageUrls=O.filterWithKey (\key _ -> A.elem key keys) s.imageUrls}
+    traverse_ (\source -> do
+      let key = prefix <> source
+      unless (O.member key m.imageUrls) $ attempt (imageRequest remote record source) (receiveImage epoch key)) sources
   where
-  imageRequest m source = do
+  receiveImage epoch key result = inEpoch epoch \current ->
+    when ((_.key <$> M.currentDocument current) == Just request.key && (O.lookup request.key current.documents >>= M.requestOf) == Just request) $
+      traverse_ (\uri -> H.modify_ \s -> s {imageUrls=O.insert key uri s.imageUrls}) result
+  imageRequest remote record source = do
     let path = request.path <> "?image=" <> B.encodeURI source
-    result <- if M.remote m then do
-      client <- C.client runtime (M.activeRecord m)
+    result <- if remote then do
+      client <- C.client runtime record
       R.request client 15000 $ D.json {kind: "request", op: "api", method: "GET", path}
-      else toAffE $ B.requestBytes ("/api/host/corpora/" <> B.encodeURI ((M.activeRecord m).id) <> path) (D.json {"X-Sapiens-Local": "1"})
+      else toAffE $ B.requestBytes ("/api/host/corpora/" <> B.encodeURI record.id <> path) (D.json {"X-Sapiens-Local": "1"})
     unless (D.n "status" result == 200.0 && D.matches "^image/(png|jpeg|gif|webp|svg\\+xml)(;|$)" (D.s "mime" result)) $ throwError $ error "Image unavailable"
     pure $ "data:" <> D.s "mime" result <> ";base64," <> D.s "body" result
 

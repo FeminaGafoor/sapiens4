@@ -209,10 +209,11 @@ update action m = case action of
                     ,address=if m.addressOpen then m.address else D.fallback (if tab.url == "about:blank" then "" else tab.url) $ tab.path}
               previewDue = now - m.lastPreview >= 2000.0
               updated = projected {polling=false,now=now,connection=M.connectionResult true m.connection,feedback="",lastPreview=if previewDue then now else m.lastPreview}
+              previews = if previewDue then [LoadPreview] else []
               commands = case change of
-                KeepSnapshot -> identity
-                ReplaceSnapshot _ -> \preview -> [RestoreScroll,LoadDocument] <> preview <> [Sync]
-          in Changed updated (commands (if previewDue then [LoadPreview] else []) <> schedulePoll updated)
+                KeepSnapshot -> previews
+                ReplaceSnapshot _ -> [RestoreScroll,LoadDocument] <> previews <> [Sync]
+          in Changed updated (commands <> schedulePoll updated)
   Persist ->
     let value = D.encode $ M.preferences m
     in if (M.online m) && not (M.busy m) && not m.saving && value /= m.preferencesSaved then
@@ -254,7 +255,7 @@ update action m = case action of
     let start = CU.length (M.draft m) + if M.draft m == "" then 0 else 2
         value = M.draft m <> (if M.draft m == "" then "" else "\n\n") <> preset
         cursor = if placeholder == "" then CU.length value else start + fromMaybe (CU.length preset) (CU.indexOf (S.Pattern placeholder) preset)
-    in Changed (m {activity=N.Chat N.Conversation,menu=Nothing,drafts=O.insert m.selected value m.drafts,mention=Nothing})
+    in Changed (m {activity=N.Chat N.Conversation,menu=Nothing,imageUrls=O.empty,drafts=O.insert m.selected value m.drafts,mention=Nothing})
       [ScrollToStart,LoadDocument,SaveView,ResizeComposer,SavePreferences,Focus "#message-input",SelectRange "#message-input" cursor (cursor+CU.length placeholder)]
   SetMenu key -> Changed (m {menu=if m.menu == Just key then Nothing else Just key,mention=Nothing}) [Sync]
   CloseMenu -> Changed (m {menu=Nothing}) [Sync]
@@ -281,7 +282,9 @@ update action m = case action of
     Nothing -> Unchanged
     Just request ->
       let old = fromMaybe M.NotAsked $ O.lookup request.key m.documents
-      in if (_.revision <$> M.requestOf old) == Just request.revision then Unchanged
+      in if (_.revision <$> M.requestOf old) == Just request.revision then case old of
+           M.Ready accepted (X.MemoDocument document) -> Commands [LoadMemoImages accepted document]
+           _ -> Unchanged
          else Changed (m {sequence=request.sequence,documents=O.insert request.key (M.Loading request $ M.valueOf old) m.documents}) [FetchDocument request]
   ReceiveDocument request result
     | request.epoch /= m.epoch -> Unchanged
@@ -314,7 +317,7 @@ update action m = case action of
   SetScope scope -> Changed
     (m {scope=scope,groupView=Nothing,panes=if N.limit m.env < 3 then N.togglePane false (N.limit m.env) (M.hasTab m) N.Sidebar m.panes else m.panes})
     [SaveView]
-  Navigate activity -> Changed (m {activity=activity,menu=Nothing}) [ScrollToStart,LoadDocument,SaveView]
+  Navigate activity -> Changed (m {activity=activity,menu=Nothing,imageUrls=if activity == m.activity then m.imageUrls else O.empty}) [ScrollToStart,LoadDocument,SaveView]
   SetPeriod period -> Changed
     (m {menu=Nothing,activity=case m.activity of
       N.Work view _ -> N.Work view period

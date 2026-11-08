@@ -56,9 +56,8 @@ instance Exception RunFailure
 data Run = Run { runOwner :: AgentId, runId :: RunId, runSlot :: Int, runCancel :: IORef Bool, runProcess :: MVar (Maybe ProcessHandle), runActivity :: IORef Value, runDeadline :: Word64 }
 data Service = Service { serviceRoot :: FilePath, repositoryRoot :: FilePath, serviceGuard :: MVar (), serviceFileLock :: FileLock, serviceStopping :: IORef Bool, serviceWorker :: MVar (Maybe (Async ())), serviceRuns :: MVar (Map RunId Run), serviceLease :: IORef (Maybe (AgentId, RunId)), serviceEndpoint :: IORef Text, servicePulse :: IORef Value, serviceActors :: MVar (Map ThreadId (Text,Maybe Text)), serviceDatabase :: MVar (Maybe Connection), serviceStates :: MVar (Map Text CachedAgentState) }
 
--- Files remain authoritative: every read compares exact bytes, including external edits.
--- One bounded, service-owned cache holds validated state and successful projection markers.
-data ProjectionStatus = ProjectionPending | ProjectionCommitted deriving (Eq)
+-- Committed projections retain only turns that still depend on archive output.
+data ProjectionStatus = ProjectionPending | ProjectionCommitted [Turn]
 data CachedAgentState = CachedAgentState
  { cachedBytes :: BS.ByteString, cachedState :: AgentState, cachedProjection :: ProjectionStatus }
 
@@ -149,9 +148,11 @@ agentStateInput s a = do
    state <- either (throwIO . userError) pure (eitherDecodeStrict' bytes)
    let remaining = M.delete a cache
        -- Large states still validate/project normally, without retaining their contents.
-       bounded = if M.size remaining >= 32 || sum (map (BS.length . cachedBytes) (M.elems remaining)) + BS.length bytes > 16*1024*1024 then M.empty else remaining
+       bounded entries
+        | M.size entries < 32 && sum (map (BS.length . cachedBytes) (M.elems entries)) + BS.length bytes <= 16*1024*1024 = entries
+        | otherwise = bounded (M.deleteMin entries)
        entry = CachedAgentState bytes state ProjectionPending
-       updated = if BS.length bytes > 4*1024*1024 then remaining else M.insert a entry bounded
+       updated = if BS.length bytes > 4*1024*1024 then remaining else M.insert a entry (bounded remaining)
    pure (updated,entry)
 saveState :: Service -> Text -> AgentState -> IO ()
 saveState s a v = writeJSON (agentRoot s a </> "state.json") (put "revision" (num (int (get (stateJSON v) "revision") + 1)) (stateJSON v))
