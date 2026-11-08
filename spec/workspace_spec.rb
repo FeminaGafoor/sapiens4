@@ -52,17 +52,29 @@ RSpec.describe 'Workspace and memory contracts' do
     expect(host.control(chief, 'workspace')['tabs']).to be_empty
   end
 
-  it 'renders the active Memo preview with workspace images and refuses images outside that workspace' do
-    path = File.join(host.workspace(chief), 'Notes.html')
-    File.write(path, memo('<img src="sample.png"><img src="../private.png">'))
-    File.binwrite(File.join(host.workspace(chief), 'sample.png'), "sample image")
-    File.binwrite(File.join(File.dirname(host.workspace(chief)), 'private.png'), "private image")
+  it 'accepts media links and rejects embedded media in Notes' do
+    root = host.workspace(chief)
+    path = File.join(root, 'Notes.html')
     tab = host.control(chief, 'workspace_memo')['workspace']['active_tab']
-    endpoint = "/api/agents/#{chief}/browser/#{tab}/content"
-    expect(host.api('GET', endpoint)['content']).to eq(File.read(path))
-    preview = host.api('GET', endpoint + '?view=html').fetch('content')
-    expect(preview).to include('Content-Security-Policy', 'data:image/png;base64,c2FtcGxlIGltYWdl')
-    expect(preview).not_to include('private.png', 'cHJpdmF0ZSBpbWFnZQ')
+    preview = "/api/agents/#{chief}/browser/#{tab}/content"
+    notes = "/api/agents/#{chief}/notes"
+    source = memo('<a href="chart%20one.png">Chart</a>')
+    File.write(path, source)
+    File.binwrite(File.join(root, 'chart one.png'), "media stays in its file")
+    expect(host.api('GET', preview)['content']).to eq(source)
+    linked = host.control(chief, 'workspace_open', href: 'chart%20one.png')['workspace']
+    expect(linked['tabs'].last['path']).to eq(File.join(root, 'chart one.png'))
+    expect(host.request('POST', "/api/agents/#{chief}/control", {op: 'workspace_open', href: '%2e%2e/secret'}).first).to eq(403)
+    embedded_media = ['<img src="chart.png">', '<img src="data:image/png;base64,AAAA">',
+      '<a href="data:image/png;base64,AAAA">Chart</a>', '<style>p {background: url(data:image/png;base64,AAAA)}</style>']
+    embedded_media.each do |embedded|
+      File.write(path, memo(embedded))
+      [notes, preview].each do |endpoint|
+        status, body = host.request('GET', endpoint)
+        expect(status).to eq(409)
+        expect(body.fetch('error')).to include('link')
+      end
+    end
   end
 
   it 'rejects invalid edits atomically and selects the last remaining tab on close' do
@@ -184,7 +196,7 @@ RSpec.describe 'Workspace and memory contracts' do
   it 'rejects traversal and symlink escapes without preventing ordinary chat' do
     owner = chief
     path = "/api/agents/#{owner}/notes"
-    expect(host.request('GET', path + '?image=../private.png').first).to eq(409)
+    expect(host.request('GET', path + '?image=../private.png').first).to eq(404)
     file = File.join(host.workspace(owner), 'Notes.html')
     File.binwrite(file, "\xff\x00")
     host.turn(host.submit(owner, 'Continue despite invalid notes'))

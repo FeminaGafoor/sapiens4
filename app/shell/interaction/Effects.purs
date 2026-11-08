@@ -149,7 +149,7 @@ runUpdate runtime dispatch action = do
     U.LoadPreview -> preview runtime dispatch
     U.FetchPreview request ->
       attempt (api runtime requested request.path "GET" D.null) $ runUpdate runtime dispatch <<< U.ReceivePreview request <<<
-        either (Left <<< M.PreviewUnavailable <<< message) M.decodePreview
+        either (Left <<< M.PreviewUnavailable <<< message) (M.decodePreview $ M.isMemoTab (M.notes requested requested.selected) (M.activeTab requested))
 
 captureScroll :: UI Unit
 captureScroll = do

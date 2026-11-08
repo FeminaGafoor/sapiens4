@@ -16,7 +16,6 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.UUID as UUID
 import qualified Data.UUID.V4 as UUID
-import Network.URI (unEscapeString)
 import System.Directory
 import System.Environment
 import System.FileLock
@@ -191,11 +190,9 @@ dispatch s method target body = locked s $ do
    if "format=json" `T.isInfixOf` query then json 200 (D.taskList s a) else do value<-D.workTasks s a True; pure (200,encode value,"application/yaml; charset=utf-8")
   ("GET",["api",kind,a,"notes"]) | kind `elem` ["agents","groups"] -> do
    owner kind a
-   let image=lookup "image" [(k,T.drop 1 v) | entry<-T.splitOn "&" (T.drop 1 query),let (k,v)=T.breakOn "=" entry]
-   case image of
-    Nothing -> json 200 (readMemo (workspaceRoot s a))
-    Just name -> do (bytes,mime)<-memoImage (workspaceRoot s a) (T.pack (unEscapeString (T.unpack name))); pure (200,bytes,mime)
-  ("GET",["api",kind,a,"browser",tab,"content"]) | kind `elem` ["agents","groups"] -> owner kind a >> json 200 (workspaceText s a tab (query=="?view=html"))
+   require (T.null query) 404 "Unknown Notes resource"
+   json 200 (readMemo (workspaceRoot s a))
+  ("GET",["api",kind,a,"browser",tab,"content"]) | kind `elem` ["agents","groups"] -> owner kind a >> json 200 (workspaceText s a tab)
   ("GET",["api","groups"]) -> json 200 (obj . (:[]) . ("groups",) . arr <$> G.snapshotGroups s)
   ("GET",["api","groups",gid]) -> json 200 (G.getGroup s gid False)
   ("POST",["api","groups"]) -> json 201 (G.createGroup s d "admin")

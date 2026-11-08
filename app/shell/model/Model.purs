@@ -27,9 +27,11 @@ previewError = case _ of
   PreviewUnavailable message -> message
   InvalidPreview -> "Invalid file preview response"
 
-decodePreview :: Json -> Either PreviewError String
-decodePreview value = case toString (D.get "content" value) of
-  Just content -> Right content
+data Preview = TextPreview String | MemoPreview (Array Json)
+
+decodePreview :: Boolean -> Json -> Either PreviewError Preview
+decodePreview memo value = case toString (D.get "content" value) of
+  Just content -> Right $ if memo then MemoPreview (D.arr $ B.parseMarkup content) else TextPreview content
   Nothing -> Left InvalidPreview
 
 type Request = { epoch :: Int, sequence :: Int, key :: String, revision :: String, path :: String }
@@ -97,7 +99,7 @@ type ContentState r =
   , drafts :: O.Object String, attachments :: O.Object (Array X.Attachment), sending :: Set.Set String
   , uploading :: Int, clarification :: Maybe X.Workload
   , workspaces :: O.Object X.Workspace, workspaceRevision :: Number, documents :: O.Object (RemoteData String X.Document)
-  , expanded :: Set.Set String, preview :: RemoteData PreviewError String
+  , expanded :: Set.Set String, preview :: RemoteData PreviewError Preview
   , scrollPosition :: Maybe Browser.ScrollPosition, restoringScroll :: Boolean
   | r )
 
@@ -277,7 +279,7 @@ currentPreview m =
       memo = notes m m.selected
       isMemo = isMemoTab memo tab
   in if (nativeWorkspace m && not isMemo) || tab.path == "" || not (A.elem N.Workspace m.panes) then Nothing
-     else Just {epoch:m.epoch,sequence:m.sequence+1,key:tab.id,revision:D.encode (D.json tab.command) <> (if isMemo then memo.revision else ""),path:ownerPath m <> "/browser/" <> B.encodeURI (tab.id) <> "/content" <> if isMemo then "?view=html" else ""}
+     else Just {epoch:m.epoch,sequence:m.sequence+1,key:tab.id,revision:D.encode (D.json tab.command) <> (if isMemo then memo.revision else ""),path:ownerPath m <> "/browser/" <> B.encodeURI (tab.id) <> "/content"}
 
 requestOf :: forall error a. RemoteData error a -> Maybe Request
 requestOf = case _ of

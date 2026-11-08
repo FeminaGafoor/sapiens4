@@ -77,7 +77,7 @@ operationSchema =
  , ("manager", ChangeManager, ["manager","target"])
  , ("workspace", ReadWorkspace, ["group"])
  , ("workspace_memo", WorkspaceCommand OpenMemo, ["group"])
- , ("workspace_open", WorkspaceCommand OpenWorkspace, ["url","path","id","group"])
+ , ("workspace_open", WorkspaceCommand OpenWorkspace, ["url","path","href","id","group"])
  , ("workspace_zoom", WorkspaceCommand ZoomWorkspace, ["id","factor","group"])
  , ("workspace_close", WorkspaceCommand CloseWorkspace, ["id","group"])
  , ("workspace_focus", WorkspaceCommand FocusWorkspace, ["id","group"])

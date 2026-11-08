@@ -76,7 +76,7 @@ nativeReport value =
   ,op:if D.s "open" value /= "" || D.s "file" value /= "" then "open" else D.s "action" value
   ,body:if D.s "open" value /= "" then D.json {url:D.get "open" value} else if D.s "file" value /= "" then D.json {path:D.get "file" value} else if D.s "action" value == "" then value else D.get "fields" value}
 
-data Destination = WebAddress String | FilePath String
+data Destination = WebAddress String | FilePath String | WorkspaceLink String
 derive instance eqDestination :: Eq Destination
 
 data Command = OpenMemo | Open Destination (Maybe String) | FocusTab String | CloseTab String | GoBack | GoForward | Reload | Zoom Number | SaveBookmark String | RemoveBookmark String
@@ -96,7 +96,8 @@ request = case _ of
   OpenMemo -> {op:"memo",fields:D.empty}
   Open target id -> {op:"open",fields:D.obj $ [case target of
     WebAddress value -> Tuple "url" $ D.text value
-    FilePath value -> Tuple "path" $ D.text value] <> maybe [] (\value -> [Tuple "id" $ D.text value]) id}
+    FilePath value -> Tuple "path" $ D.text value
+    WorkspaceLink value -> Tuple "href" $ D.text value] <> maybe [] (\value -> [Tuple "id" $ D.text value]) id}
   FocusTab id -> {op:"focus",fields:D.json {id}}
   CloseTab id -> {op:"close",fields:D.json {id}}
   GoBack -> {op:"back",fields:D.empty}

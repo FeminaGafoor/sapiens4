@@ -61,7 +61,7 @@ data Action
   | ToggleSearch
   | TogglePane N.Pane
   | RequestPreview
-  | ReceivePreview M.Request (Either M.PreviewError String)
+  | ReceivePreview M.Request (Either M.PreviewError M.Preview)
 
 data Command
   = SaveRegistry (Array X.Corpora)

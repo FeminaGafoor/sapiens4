@@ -28,8 +28,8 @@ outcomes before retrying. The shared computer allows one owner at a time.
 
 Memo reads `workspaces/<id>/Notes.html`. Its wiki has `about`, `map` and `content`
 sections; about/map enter model context and the model reads relevant content as
-needed. Scripts and deliverables remain ordinary linked files. The renderer
-allows inert markup and local images while removing executable content.
+needed. Store media as separate files. Link to them from Notes.html with a relative workspace
+path or an HTTP(S) URL. Inline images and data URLs are unsupported.
 
 Native desktop tabs open websites, local files and bookmarks. Text/source files
 render literally; HTML, PDF and media use the native browser. Closing a tab does

@@ -9,12 +9,11 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Base64 as B64
 import qualified Data.ByteString.Lazy as BL
 import Data.Char
-import Data.List (find,nub)
+import Data.List (find,isPrefixOf,nub)
 import Data.Maybe
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
-import Text.HTML.TagSoup (Tag(..), parseTags, renderTags)
 import Network.URI
 import System.Directory
 import System.FilePath
@@ -75,6 +74,19 @@ destination s a d checkFile = validated (parseDestination d) >>= \location -> ca
   full <- canonicalizePath (if isAbsolute p then p else workspaceRoot s a </> p)
   when checkFile $ doesFileExist full >>= \ok -> require ok 404 "File not found"
   pure (obj [("url",str (fileURL full)),("path",str (T.pack full)),("title",str (T.pack (takeFileName full)))])
+-- Links authored inside Notes.html are relative to the owning workspace.
+memoLinkDestination :: Service -> Text -> Value -> IO Value
+memoLinkDestination s owner input = do
+ require (not (has input "url" || has input "path")) 400 "Supply one destination"
+ href <- textField input "href" 8192
+ uri <- maybe (failure 400 "Invalid workspace link") pure (parseRelativeReference (T.unpack href))
+ let path = unEscapeString (uriPath uri)
+ require (uriAuthority uri == Nothing && not (null path) && isRelative path) 400 "Use a relative workspace link"
+ root <- canonicalizePath (workspaceRoot s owner)
+ file <- canonicalizePath (root </> path)
+ require (addTrailingPathSeparator root `isPrefixOf` file) 403 "Link is outside this workspace"
+ destination s owner (obj [("path",str (T.pack file))]) True
+
 workspace :: Service -> Text -> IO Value
 workspace s a = do
  p <- DB.singleton s DB.Preferences
@@ -169,7 +181,7 @@ workspaceControl s a action d = do
  sequence <- newId
  edit <- case action of
   "open" -> do
-   dest <- destination s a d True
+   dest <- if has d "href" then memoLinkDestination s a d else destination s a d True
    when (has d "id") (require (isJust found) 404 "Unknown browser tab")
    identity <- maybe (("tab-" <>) <$> newId) (pure . (`at` "id")) found
    pure (OpenTab dest identity found)
@@ -204,47 +216,20 @@ workspaceObserved s a d = do
    when (updated /= tab) $ persistWorkspace s a (put "tabs" (arr [if get t "id" == get tab "id" then updated else t | t <- tabs]) w) prefs
    pure (obj [("saved",Bool True)])
   _ -> pure (obj [("saved",Bool False)])
-workspaceText :: Service -> Text -> Text -> Bool -> IO Value
-workspaceText s a i renderMemo = do
+workspaceText :: Service -> Text -> Text -> IO Value
+workspaceText s a i = do
  w <- workspace s a
  tab <- maybe (failure 404 "Unknown local file tab") pure (findId i (items w "tabs"))
  require (has tab "path") 404 "Unknown local file tab"
  let file = T.unpack (at tab "path")
- when renderMemo $ do
-  root <- canonicalizePath (workspaceRoot s a)
-  require (file == root </> "Notes.html") 404 "Unknown Memo tab"
-  Memo.validate root file
- raw <- withBinaryFile (T.unpack (at tab "path")) ReadMode (`BS.hGet` 2000001) `catch` (\(_ :: IOException) -> failure 404 "File not found or unreadable")
+ let isMemo = file == workspaceRoot s a </> "Notes.html"
+ when isMemo $ Memo.validate (workspaceRoot s a) file
+ raw <- withBinaryFile file ReadMode (`BS.hGet` 2000001) `catch` (\(_ :: IOException) -> failure 404 "File not found or unreadable")
  require (BS.length raw <= 2000000) 413 "This file is too large for the text preview; open it in the desktop app"
  content <- either (const (failure 415 "This file is not UTF-8 text; open it in the desktop app")) pure (TE.decodeUtf8' raw)
  require (not (T.any (== '\0') content)) 415 "This file is not UTF-8 text; open it in the desktop app"
- let source = fromMaybe content (T.stripPrefix "\xfeff" content)
- document <- if renderMemo then memoPreview (takeDirectory file) source else pure source
- pure $ obj [("content",str document),("path",get tab "path")]
-
--- A remote browser cannot load host file URLs. Embed only workspace-local images
--- in the active sandboxed document, within the encrypted transport's size limit.
-memoPreview :: FilePath -> Text -> IO Text
-memoPreview root source = do
- (_,tags) <- foldM embed (0,[]) (parseTags source)
- let policy = "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'\">"
- pure (policy <> renderTags (reverse tags))
- where
- embed (used,tags) (TagOpen tag attrs) | T.toLower tag == "img" = do
-  let src = fromMaybe "" (lookup "src" [(T.toLower k,v) | (k,v) <- attrs])
-      rest = filter (\(k,_) -> T.toLower k `notElem` ["src","srcset"]) attrs
-      image url = TagOpen tag (("src",url):rest) : tags
-  if T.null src || T.isPrefixOf "data:" src then pure (used,image src)
-  else if isURI (T.unpack src) || "/" `T.isPrefixOf` src || used >= 8000000 then pure (used,TagOpen tag rest:tags)
-  else do
-   let load = do
-        (bytes,mime) <- Memo.memoImage root (T.pack (unEscapeString (T.unpack src)))
-        let size = BL.length bytes
-        if used + size > 8000000 then pure Nothing else pure (Just (size,"data:" <> mime <> ";base64," <> TE.decodeUtf8 (B64.encode (BL.toStrict bytes))))
-   result <- load `catch` (\(_::APIError) -> pure Nothing) `catch` (\(_::IOException) -> pure Nothing)
-   pure $ maybe (used,TagOpen tag rest:tags) (\(size,url) -> (used+size,image url)) result
- embed (used,tags) tag = pure (used,tag:tags)
-
+ when isMemo $ Memo.validateMemoMedia content
+ pure $ obj [("content",str (fromMaybe content (T.stripPrefix "\xfeff" content))),("path",get tab "path")]
 createAttachment :: Service -> Text -> Value -> IO Value
 createAttachment s a d = do
  let kind = at d "kind"
