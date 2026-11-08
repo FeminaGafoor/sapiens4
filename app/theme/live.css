@@ -437,4 +437,4 @@
 .connection-dot { width:6px;height:6px;flex:none;border-radius:50%;background:#888; }
 .connection-status[data-online="true"] .connection-dot { background:#3b9b69; }
 
-.workspace-document { flex:1;min-width:0;overflow:auto;padding:1rem;color:var(--ink);overflow-wrap:anywhere; }
+.workspace-document { flex:1;min-width:0;overflow:auto;padding:1rem;background:var(--sapi-bg);color:var(--ink);overflow-wrap:anywhere; }
