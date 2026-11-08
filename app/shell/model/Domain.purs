@@ -12,6 +12,13 @@ import Sapiens.Data as D
 import Sapiens.Navigation as N
 import Sapiens.Browser as Browser
 
+newtype SnapshotContent = SnapshotContent String
+derive newtype instance eqSnapshotContent :: Eq SnapshotContent
+
+-- Pulse counters are not consumed by Snapshot.
+snapshotContent :: Json -> SnapshotContent
+snapshotContent = SnapshotContent <<< D.encode <<< D.remove "pulse" <<< D.remove "pulses"
+
 data EntityKind = Sapi | Group
 derive instance eqEntityKind :: Eq EntityKind
 

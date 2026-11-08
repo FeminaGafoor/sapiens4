@@ -58,7 +58,8 @@ openService path = do
       endpoint <- newIORef ""
       pulse <- newIORef empty
       actors <- newMVar M.empty
-      let s=Service root repo guard lock stopping worker runs lease endpoint pulse actors database
+      states <- newMVar M.empty
+      let s=Service root repo guard lock stopping worker runs lease endpoint pulse actors database states
       DB.initialize s
       let identityPath=root </> "corpora-identity.json"
       exists <- doesFileExist identityPath

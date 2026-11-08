@@ -102,7 +102,7 @@ type ContentState r =
   | r )
 
 type SessionState =
-  ( polling :: Boolean, pollGeneration :: Int, saving :: Boolean, lastPreview :: Number
+  ( snapshotContent :: Maybe X.SnapshotContent, polling :: Boolean, pollGeneration :: Int, saving :: Boolean, lastPreview :: Number
   , nativeReporting :: Boolean, nativeReports :: Array Browser.NativeReport
   , epoch :: Int, sequence :: Int, now :: Number, env :: Environment
   , records :: Array X.Corpora, active :: String, connection :: ConnectionState
@@ -115,7 +115,7 @@ initial env =
   { snapshot:X.emptySnapshot, agents:[], messages:O.empty, selected:"", activity:N.Chat N.Conversation, scope:N.All, groupView:Nothing
   , mention:Nothing, drafts:O.empty, attachments:O.empty, sending:Set.empty, uploading:0, clarification:Nothing
   , workspaces:O.empty, workspaceRevision:0.0, documents:O.empty, expanded:Set.empty
-  , polling:false,pollGeneration:0,saving:false,lastPreview:0.0,nativeReporting:false,nativeReports:[]
+  , snapshotContent:Nothing, polling:false,pollGeneration:0,saving:false,lastPreview:0.0,nativeReporting:false,nativeReports:[]
   , epoch:0, sequence:0, now:0.0, env, panes:[N.ChatPane,N.Sidebar,N.Workspace], search:"", searchOpen:false, menu:Nothing, dialog:Nothing
   , records:[], active:"", connection:Offline, localAvailable:false, showArchived:false
   , toast:"", feedback:"", theme:if env.dark then "dark" else "light", installRequired:false
@@ -218,7 +218,7 @@ reset raw old = case X.decodeSnapshot raw of
 resetSnapshot :: X.Snapshot -> Model -> Model
 resetSnapshot snapshot old = projectSnapshot snapshot old
   {selected=p.selected,activity=p.activity,scope=p.scope,groupView=p.groupView,drafts=p.drafts
-  ,attachments=snapshot.attachment_drafts,sending=Set.empty,uploading=0,clarification=Nothing,documents=O.empty,expanded=Set.empty,epoch=old.epoch+1
+  ,snapshotContent=Nothing,attachments=snapshot.attachment_drafts,sending=Set.empty,uploading=0,clarification=Nothing,documents=O.empty,expanded=Set.empty,imageUrls=O.empty,epoch=old.epoch+1
   ,panes=p.panes,workspaces=p.workspaces,workspaceRevision=p.workspaceRevision,search="",searchOpen=false
   ,preview=NotAsked,address="",scrollPosition=p.scrollPosition,restoringScroll=p.scrollPosition /= Nothing}
   where

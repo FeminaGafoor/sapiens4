@@ -54,14 +54,14 @@ refresh runtime dispatch requested operation = attempt operation \result -> inEp
   when (requested.active == m.active) $ case result of
     Left failure -> runUpdate runtime dispatch $ U.SnapshotReceived requested.epoch requested.active $ Left $ message failure
     Right raw -> do
-      captureScroll
-      snapshot <- liftEffect $ if m.snapshot.corpora.id /= "" && m.snapshot.corpora.id == D.str (D.at ["corpora","id"] raw) then pure raw else C.decorate requested.active raw
+      let content = X.snapshotContent raw
       now <- liftEffect B.now
-      case X.decodeSnapshot snapshot of
-        Left failure -> runUpdate runtime dispatch $ U.SnapshotReceived requested.epoch requested.active $ Left failure
-        Right decoded -> do
-          liftEffect $ C.cache requested.active raw
-          runUpdate runtime dispatch $ U.SnapshotReceived requested.epoch requested.active $ Right {snapshot:decoded,now}
+      incoming <- if m.snapshotContent == Just content then pure $ Right U.KeepSnapshot else do
+        captureScroll
+        decorated <- liftEffect $ if m.snapshot.corpora.id /= "" && m.snapshot.corpora.id == D.str (D.at ["corpora","id"] raw) then pure raw else C.decorate requested.active raw
+        pure $ (\snapshot -> U.ReplaceSnapshot {snapshot,content}) <$> X.decodeSnapshot decorated
+      traverse_ (const $ liftEffect $ C.cacheSnapshot runtime requested.active content raw) incoming
+      runUpdate runtime dispatch $ U.SnapshotReceived requested.epoch requested.active $ (\change -> {change,now}) <$> incoming
 
 api :: C.Runtime -> M.Model -> String -> String -> Json -> Aff Json
 api runtime m path method body = do
@@ -90,10 +90,15 @@ requestDocument runtime dispatch = runUpdate runtime dispatch U.RequestDocument
 memoImages :: C.Runtime -> M.Request -> X.MemoDocument -> UI Unit
 memoImages runtime request document = do
   m <- H.get
+  let prefix = S.drop 5 request.key <> ":"
+      sources = Memo.imagePaths document
+      keys = map (prefix <> _) sources
+  H.modify_ \s -> s {imageUrls=O.filterWithKey (\key _ -> S.take (S.length prefix) key /= prefix || A.elem key keys) s.imageUrls}
   traverse_ (\source -> do
-    let key = S.drop 5 request.key <> ":" <> source
-    unless (O.member key m.imageUrls) $ attempt (imageRequest m source) \result -> inEpoch m.epoch \_ ->
-      traverse_ (\uri -> H.modify_ \s -> s {imageUrls=O.insert key uri s.imageUrls}) result) $ Memo.imagePaths document
+    let key = prefix <> source
+    unless (O.member key m.imageUrls) $ attempt (imageRequest m source) \result -> inEpoch m.epoch \current ->
+      when ((O.lookup request.key current.documents >>= M.requestOf) == Just request) $
+        traverse_ (\uri -> H.modify_ \s -> s {imageUrls=O.insert key uri s.imageUrls}) result) sources
   where
   imageRequest m source = do
     let path = request.path <> "?image=" <> B.encodeURI source

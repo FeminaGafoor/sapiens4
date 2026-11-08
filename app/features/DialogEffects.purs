@@ -158,10 +158,11 @@ handle runtime dispatch action = case action of
       traverse_ R.close $ O.values clients
       Ref.write O.empty runtime.clients
       Ref.write O.empty runtime.credentials
+      Ref.write Nothing runtime.persistedSnapshot
       traverse_ (\r -> B.storageRemove $ "s4.snapshot." <> r.key) $ A.filter (( _ == X.Remote) <<< _.location) m.records
     let locals = map (_ {paired=false}) $ A.filter (( _ == X.Local) <<< _.location) m.records
         active = if (M.activeRecord m).location == X.Remote then fromMaybe "" $ _.key <$> A.head locals else m.active
-    H.modify_ _ {records=locals,active=active,connection=M.Offline,epoch=m.epoch+1,polling=false,saving=false,nativeReporting=false,nativeReports=[]}
+    H.modify_ _ {records=locals,active=active,connection=M.Offline,epoch=m.epoch+1,polling=false,saving=false,nativeReporting=false,nativeReports=[],snapshotContent=Nothing,imageUrls=O.empty,documents=O.empty}
     void $ liftEffect $ C.write "s4.records" $ D.json locals
     void $ liftEffect $ C.write "s4.active" $ D.text active
     void $ liftEffect $ C.write "s4.lifecycle.pending" D.null

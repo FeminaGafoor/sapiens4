@@ -41,12 +41,21 @@ RSpec.describe 'Working with browser tabs and documents', :desktop do
     expect(desktop.see('Play First')).not_to include('Play Second')
   end
 
-  it 'keeps the workspace menu usable above a guest and returns to the guest afterward' do
+  it 'restores the guest after workspace menus and history-filter selection' do
     desktop.fill('First input', 'A draft on the website')
     desktop.press('Workspace options')
     desktop.see('Open file…')
     expect(desktop.text).not_to include('Play First')
     desktop.press('Workspace options')
+    expect(desktop.find('First input', role: 'AXTextField')['value']).to eq('A draft on the website')
+    identity = host.api('GET', '/api/corpora')
+    host.api('PUT', '/api/corpora/lifecycle', action: 'pause', operation: 'history-visibility', revision: identity['revision'])
+    desktop.see('Paused')
+    desktop.press('Work menu')
+    desktop.press('Tasks')
+    desktop.press('Task history')
+    expect(desktop.text).not_to include('Play First')
+    desktop.press('Executed')
     expect(desktop.find('First input', role: 'AXTextField')['value']).to eq('A draft on the website')
     desktop.click('Play First')
     desktop.see('Pause First')

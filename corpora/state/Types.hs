@@ -15,6 +15,7 @@ import Data.Aeson hiding (pairs)
 import Data.Aeson.Types (Parser, parseEither)
 import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString.Lazy as BL
+import qualified Data.ByteString as BS
 import Data.IORef
 import Data.List (find)
 import Data.Map.Strict (Map)
@@ -53,7 +54,13 @@ data RunFailure = RunFailure Text [Value] deriving (Show,Typeable)
 instance Exception RunFailure
 
 data Run = Run { runOwner :: AgentId, runId :: RunId, runSlot :: Int, runCancel :: IORef Bool, runProcess :: MVar (Maybe ProcessHandle), runActivity :: IORef Value, runDeadline :: Word64 }
-data Service = Service { serviceRoot :: FilePath, repositoryRoot :: FilePath, serviceGuard :: MVar (), serviceFileLock :: FileLock, serviceStopping :: IORef Bool, serviceWorker :: MVar (Maybe (Async ())), serviceRuns :: MVar (Map RunId Run), serviceLease :: IORef (Maybe (AgentId, RunId)), serviceEndpoint :: IORef Text, servicePulse :: IORef Value, serviceActors :: MVar (Map ThreadId (Text,Maybe Text)), serviceDatabase :: MVar (Maybe Connection) }
+data Service = Service { serviceRoot :: FilePath, repositoryRoot :: FilePath, serviceGuard :: MVar (), serviceFileLock :: FileLock, serviceStopping :: IORef Bool, serviceWorker :: MVar (Maybe (Async ())), serviceRuns :: MVar (Map RunId Run), serviceLease :: IORef (Maybe (AgentId, RunId)), serviceEndpoint :: IORef Text, servicePulse :: IORef Value, serviceActors :: MVar (Map ThreadId (Text,Maybe Text)), serviceDatabase :: MVar (Maybe Connection), serviceStates :: MVar (Map Text CachedAgentState) }
+
+-- Files remain authoritative: every read compares exact bytes, including external edits.
+-- One bounded, service-owned cache holds validated state and successful projection markers.
+data ProjectionStatus = ProjectionPending | ProjectionCommitted deriving (Eq)
+data CachedAgentState = CachedAgentState
+ { cachedBytes :: BS.ByteString, cachedState :: AgentState, cachedProjection :: ProjectionStatus }
 
 -- Pure validation retains the HTTP error contract; adapters choose when to throw.
 type Validation a = Either APIError a
@@ -129,7 +136,23 @@ agentRoot s a = serviceRoot s </> "agentpy/agents" </> T.unpack a
 workspaceRoot :: Service -> Text -> FilePath
 workspaceRoot s a = serviceRoot s </> "workspaces" </> T.unpack a
 agentState :: Service -> Text -> IO AgentState
-agentState s a = readJSON (agentRoot s a </> "state.json") (AgentState [] KM.empty)
+agentState s a = cachedState <$> agentStateInput s a
+
+agentStateInput :: Service -> Text -> IO CachedAgentState
+agentStateInput s a = do
+ let path = agentRoot s a </> "state.json"
+ exists <- doesFileExist path
+ bytes <- if exists then BS.readFile path else pure (BL.toStrict (encode (AgentState [] KM.empty)))
+ modifyMVar (serviceStates s) $ \cache -> case M.lookup a cache of
+  Just entry | cachedBytes entry == bytes -> pure (cache,entry)
+  _ -> do
+   state <- either (throwIO . userError) pure (eitherDecodeStrict' bytes)
+   let remaining = M.delete a cache
+       -- Large states still validate/project normally, without retaining their contents.
+       bounded = if M.size remaining >= 32 || sum (map (BS.length . cachedBytes) (M.elems remaining)) + BS.length bytes > 16*1024*1024 then M.empty else remaining
+       entry = CachedAgentState bytes state ProjectionPending
+       updated = if BS.length bytes > 4*1024*1024 then remaining else M.insert a entry bounded
+   pure (updated,entry)
 saveState :: Service -> Text -> AgentState -> IO ()
 saveState s a v = writeJSON (agentRoot s a </> "state.json") (put "revision" (num (int (get (stateJSON v) "revision") + 1)) (stateJSON v))
 modifyState :: Service -> Text -> (Value -> Value) -> IO ()

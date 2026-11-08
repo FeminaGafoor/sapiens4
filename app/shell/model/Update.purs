@@ -17,6 +17,8 @@ import Sapiens.Domain as X
 import Sapiens.Model as M
 import Sapiens.Navigation as N
 
+data SnapshotChange = KeepSnapshot | ReplaceSnapshot {snapshot :: X.Snapshot, content :: X.SnapshotContent}
+
 -- Pure application decisions. Commands are interpreted by Sapiens.Effects.
 data Action
   = RegistryReceived Int String {records :: Array X.Corpora, localAvailable :: Boolean}
@@ -28,7 +30,7 @@ data Action
   | DrainNative
   | NativeCompleted Int Browser.NativeReport (Either String Json)
   | Poll
-  | SnapshotReceived Int String (Either String {snapshot :: X.Snapshot, now :: Number})
+  | SnapshotReceived Int String (Either String {change :: SnapshotChange, now :: Number})
   | Persist
   | Persisted Int String (Either String Json)
   | MentionAt Int Int
@@ -129,7 +131,7 @@ update action m = case action of
             Nothing -> preferred
           updated = m {records=registry.records,localAvailable=registry.localAvailable}
           next = case selected of
-            Nothing -> updated {active="",connection=M.Offline,feedback="",snapshot=X.emptySnapshot,agents=[]}
+            Nothing -> updated {active="",connection=M.Offline,feedback="",snapshot=X.emptySnapshot,agents=[],snapshotContent=Nothing,imageUrls=O.empty,documents=O.empty}
             Just record -> updated {polling=if record.key == m.active then true else m.polling}
           localPair = not (M.remote m) && S.contains (S.Pattern "pairing=local") m.env.search
           local = A.find ((_ == X.Local) <<< _.location) registry.records
@@ -141,7 +143,7 @@ update action m = case action of
             Just record -> [Dispatch $ Shell.OpenDialog M.HostPairing $ F.CorporaRecord record false]) else []
       in Changed (if localPair then next {env=m.env {search=""}} else next) ([SaveRegistry registry.records] <> connect <> pairing <> [Sync])
   Entered record cached ->
-    let current = m {active=record.key,connection=M.Offline,polling=true,saving=false,nativeReporting=false,nativeReports=[],epoch=m.epoch+1,dialog=Nothing,scrollPosition=Nothing}
+    let current = m {snapshotContent=Nothing,active=record.key,connection=M.Offline,polling=true,saving=false,nativeReporting=false,nativeReports=[],imageUrls=O.empty,epoch=m.epoch+1,dialog=Nothing,scrollPosition=Nothing}
         updated = case cached of
           Just snapshot -> M.resetSnapshot snapshot current
           Nothing -> current {snapshot=X.emptySnapshot,agents=[],documents=O.empty}
@@ -197,15 +199,20 @@ update action m = case action of
         Left failure ->
           let updated = m {polling=false,connection=M.connectionResult false m.connection,feedback=if D.matches "revoked|another window|^Invalid snapshot response:" failure then failure else m.feedback}
           in Changed updated (schedulePoll updated)
-        Right {snapshot,now} ->
-          let same = m.snapshot.corpora.id == snapshot.corpora.id
-              projected = if same then M.projectSnapshot snapshot m else M.resetSnapshot snapshot m
-              tab = M.activeTab projected
+        Right {change,now} ->
+          let projected = case change of
+                KeepSnapshot -> m
+                ReplaceSnapshot {snapshot,content} ->
+                  let current = if m.snapshot.corpora.id == snapshot.corpora.id then M.projectSnapshot snapshot m else M.resetSnapshot snapshot m
+                      tab = M.activeTab current
+                  in current {snapshotContent=Just content,records=map (\r -> if r.key == active then X.updateCorpora r snapshot.corpora else r) m.records
+                    ,address=if m.addressOpen then m.address else D.fallback (if tab.url == "about:blank" then "" else tab.url) $ tab.path}
               previewDue = now - m.lastPreview >= 2000.0
-              updated = projected {polling=false,now=now,connection=M.connectionResult true m.connection,feedback="",records=map (\r -> if r.key == active then X.updateCorpora r snapshot.corpora else r) m.records
-                ,address=if m.addressOpen then m.address else D.fallback (if tab.url == "about:blank" then "" else tab.url) $ tab.path
-                ,lastPreview=if previewDue then now else m.lastPreview}
-          in Changed updated ([RestoreScroll,LoadDocument] <> (if previewDue then [LoadPreview] else []) <> [Sync] <> schedulePoll updated)
+              updated = projected {polling=false,now=now,connection=M.connectionResult true m.connection,feedback="",lastPreview=if previewDue then now else m.lastPreview}
+              commands = case change of
+                KeepSnapshot -> identity
+                ReplaceSnapshot _ -> \preview -> [RestoreScroll,LoadDocument] <> preview <> [Sync]
+          in Changed updated (commands (if previewDue then [LoadPreview] else []) <> schedulePoll updated)
   Persist ->
     let value = D.encode $ M.preferences m
     in if (M.online m) && not (M.busy m) && not m.saving && value /= m.preferencesSaved then
@@ -312,7 +319,7 @@ update action m = case action of
     (m {menu=Nothing,activity=case m.activity of
       N.Work view _ -> N.Work view period
       other -> other})
-    [SavePreferences]
+    [SavePreferences,Sync]
   Search search -> Changed (m {search=search}) []
   ToggleSearch -> Changed
     (m {searchOpen=not m.searchOpen,search=if m.searchOpen then "" else m.search})
