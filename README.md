@@ -49,9 +49,6 @@ Dependencies retain their own layout under `submodules/`.
 - [Running behavior tests](docs/testing.md)
 - [Contributing](docs/contributing.md)
 
-Windows support was contributed through the
-[fatmahalqaisi-code/sapiens4 fork](https://github.com/fatmahalqaisi-code/sapiens4).
-
 ## License
 
 Sapiens4 is source-available under the [Sustainable Use License 1.0](license/LICENSE.md).
