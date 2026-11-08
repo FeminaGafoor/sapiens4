@@ -329,7 +329,7 @@ update action m = case action of
     M.Loading _ _ -> Unchanged
     _ -> case M.currentPreview m of
       Nothing -> Unchanged
-      Just request | M.memoTab m, M.Ready cached _ <- m.preview, cached.path == request.path && cached.revision == request.revision -> Unchanged
+      Just request | M.isMemoTab (M.notes m m.selected) (M.activeTab m), M.Ready cached _ <- m.preview, cached.path == request.path && cached.revision == request.revision -> Unchanged
       Just request ->
         let previous = if (_.path <$> M.requestOf m.preview) == Just request.path then M.valueOf m.preview else Nothing
         in Changed (m {sequence=request.sequence,preview=M.Loading request previous}) [FetchPreview request]

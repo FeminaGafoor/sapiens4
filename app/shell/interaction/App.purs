@@ -181,7 +181,7 @@ handle runtime input = session input
     EditAddress -> E.runUpdate runtime dispatch U.EditAddress
     OpenFile -> do
       m <- H.get
-      let directory = if M.isGroup $ M.selected m then (M.selected m).workspace else D.replace "[\\\\/][^\\\\/]+$" "" $ (M.notes m).path
+      let directory = if M.isGroup $ M.selected m then (M.selected m).workspace else D.replace "[\\\\/][^\\\\/]+$" "" $ (M.notes m m.selected).path
       dispatch CloseMenu
       if Workspace.native m then liftEffect $ B.nativeMessage $ D.json {pickFile: true, owner: m.selected, directory} else do
         H.modify_ _ {address=directory <> "/",addressOpen=true}

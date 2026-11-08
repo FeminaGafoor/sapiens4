@@ -201,19 +201,19 @@ RSpec.describe 'Navigating work', :desktop do
   it 'reuses the selected Sapi’s Memo tab and can reopen it after the tab closes' do
     @host = desktop_host
     researcher = host.agent('Researcher')
-    File.write(File.join(host.workspace(researcher), 'Notes.html'), '<p>Researcher notebook</p>')
+    File.write(File.join(host.workspace(researcher), 'Notes.html'), '<p>Voca’s role is “Proofreader.”</p>')
     start_desktop
     desktop.press('Open Researcher')
     work_view('Memo')
-    desktop.see('Researcher notebook')
+    desktop.see('Voca’s role is “Proofreader.”')
     tab = host.control(researcher, 'workspace')['tabs'].fetch(0)
     work_view('Memo')
-    desktop.see('Researcher notebook')
+    desktop.see('Voca’s role is “Proofreader.”')
     expect(host.control(researcher, 'workspace')['tabs'].map { |t| t['id'] }).to eq([tab['id']])
     desktop.press('Close Notes.html')
     Contract.wait { host.control(researcher, 'workspace')['tabs'].empty? }
     work_view('Memo')
-    desktop.see('Researcher notebook')
+    desktop.see('Voca’s role is “Proofreader.”')
     expect(host.control(chief, 'workspace')['tabs']).to be_empty
   end
 

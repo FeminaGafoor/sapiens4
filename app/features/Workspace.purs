@@ -48,12 +48,13 @@ view m = V.node "main" [V.cls "workspace",V.id "workspace-panel",V.label "Agent 
       ,V.div "browser-menu-row" [V.span [] "Zoom",zoomButton "Zoom out" "−" (max 0.25 $ zoom-0.1),zoomButton "Reset zoom" (show (I.round $ zoom*100.0) <> "%") 1.0,zoomButton "Zoom in" "＋" (min 5.0 $ zoom+0.1)]
       ,V.div "browser-menu-label" [V.text "Bookmarks"],V.node "div" [V.id "browser-bookmarks"] $ if A.null (bookmarks m) then [V.p "" "No bookmarks yet."] else map bookmarkRow (bookmarks m)]
     ,V.node "div" [V.id "browser-all-tabs",V.hidden $ m.menu /= Just "browser-tabs"] $ [V.div "browser-menu-label" [V.text $ "Open tabs · " <> show (A.length tabs)]] <> map (tabView true) tabs
-    ,V.span [V.id "browser-status",V.attr "role" "status"] (D.fallback (if tab.loading then "Loading…" else "") $ tab.error)]
-  ,V.node "div" [V.id "workspace-content",V.cls "workspace-content"] $ if native m then [V.text $ if tab.id /= "" then "" else "Open a URL or file to get started."] else
-      if tab.path == "" then [V.text $ if tab.id /= "" && tab.url /= "about:blank" then "Open Sapiens4 desktop to browse this web page." else "Open a URL or file to get started."] else if M.memoTab m then case m.preview of
-        M.Ready request html | request.key == tab.id -> [V.node "iframe" [V.cls "workspace-document",V.attr "title" tab.title,V.attr "sandbox" "",V.attr "srcdoc" html] []]
+    ,V.span [V.id "browser-status",V.attr "role" "status"] (if memo then "" else D.fallback (if tab.loading then "Loading…" else "") $ tab.error)]
+  ,V.node "div" [V.id "workspace-content",V.cls "workspace-content"] $ if memo then case m.preview of
+        M.Ready request html | request.key == tab.id -> [V.node "iframe" [V.cls "workspace-document",V.attr "title" tab.title,V.attr "sandbox" "",V.attr "srcdoc" html,V.style $ "transform-origin:top left;transform:scale(" <> show zoom <> ");width:" <> show (100.0/zoom) <> "%;height:" <> show (100.0/zoom) <> "%;flex:none"] []]
         M.Failed _ error -> [V.text $ M.previewError error]
         _ -> [V.text "Loading…"]
+      else if native m then [V.text $ if tab.id /= "" then "" else "Open a URL or file to get started."]
+      else if tab.path == "" then [V.text $ if tab.id /= "" && tab.url /= "about:blank" then "Open Sapiens4 desktop to browse this web page." else "Open a URL or file to get started."]
       else [V.textNode "pre" [V.cls "workspace-text",V.label $ tab.title,V.style $ "font-size:" <> show ((if N.limit m.env < 3 then 12.6 else 13.0) * zoom) <> "px"] (case m.preview of
         M.Ready _ value -> value
         M.Loading _ (Just value) -> value
@@ -63,6 +64,7 @@ view m = V.node "main" [V.cls "workspace",V.id "workspace-panel",V.label "Agent 
   where
   tabs = M.tabs m
   tab = M.activeTab m
+  memo = M.isMemoTab (M.notes m m.selected) tab
   zoom = if tab.zoom > 0.0 then tab.zoom else 1.0
   newTab = Browser $ Browser.Open (Browser.WebAddress "about:blank") Nothing
   zoomButton caption glyph factor = V.control [V.label caption] (glyph) (Browser $ Browser.Zoom factor)
@@ -87,4 +89,7 @@ sync m = when (m.env.native) do
   background <- B.cssProperty ".workspace" "--sapi-white"
   foreground <- B.cssProperty ".workspace" "--sapi-ink"
   caption <- B.cssProperty ".workspace" "--sapi-bg"
-  B.nativeMessage $ D.json {workspaces: if native m then m.workspaces else O.empty, owner: if native m then m.selected else "", active: D.json (M.activeTab m).id, visible: native m && A.elem N.Workspace (M.visiblePanes m) && m.dialog == Nothing && m.menu == Nothing, dark: m.theme == "dark", background, foreground, captionBackground: caption, rect:{x:box.x,y:box.y,width:box.width,height:box.height}}
+  -- Memo HTML is already decoded as UTF-8 by the host and rendered in the
+  -- workspace frame. A native file view would guess the charset a second time.
+  let guestTabs owner workspace = workspace {tabs=A.filter (not <<< M.isMemoTab (M.notes m owner)) workspace.tabs}
+  B.nativeMessage $ D.json {workspaces: if native m then O.mapWithKey guestTabs m.workspaces else O.empty, owner: if native m then m.selected else "", active: D.json (M.activeTab m).id, visible: native m && not (M.isMemoTab (M.notes m m.selected) (M.activeTab m)) && A.elem N.Workspace (M.visiblePanes m) && m.dialog == Nothing && m.menu == Nothing, dark: m.theme == "dark", background, foreground, captionBackground: caption, rect:{x:box.x,y:box.y,width:box.width,height:box.height}}

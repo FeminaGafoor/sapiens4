@@ -245,8 +245,9 @@ roster m = A.sortBy (\a b -> compare (pinned b) (pinned a) <> compare b.lastActi
 maybeGroup :: Model -> X.Entity
 maybeGroup m = fromMaybe X.emptyEntity $ m.groupView >>= flip X.findEntity m.agents
 
-notes :: Model -> X.Notes
-notes m = if isGroup (selected m) then (selected m).notes else fromMaybe (X.notes D.empty) $ _.notes <$> O.lookup m.selected m.snapshot.orchestration
+notes :: Model -> String -> X.Notes
+notes m owner = if isGroup entity then entity.notes else fromMaybe (X.notes D.empty) $ _.notes <$> O.lookup owner m.snapshot.orchestration
+  where entity = agent m owner
 
 preferences :: Model -> Json
 preferences m = D.merge (N.encodeActivity m.activity) $ D.json
@@ -267,14 +268,16 @@ currentDocument m = case m.activity of
 nativeWorkspace :: Model -> Boolean
 nativeWorkspace m = m.env.native && (activeRecord m).location /= X.Remote
 
-memoTab :: Model -> Boolean
-memoTab m = (activeTab m).path /= "" && (activeTab m).path == (notes m).path
+isMemoTab :: X.Notes -> X.Tab -> Boolean
+isMemoTab memo tab = tab.path /= "" && tab.path == memo.path
 
 currentPreview :: Model -> Maybe Request
 currentPreview m =
   let tab = activeTab m
-  in if nativeWorkspace m || tab.path == "" || not (A.elem N.Workspace m.panes) then Nothing
-     else Just {epoch:m.epoch,sequence:m.sequence+1,key:tab.id,revision:D.encode (D.json tab.command) <> (if memoTab m then (notes m).revision else ""),path:ownerPath m <> "/browser/" <> B.encodeURI (tab.id) <> "/content" <> if memoTab m then "?view=html" else ""}
+      memo = notes m m.selected
+      isMemo = isMemoTab memo tab
+  in if (nativeWorkspace m && not isMemo) || tab.path == "" || not (A.elem N.Workspace m.panes) then Nothing
+     else Just {epoch:m.epoch,sequence:m.sequence+1,key:tab.id,revision:D.encode (D.json tab.command) <> (if isMemo then memo.revision else ""),path:ownerPath m <> "/browser/" <> B.encodeURI (tab.id) <> "/content" <> if isMemo then "?view=html" else ""}
 
 requestOf :: forall error a. RemoteData error a -> Maybe Request
 requestOf = case _ of
