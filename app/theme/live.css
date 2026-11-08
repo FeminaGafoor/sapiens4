@@ -228,8 +228,7 @@
 :root body.sapi-workspace #browser-all-tabs .tab-select { white-space:normal;overflow-wrap:anywhere;max-width:none; }
 #browser-overflow { flex-shrink:0;white-space:nowrap;padding:6px;font-size:12px; }
 .tab-star { flex-shrink:0;font-size:15px; }.tab-star[aria-pressed=true] { color:var(--sapi-accent); }.tab-star:disabled { opacity:.35; }
-#workspace-content { color:var(--sapi-muted); }
-[data-theme="dark"] #workspace-content { background:#000; }
+#workspace-content { color:var(--sapi-muted);background:var(--sapi-bg); }
 
 .task-browser { min-width:0;color:var(--ink); }
 .task-row { border-bottom:1px solid var(--line); }
@@ -437,4 +436,4 @@
 .connection-dot { width:6px;height:6px;flex:none;border-radius:50%;background:#888; }
 .connection-status[data-online="true"] .connection-dot { background:#3b9b69; }
 
-.workspace-document { flex:1;min-width:0;overflow:auto;padding:1rem;background:var(--sapi-bg);color:var(--ink);overflow-wrap:anywhere; }
+.workspace-document { flex:1;min-width:0;overflow:auto;padding:1rem;color:var(--ink);overflow-wrap:anywhere; }

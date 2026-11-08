@@ -35,12 +35,12 @@ entries _ = []
 
 
 data Tab = Tab { tabOwner :: Text, tabID :: Text, tabView :: Obj, tabSequence :: Text, tabDocument :: Maybe Text, tabRequested :: Maybe Text, tabError :: Text, tabAwaiting :: Bool, tabFiles :: Set.Set Text }
-data Browser = Browser { shell :: IORef Obj, delegate :: IORef Obj, tabs :: IORef (Map.Map Text Tab), current :: IORef Text, dark :: IORef Bool, origin :: Obj, guest :: Text }
+data Browser = Browser { shell :: IORef Obj, delegate :: IORef Obj, tabs :: IORef (Map.Map Text Tab), current :: IORef Text, documentTheme :: IORef Value, origin :: Obj, guest :: Text }
 
 newBrowser address guestScript = do
     sh <- newIORef nullPtr; de <- newIORef nullPtr; ts <- newIORef Map.empty
-    ac <- newIORef ""; da <- newIORef False; base <- url address
-    pure (Browser sh de ts ac da base guestScript)
+    ac <- newIORef ""; theme <- newIORef Null; base <- url address
+    pure (Browser sh de ts ac theme base guestScript)
 
 key tab = tabOwner tab <> ":" <> tabID tab
 save browser tab = modifyIORef' (tabs browser) (Map.insert (key tab) tab)
@@ -113,7 +113,8 @@ sync browser input = do
         isDark = bool (field "dark" input)
         selected = text (field "owner" input) <> ":" <> text (field "active" input)
         visible = bool (field "visible" input)
-    previousDark <- atomicModifyIORef' (dark browser) (\old -> (isDark,old))
+        theme = object ["dark" .= isDark, "background" .= field "background" input, "foreground" .= field "foreground" input]
+    previousTheme <- atomicModifyIORef' (documentTheme browser) (\old -> (theme,old))
     writeIORef (current browser) selected
     alive <- fmap concat $ forM workspaces $ \(owner,workspace) -> forM (array (field "tabs" workspace)) $ \item -> do
         let ident = text (field "id" item); address = text (field "url" item)
@@ -133,7 +134,7 @@ sync browser input = do
         void (obj1 (tabView tab) "setAppearance:" appearance)
         color <- cls "NSColor" >>= \c -> obj0 c (if isDark then "blackColor" else "whiteColor")
         void (obj1 (tabView tab) "setUnderPageBackgroundColor:" color)
-        when (isDark /= previousDark) $ script (tabView tab) ("window.sapiensDocumentTheme?.({dark:" <> (if isDark then "true" else "false") <> "})")
+        when (theme /= previousTheme) $ applyDocumentTheme (tabView tab) theme
         setNumber (tabView tab) "setPageZoom:" (numeric 1 (field "zoom" item) :: Double)
         when (tabSequence tab /= sequence) $ do
             let pending = tab { tabSequence = sequence, tabError = "", tabAwaiting = True }
@@ -254,8 +255,11 @@ shellNavigation browser action completion = do
         when (scheme `elem` ["http","https","mailto"]) $ cls "NSWorkspace" >>= \c -> obj0 c "sharedWorkspace" >>= \w -> void (obj1 w "openURL:" u)
         invokeLong completion 0
 
+applyDocumentTheme view theme = script view ("window.sapiensDocumentTheme?.(" <> jsonText theme <> ")")
+
 finished browser view = withTab browser view $ \tab -> do
     let done = tab { tabAwaiting = False }
+    readIORef (documentTheme browser) >>= applyDocumentTheme view
     save browser done; report browser done
 failed browser view err = do
     code <- long err "code"
@@ -264,7 +268,7 @@ failed browser view err = do
         let done = tab { tabAwaiting = False, tabError = reason }
         save browser done; report browser done
 
-textDocument content title = "<!doctype html><meta charset=\"utf-8\"><meta name=\"color-scheme\" content=\"light dark\"><meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'\"><title>" <> escape title <> "</title><style>html{color-scheme:light dark;background:#fff;color:#171717}body{margin:24px}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:15px/1.6 ui-monospace,monospace}@media(prefers-color-scheme:dark){html{background:#000;color:#eee}}</style><pre>" <> escape content <> "</pre>"
+textDocument content title = "<!doctype html><meta charset=\"utf-8\"><meta name=\"color-scheme\" content=\"light dark\"><meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'\"><title>" <> escape title <> "</title><style>html{color-scheme:light dark}body{margin:24px}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:15px/1.6 ui-monospace,monospace}</style><pre>" <> escape content <> "</pre>"
   where escape = T.replace "\"" "&quot;" . T.replace ">" "&gt;" . T.replace "<" "&lt;" . T.replace "&" "&amp;"
 
 serveFile browser view task = do

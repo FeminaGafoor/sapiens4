@@ -49,7 +49,7 @@ type ThemeSettings = {dark :: Boolean, background :: String, foreground :: Strin
 themeSettings :: Boolean -> Json -> ThemeSettings
 themeSettings preferred value =
   let dark = if D.valid $ D.get "dark" value then D.b "dark" value else preferred
-  in {dark,background:D.fallback (if dark then "#000" else "#fff") $ D.s "background" value,foreground:D.fallback (if dark then "#eee" else "#171717") $ D.s "foreground" value}
+  in {dark,background:D.fallback (if dark then "#171717" else "#f6f6f6") $ D.s "background" value,foreground:D.fallback (if dark then "#eee" else "#171717") $ D.s "foreground" value}
 
 data GlobalEvent = ReportError String | Resize | Online | Resume | Visibility | Suspend | Back | Storage String | KeyDown Key | Click (Array String) | Ignore
 

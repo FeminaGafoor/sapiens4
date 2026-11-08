@@ -112,10 +112,9 @@ view m = V.node "main" [V.cls "workspace",V.id "workspace-panel",V.label "Agent 
 sync :: M.Model -> Effect Unit
 sync m = when (m.env.native) do
   box <- Platform.measure "#workspace-content"
-  background <- B.cssProperty ".workspace" "--sapi-white"
+  background <- B.cssProperty ".workspace" "--sapi-bg"
   foreground <- B.cssProperty ".workspace" "--sapi-ink"
-  caption <- B.cssProperty ".workspace" "--sapi-bg"
   -- Memo HTML is already decoded as UTF-8 by the host and rendered in
   -- Workspace. A native file view would guess the charset a second time.
   let guestTabs owner workspace = workspace {tabs=A.filter (not <<< M.isMemoTab (M.notes m owner)) workspace.tabs}
-  B.nativeMessage $ D.json {workspaces: if native m then O.mapWithKey guestTabs m.workspaces else O.empty, owner: if native m then m.selected else "", active: D.json (M.activeTab m).id, visible: native m && not (M.isMemoTab (M.notes m m.selected) (M.activeTab m)) && A.elem N.Workspace (M.visiblePanes m) && m.dialog == Nothing && m.menu == Nothing, dark: m.theme == "dark", background, foreground, captionBackground: caption, rect:{x:box.x,y:box.y,width:box.width,height:box.height}}
+  B.nativeMessage $ D.json {workspaces: if native m then O.mapWithKey guestTabs m.workspaces else O.empty, owner: if native m then m.selected else "", active: D.json (M.activeTab m).id, visible: native m && not (M.isMemoTab (M.notes m m.selected) (M.activeTab m)) && A.elem N.Workspace (M.visiblePanes m) && m.dialog == Nothing && m.menu == Nothing, dark: m.theme == "dark", background, foreground, captionBackground: background, rect:{x:box.x,y:box.y,width:box.width,height:box.height}}

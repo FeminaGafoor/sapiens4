@@ -108,7 +108,7 @@ applyTheme :: Browser -> Tab -> IO ()
 applyTheme browser tab = do
   settings <- readIORef (latest browser)
   let dark = boolean $ field "dark" settings
-      background = palette "background" (if dark then "#212121" else "#ffffff") settings
+      background = palette "background" (if dark then "#171717" else "#f6f6f6") settings
       foreground = palette "foreground" (if dark then "#ececec" else "#202020") settings
   bracket (query (core $ tabView tab) "{F75F09A8-667E-4983-88D6-C8773F315E84}") release $ \web ->
     bracket (getValue web 105) release $ \profile -> callInt profile 9 (if dark then 2 else 1)
