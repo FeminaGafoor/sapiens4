@@ -28,6 +28,11 @@ pieceSeconds = 2
 maxAttempts :: Int
 maxAttempts = 5
 
+-- | Pieces allowed to wait for upload (15 × 2 s = 30 s of audio). If uploads fall further behind,
+-- | the connection cannot keep up, so recording stops instead of growing the queue without limit.
+maxBacklog :: Int
+maxBacklog = 15
+
 -- | Recording, ordered upload, the live timer, stopping, cancelling, sending and retrying. Returns true
 -- | when it handled the action.
 -- | Finished one-minute voice messages come back from the host and wait in the composer. Stop keeps them
@@ -96,7 +101,7 @@ handle runtime dispatch action = case action of
       let items = M.attachments m
           voices = map _.id $ A.filter X.isVoice items
           others = map _.id $ A.filter (not <<< X.isVoice) items
-      H.modify_ \s -> s { outboxes = O.insert owner { path: M.ownerPath m <> "/messages", text: S.trim (M.draft m), others, voices, sending: false } s.outboxes }
+      H.modify_ \s -> s { outboxes = O.insert owner { epoch: m.epoch, path: M.ownerPath m <> "/messages", text: S.trim (M.draft m), others, voices, sending: false } s.outboxes }
       flush owner
     pure true
   VoiceFlush owner -> do
@@ -105,9 +110,13 @@ handle runtime dispatch action = case action of
   VoicePiece piece -> do
     H.gets _.voice >>= traverse_ \v ->
       -- A recording has one id, taken from its first piece. A piece from any other recording is stale and ignored.
-      when (v.recording == "" || v.recording == piece.recording) do
-        H.modify_ \m -> m { voice = map (\w -> w { queue = A.snoc w.queue piece, recording = piece.recording }) m.voice }
-        drain
+      when (v.recording == "" || v.recording == piece.recording) $
+        if A.length v.queue >= maxBacklog then do
+          abandon v
+          E.notify "Recording stopped: the connection is too slow to upload the voice in time. Finished voice messages stay in the composer."
+        else do
+          H.modify_ \m -> m { voice = map (\w -> w { queue = A.snoc w.queue piece, recording = piece.recording }) m.voice }
+          drain
     pure true
   VoicePieceRejected reason -> do
     H.gets _.voice >>= traverse_ \v -> do
@@ -170,34 +179,42 @@ handle runtime dispatch action = case action of
   -- A failed transcript stops sending (the Sapi would get no words). The person's typed text and other
   -- attachments travel with the first voice message.
   flush owner = H.get >>= \m -> traverse_ (flushWith m owner) (O.lookup owner m.outboxes)
-  flushWith m owner o = unless o.sending $ case A.head o.voices of
-    Nothing -> do
-      H.modify_ \s -> s { outboxes = O.delete owner s.outboxes }
-      dispatch Poll
-    Just voiceId -> case A.find ((_ == voiceId) <<< _.id) (fromMaybe [] $ O.lookup owner m.attachments) of
-      -- Removed from the composer meanwhile: skip it.
+  flushWith m owner o
+    -- Started in another corpora: never send it through this one. Its voice messages stay drafts there.
+    | o.epoch /= m.epoch = H.modify_ \s -> s { outboxes = O.delete owner s.outboxes }
+    | otherwise = unless o.sending $ case A.head o.voices of
       Nothing -> do
-        H.modify_ \s -> s { outboxes = O.update (\x -> Just x { voices = A.drop 1 x.voices }) owner s.outboxes }
-        flush owner
-      Just item -> case map _.transcription (X.voiceOf item) of
-        Just (X.Transcribed _) -> sendVoice m owner o voiceId
-        Just (X.TranscriptFailed _) -> do
-          H.modify_ \s -> s { outboxes = O.delete owner s.outboxes }
-          E.notify (item.name <> " couldn't be transcribed. Retry it or remove it, then press Send again.")
-        _ -> E.later 1500.0 (dispatch (VoiceFlush owner))
+        H.modify_ \s -> s { outboxes = O.delete owner s.outboxes }
+        dispatch Poll
+      Just voiceId -> case A.find ((_ == voiceId) <<< _.id) (fromMaybe [] $ O.lookup owner m.attachments) of
+        -- Removed from the composer meanwhile: skip it.
+        Nothing -> do
+          H.modify_ \s -> s { outboxes = O.update (\x -> Just x { voices = A.drop 1 x.voices }) owner s.outboxes }
+          flush owner
+        Just item -> case map _.transcription (X.voiceOf item) of
+          Just (X.Transcribed _) -> sendVoice m owner o voiceId
+          Just (X.TranscriptFailed _) -> do
+            H.modify_ \s -> s { outboxes = O.delete owner s.outboxes }
+            E.notify (item.name <> " couldn't be transcribed. Retry it or remove it, then press Send again.")
+          _ -> E.later 1500.0 (dispatch (VoiceFlush owner))
   sendVoice m owner o voiceId = do
     H.modify_ \s -> s { outboxes = O.update (\x -> Just x { sending = true }) owner s.outboxes }
-    E.attempt (E.api runtime m o.path "POST" (D.json { text: o.text, attachments: o.others <> [voiceId] })) case _ of
-      Left err -> do
-        H.modify_ \s -> s { outboxes = O.delete owner s.outboxes }
-        E.notify ("Voice message could not be sent: " <> message err <> ". Press Send to continue.")
-      Right _ -> do
-        H.modify_ \s -> s { outboxes = O.update (\x -> Just x { text = "", others = [], voices = A.drop 1 x.voices, sending = false }) owner s.outboxes
-                          , attachments = O.update (Just <<< A.filter (\item -> item.id /= voiceId && not (A.elem item.id o.others))) owner s.attachments
-                          , drafts = if o.text /= "" then O.insert owner "" s.drafts else s.drafts }
-        E.save dispatch
-        dispatch Poll
-        flush owner
+    E.attempt (E.api runtime m o.path "POST" (D.json { text: o.text, attachments: o.others <> [voiceId] })) \result -> do
+      s <- H.get
+      -- The corpora changed while this request was in flight: its reply belongs to the old one.
+      when (s.epoch == o.epoch) case result of
+        Left err -> do
+          H.modify_ \x -> x { outboxes = O.delete owner x.outboxes }
+          E.notify ("Voice message could not be sent: " <> message err <> ". Press Send to continue.")
+        Right _ -> do
+          H.modify_ \x -> x { outboxes = O.update (\b -> Just b { text = "", others = [], voices = A.drop 1 b.voices, sending = false }) owner x.outboxes
+                            , attachments = O.update (Just <<< A.filter (\item -> item.id /= voiceId && not (A.elem item.id o.others))) owner x.attachments
+                            -- Clear the draft only if it is still the text that was sent, as for normal messages:
+                            -- anything typed meanwhile is kept.
+                            , drafts = if o.text /= "" && S.trim (fromMaybe "" $ O.lookup owner x.drafts) == o.text then O.insert owner "" x.drafts else x.drafts }
+          E.save dispatch
+          dispatch Poll
+          flush owner
   -- Recording is complete. After Send-while-recording, send now, but only if the person is still in the
   -- chat they recorded in; otherwise the voice messages stay in that chat's composer for review.
   finish v = do

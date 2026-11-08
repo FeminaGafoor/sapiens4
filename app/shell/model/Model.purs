@@ -112,7 +112,14 @@ type VoiceSession =
 
 -- | One chat's voice messages being sent one by one, in order, each as soon as its own
 -- | transcript is ready. Kept per chat ('outboxes'), so one chat never blocks another.
-type Outbox = { path :: String, text :: String, others :: Array String, voices :: Array String, sending :: Boolean }
+-- | 'epoch' ties it to the corpora it was started in: after a switch it is dropped, never sent elsewhere.
+type Outbox = { epoch :: Int, path :: String, text :: String, others :: Array String, voices :: Array String, sending :: Boolean }
+
+-- | The selected chat is recording or sending voice messages, so it must not send anything else yet.
+voiceBusy :: Model -> Boolean
+voiceBusy m = O.member m.selected m.outboxes || case m.voice of
+  Just v -> v.owner == m.selected
+  Nothing -> false
 
 type Model = Record (InterfaceState (ContentState SessionState))
 
@@ -262,7 +269,7 @@ reset raw old = case X.decodeSnapshot raw of
 resetSnapshot :: X.Snapshot -> Model -> Model
 resetSnapshot snapshot old = projectSnapshot snapshot old
   {selected=p.selected,activity=p.activity,scope=p.scope,groupView=p.groupView,drafts=p.drafts
-  ,attachments=snapshot.attachment_drafts,sending=Set.empty,uploading=0,clarification=Nothing,documents=O.empty,expanded=Set.empty,epoch=old.epoch+1
+  ,attachments=snapshot.attachment_drafts,sending=Set.empty,uploading=0,outboxes=O.empty,clarification=Nothing,documents=O.empty,expanded=Set.empty,epoch=old.epoch+1
   ,panes=p.panes,workspaces=p.workspaces,workspaceRevision=p.workspaceRevision,search="",searchOpen=false
   ,preview=NotAsked,address="",scrollPosition=p.scrollPosition,restoringScroll=p.scrollPosition /= Nothing}
   where

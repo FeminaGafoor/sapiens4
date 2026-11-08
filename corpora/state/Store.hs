@@ -121,11 +121,14 @@ attachmentTable a = if "group_" `T.isPrefixOf` a then "group_attachments" else "
 saveAttachment :: Service -> Value -> IO ()
 saveAttachment s v = executeSQL s ("INSERT INTO " <> attachmentTable (at v "agent") <> " VALUES (?,?,?)") [sql (get v "id"),sql (get v "agent"),SQLText (jsonText v)]
 
--- | Voice messages still waiting for a transcript, across Sapis and groups. A cancelled
--- recording's voice messages are skipped: their audio is gone and nobody will send them.
+-- | The next voice message waiting for a transcript, across Sapis and groups (at most one).
+-- SQLite filters the rows, so the worker no longer reads and decodes every attachment each
+-- time it polls. A cancelled recording's voice messages are skipped: their audio is gone.
 pendingVoices :: Service -> IO [Value]
-pendingVoices s = filter waiting . map (parseJSONText . (`at` "value")) <$> queryRows s "SELECT value FROM attachments UNION ALL SELECT value FROM group_attachments" ["value"] []
- where waiting v = at v "kind" == "voice" && at v "transcript_status" == "pending" && get v "cancelled" /= Bool True
+pendingVoices s = map (parseJSONText . (`at` "value")) <$> queryRows s (T.unlines
+ [ "SELECT value FROM (SELECT value FROM attachments UNION ALL SELECT value FROM group_attachments)"
+ , "WHERE json_extract(value,'$.kind')='voice' AND json_extract(value,'$.transcript_status')='pending'"
+ , "AND json_extract(value,'$.cancelled') IS NOT 1 LIMIT 1" ]) ["value"] []
 -- | Replace a saved attachment's JSON (used to store a voice transcript).
 updateAttachment :: Service -> Value -> IO ()
 updateAttachment s v = executeSQL s ("UPDATE " <> attachmentTable (at v "agent") <> " SET value=? WHERE id=?") [SQLText (jsonText v), sql (get v "id")]

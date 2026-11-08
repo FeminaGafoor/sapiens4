@@ -4,7 +4,7 @@ import Sapiens.Form as F
 import Prelude
 import Data.Array as A
 import Data.Int as I
-import Data.Maybe (Maybe(..), fromMaybe, maybe)
+import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Set as Set
 import Data.String as S
 import Data.Tuple (Tuple(..))
@@ -127,9 +127,7 @@ composer m = V.node "div" [V.cls "composer-area",V.id "composer-area",V.hidden $
           Just (X.TranscriptFailed _) -> [V.button "button voice-retry" "Retry" (VoiceRetry item.id)]
           _ -> [])
     <> [V.icon ("Remove " <> item.name) "×" $ RemoveAttachment $ item.id]
-  -- Recording or sending voice messages blocks only the chat it belongs to.
-  recordingHere = maybe false (\v -> v.owner == m.selected) m.voice
   placeholder = case m.clarification of
     Just work | work.owner == m.selected -> "Clarify " <> work.taskId <> " for Chief…"
     _ -> if N.limit m.env < 3 then "Message…" else "Message " <> a.name <> "…"
-  blocked = not (M.online m) || (M.busy m) || a.retired || a.archived || A.elem (m.snapshot.corpora.status) [X.Paused,X.Archived] || Set.member m.selected m.sending || m.uploading > 0 || recordingHere || O.member m.selected m.outboxes
+  blocked = not (M.online m) || (M.busy m) || a.retired || a.archived || A.elem (m.snapshot.corpora.status) [X.Paused,X.Archived] || Set.member m.selected m.sending || m.uploading > 0 || M.voiceBusy m
