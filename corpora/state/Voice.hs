@@ -6,11 +6,12 @@ module Voice
  ( Pcm, pcmBytes, pcmFromWav, wavFromPcm
  , Progress(..), Cut(..), PiecePlan(..), startProgress, planPiece
  , receivePiece, cancelRecording, retryTranscription, draftable
- , transcribeLoop
+ , startTranscriber
  ) where
 
-import Control.Concurrent (threadDelay)
-import Control.Exception (IOException, SomeException, fromException, try)
+import Control.Concurrent (threadDelay, MVar, newMVar, modifyMVar_, withMVar, swapMVar)
+import Control.Concurrent.Async (asyncWithUnmask, cancel, AsyncCancelled(..))
+import Control.Exception (IOException, SomeException, SomeAsyncException, fromException, try, tryJust, throwIO, finally, mask_)
 import Control.Monad
 import Data.Aeson hiding (pairs)
 import qualified Data.ByteString as BS
@@ -23,6 +24,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Network.HTTP.Client as H
+import qualified Network.Socket as Socket
 import Network.HTTP.Client.MultipartFormData (formDataBody, partBS, partFileSource)
 import Network.HTTP.Types.Status (statusCode)
 import System.Directory
@@ -253,15 +255,42 @@ removeIfPresent path = doesFileExist path >>= \exists -> when exists (removeFile
 -- attachment as "done", or "failed" with the reason. If Whisper is not running yet, messages
 -- stay pending and are retried. The address comes from SAPIENS_WHISPER_URL
 -- (default http://127.0.0.1:8178). The loop ends when the service stops.
-transcribeLoop :: Service -> IO ()
-transcribeLoop s = do
- manager <- H.newManager H.defaultManagerSettings { H.managerResponseTimeout = H.responseTimeoutMicro 300000000 }
+-- The gate owns sockets for the current request; Nothing means shutdown has begun.
+-- Windows socket reads must be closed before waiting for async cancellation.
+-- Disable idle pooling so completed requests cannot leave untracked live sockets.
+startTranscriber :: Service -> IO (IO ())
+startTranscriber s = mask_ $ do
+ gate <- newMVar (Just [])
+ let register socket = modifyMVar_ gate $ \active -> case active of
+      Nothing -> throwIO AsyncCancelled
+      Just sockets -> pure (Just (socket:sockets))
+ manager <- H.newManager H.defaultManagerSettings
+  { H.managerResponseTimeout = H.responseTimeoutMicro 300000000
+  , H.managerIdleConnectionCount = 0
+  , H.managerRawConnection = H.rawConnectionModifySocket register
+  }
+ worker <- asyncWithUnmask (\unmask -> unmask (transcribeLoop s gate manager))
+ pure $ mask_ $ do
+  sockets <- swapMVar gate Nothing
+  forM_ sockets $ mapM_ $ \socket -> do
+   void (try (Socket.shutdown socket Socket.ShutdownBoth) :: IO (Either IOException ()))
+   Socket.close socket
+  cancel worker
+
+tryTranscription :: IO a -> IO (Either SomeException a)
+tryTranscription = tryJust $ \problem -> case fromException problem :: Maybe SomeAsyncException of
+ Just _ -> Nothing
+ Nothing -> Just problem
+
+transcribeLoop :: Service -> MVar (Maybe [Socket.Socket]) -> H.Manager -> IO ()
+transcribeLoop s gate manager = do
  base <- maybe "http://127.0.0.1:8178" id <$> lookupEnv "SAPIENS_WHISPER_URL"
  hPutStrLn stderr ("Voice transcription: using " <> base)
  let go = do
       stopping <- readIORef (serviceStopping s)
       unless stopping $ do
-       outcome <- try (transcribeNext s manager base) :: IO (Either SomeException Bool)
+       outcome <- tryTranscription (transcribeNext s gate manager base)
+        `finally` modifyMVar_ gate (pure . fmap (const []))
        case outcome of
         -- Never fail silently: report the problem in the host log, then retry calmly.
         Left problem -> hPutStrLn stderr ("Voice transcription failed: " <> take 500 (show problem)) >> threadDelay 10000000
@@ -270,13 +299,13 @@ transcribeLoop s = do
  go
 
 -- | Transcribe the next pending voice message. True when one was handled.
-transcribeNext :: Service -> H.Manager -> String -> IO Bool
-transcribeNext s manager base = do
+transcribeNext :: Service -> MVar (Maybe [Socket.Socket]) -> H.Manager -> String -> IO Bool
+transcribeNext s gate manager base = do
  pending <- locked s (DB.pendingVoices s)
  case pending of
   [] -> pure False
   row : _ -> do
-   result <- try (whisper manager base (T.unpack (at row "value"))) :: IO (Either SomeException Text)
+   result <- tryTranscription (whisper manager base (T.unpack (at row "value")))
    case result of
     Left problem | unreachable problem -> pure False
     _ -> do
@@ -285,9 +314,10 @@ transcribeNext s manager base = do
           Left problem -> obj [("transcript_status",str "failed"),("transcript_error",str (T.pack (take 300 (show problem))))]
      -- Whisper can take seconds; meanwhile the voice message may have been sent (and marked
      -- "sent"). Save the transcript onto the attachment as it is now, not as it was read.
-     locked s $ do
-      current <- filter (\fresh -> get fresh "id" == get row "id") <$> DB.attachments s (at row "agent")
-      forM_ current $ \fresh -> DB.updateAttachment s (merge fresh outcome)
+     -- A socket interrupted by shutdown is still pending, not a failed transcription.
+     withMVar gate $ \active -> forM_ active $ \_ -> locked s $ do
+       current <- filter (\fresh -> get fresh "id" == get row "id") <$> DB.attachments s (at row "agent")
+       forM_ current $ \fresh -> DB.updateAttachment s (merge fresh outcome)
      pure True
  where
  unreachable problem = case fromException problem of

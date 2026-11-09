@@ -6,8 +6,9 @@ require 'json'
 class WhisperStub
   attr_reader :url, :requests
 
-  def initialize(text, status: 200, before_reply: nil)
+  def initialize(text, status: 200, before_reply: nil, before_body: nil)
     @before_reply = before_reply
+    @before_body = before_body
     @text, @status, @audio, @requests = text, status, false, 0
     @server = TCPServer.new('127.0.0.1', 0)
     @url = "http://127.0.0.1:#{@server.addr[1]}"
@@ -43,7 +44,9 @@ class WhisperStub
     @requests += 1
     @before_reply&.call
     reply = JSON.generate(@status == 200 ? {text: @text} : {error: 'stub failure'})
-    client.write("HTTP/1.1 #{@status} #{@status == 200 ? 'OK' : 'Error'}\r\nContent-Type: application/json\r\nContent-Length: #{reply.bytesize}\r\nConnection: close\r\n\r\n#{reply}")
+    client.write("HTTP/1.1 #{@status} #{@status == 200 ? 'OK' : 'Error'}\r\nContent-Type: application/json\r\nContent-Length: #{reply.bytesize}\r\nConnection: close\r\n\r\n")
+    @before_body&.call
+    client.write(reply)
   rescue Errno::EPIPE, Errno::ECONNRESET, Errno::ECONNABORTED
     # The host may shut down while a controlled transcription response is waiting.
     nil

@@ -335,9 +335,7 @@ RSpec.describe 'Local service contracts' do
 
   [false, true].each do |interrupt_transcription|
     it "recovers voice transcription #{interrupt_transcription ? 'after shutdown during a request' : 'after restart'}, notifies clients, and sends without restoring stale drafts" do
-      ready, release = Queue.new, Queue.new
-      @host.close
-      @host = Host.new(environment: {'SAPIENS_WHISPER_URL' => 'http://127.0.0.1:9'})
+      ready, release, whisper = Queue.new, Queue.new, nil
       owner = chief
       voice = host.api('POST', "/api/agents/#{owner}/voice", {recording: SecureRandom.uuid, index: 0, final: true, data: voice_piece(2)})['messages'].first
       save_drafts = -> { host.api('PUT', '/api/preferences', attachment_drafts: {owner => [voice['id']]}) }
@@ -345,7 +343,11 @@ RSpec.describe 'Local service contracts' do
       expect(host.request('POST', "/api/agents/#{owner}/messages", {text: '', attachments: [voice['id']]}).first).to eq(409)
 
       host.stop
-      whisper = WhisperStub.new('', status: 500, before_reply: -> { ready << true; release.pop })
+      hold_response = -> { ready << true; release.pop }
+      in_body = -> { interrupt_transcription && whisper.requests == 2 }
+      whisper = WhisperStub.new('', status: 500,
+        before_reply: -> { hold_response.call unless in_body.call },
+        before_body: -> { hold_response.call if in_body.call })
       host.environment['SAPIENS_WHISPER_URL'] = whisper.url
       host.start
       wait_for_request = -> { Contract.wait(description: 'Whisper request') { !ready.empty? }; ready.pop }
@@ -358,13 +360,14 @@ RSpec.describe 'Local service contracts' do
       wait_for_request.call
       pending = state_with_status.call('pending')
       if interrupt_transcription
-        # Closing the app must cancel an in-flight Whisper request without losing the draft.
-        # This currently exposes a Windows shutdown hang while the socket read is blocked.
-        host.stop
-        release << true
-        host.start
-        wait_for_request.call
-        pending = state_with_status.call('pending')
+        # Interrupt both headers and body reads without losing or failing the draft.
+        2.times do
+          host.stop
+          release << true
+          host.start
+          wait_for_request.call
+          pending = state_with_status.call('pending')
+        end
       end
       release << true
       failed = state_with_status.call('failed')
@@ -381,7 +384,7 @@ RSpec.describe 'Local service contracts' do
       expect(completed['updates_revision']).to be > pending['updates_revision']
       expect(completed.dig('attachment_drafts', owner).first['transcript']).to eq('Please compare the two offers.')
       expect(whisper.audio_received).to be(true)
-      expect(whisper.requests).to eq(interrupt_transcription ? 3 : 2)
+      expect(whisper.requests).to eq(interrupt_transcription ? 4 : 2)
       host.turn(host.submit(owner, '', attachments: [voice['id']]))
       expect(host.calls.map { |call| call['prompt'] }.join("\n")).to include('Please compare the two offers.')
       expect(Array(host.state.dig('attachment_drafts', owner))).to be_empty

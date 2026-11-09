@@ -57,6 +57,11 @@ contracts remain pending on macOS.
 Failed desktop scenarios write accessible content to `tmp/desktop-failure.txt`
 and a separate accessibility-tree JSON file under `.build/` for each failed example.
 
+The Windows UI build limits the PureScript compiler to one runtime capability,
+including compiler calls made by Spago. This mitigates intermittent compiler
+access violations seen with the x64 compiler under Windows ARM emulation;
+it does not limit the application runtime.
+
 On Linux, build with `runghc build/Build.hs --desktop` and build the Blindly4
 Linux driver. Desktop control requires X11; Wayland is unsupported. Run the
 Linux and shared desktop suites on an isolated software-rendered X11 display:
