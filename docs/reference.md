@@ -97,3 +97,30 @@ a supplied Origin must match the loopback Host. Common entrypoints:
 Group notes, messages, attachments, tasks and calls use `/api/groups/<id>`.
 Updates require the relevant revision. [RSpec scenarios](../spec) exercise the
 public contracts; see [Testing](testing.md) to run them.
+
+### Model configuration drafts
+
+`GET /api/model-settings-draft` reads the corpora's saved configuration draft.
+Without a saved file it returns revision 0, Codex `gpt-6-astra` / `medium`, and no
+per-Sapi overrides. This is the Sapiens4 recommendation, not the CLI catalog's
+default. Reading does not create a file or change execution settings.
+
+`PUT /api/model-settings-draft` accepts the same object:
+
+```json
+{"revision":0,"defaults":{"provider":"codex","model":"gpt-6-astra","effort":"medium"},"overrides":{}}
+```
+
+Overrides are keyed by Sapi ID and contain complete provider/model/effort choices.
+Omitting an override restores inheritance. Saves validate the current Codex catalog
+outside the service state lock, then check the revision and Sapi identities under
+the lock and atomically replace `model-settings-draft.json`. The response contains
+the incremented revision. A stale revision returns 409 without overwriting the
+saved draft. Invalid models/efforts or unsupported providers return 400; discovery
+failures leave the previous draft intact. Claude configuration cannot be saved yet.
+
+The Models screen labels this action **Save draft**. These drafts are not consumed
+by execution: existing environment overrides and Normal/Deep behavior remain in
+force. Activation, Claude integration, and AgencyKind overrides are subsequent work.
+Catalog entries advertise choices; they do not guarantee account authorization for
+an eventual model call.

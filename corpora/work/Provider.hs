@@ -35,7 +35,7 @@ import Text.Regex.TDFA ((=~))
 import System.Posix.Signals
 #endif
 import Types
-import Population (executionSettings)
+import Population (executionSettings, ModelSelection(..), ModelSettingsDraft(..))
 import qualified Computer as Computer
 
 data ProviderEvent
@@ -158,6 +158,15 @@ codexModels = do
   killTree ph
   void (waitForProcess ph)
   forM_ (catMaybes [hin,hout,herr]) $ \h -> hClose h `catch` (\(_::IOException) -> pure ())
+
+validateModelSettingsDraft :: ModelSettingsDraft -> IO ()
+validateModelSettingsDraft draft = do
+ catalog <- codexModels
+ let rows=items catalog "data"
+ forM_ (modelSettingsDefault draft : M.elems (modelSettingsOverrides draft)) $ \choice -> do
+  model <- maybe (failure 400 "The selected Codex model is not in the current catalog.") pure
+    (listToMaybe (filter (\row -> at row "model" == selectionModel choice) rows))
+  require (str (selectionEffort choice) `elem` list (get model "efforts")) 400 "The selected effort is not supported by this model."
 
 catalogModel :: Value -> IO Value
 catalogModel = parseValue 502 $ withObject "Codex model" $ \o -> do

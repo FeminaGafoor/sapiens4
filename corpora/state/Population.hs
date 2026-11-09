@@ -5,6 +5,8 @@ module Population where
 import Control.Exception
 import Control.Monad
 import Data.Aeson hiding (pairs)
+import Data.Aeson.Types (Parser)
+import qualified Data.Map.Strict as Map
 import Data.Char
 import Data.IORef
 import System.Random (randomRIO)
@@ -263,3 +265,51 @@ corporaIdentity s = do
  row <- if T.null chief then pure empty else DB.agent s chief
  template <- prompt s "corpora-settings-request"
  pure $ merge (remove ["operations"] (toJSON cfg)) (obj [("id",get identity "corpora_id"),("name",toJSON (corporaName cfg) `fallback` str ("CORPORA · " <> at row "name")),("chief_id",str chief),("settings_template",str (T.strip template)),("stopping",Bool False)])
+
+-- Configuration drafts are separate from execution settings until activation is
+-- implemented. Reading a missing draft does not rewrite existing installations.
+data ModelSelection = ModelSelection { selectionModel :: Text, selectionEffort :: Text }
+ deriving (Eq, Show)
+instance FromJSON ModelSelection where
+ parseJSON value = do
+  onlyFields ["provider","model","effort"] value
+  withObject "Model selection" (\o -> do
+   provider <- o .: "provider" :: Parser Text
+   unless (provider == "codex") $ fail "Only Codex configuration can be saved until Claude integration is connected"
+   model <- o .: "model"
+   effort <- o .: "effort"
+   unless (not (T.null model) && T.length model <= 200 && not (T.null effort) && T.length effort <= 80) $ fail "Choose a model and effort"
+   pure (ModelSelection model effort)) value
+instance ToJSON ModelSelection where
+ toJSON choice = obj [("provider",str "codex"),("model",str (selectionModel choice)),("effort",str (selectionEffort choice))]
+
+data ModelSettingsDraft = ModelSettingsDraft
+ { modelSettingsRevision :: Int, modelSettingsDefault :: ModelSelection, modelSettingsOverrides :: Map.Map Text ModelSelection }
+ deriving (Eq, Show)
+instance FromJSON ModelSettingsDraft where
+ parseJSON value = do
+  onlyFields ["revision","defaults","overrides"] value
+  withObject "Model settings draft" (\o -> do
+   revision <- o .: "revision"
+   defaults <- o .: "defaults"
+   overrides <- o .: "overrides"
+   unless (revision >= 0 && revision <= 2147483647 && Map.size overrides <= 1000) $ fail "Invalid model settings revision or override count"
+   pure (ModelSettingsDraft revision defaults overrides)) value
+instance ToJSON ModelSettingsDraft where
+ toJSON draft = obj [("revision",num (modelSettingsRevision draft)),("defaults",toJSON (modelSettingsDefault draft)),("overrides",toJSON (modelSettingsOverrides draft))]
+
+readModelSettingsDraft :: Service -> IO ModelSettingsDraft
+readModelSettingsDraft s = readJSON (serviceRoot s </> "model-settings-draft.json")
+ (ModelSettingsDraft 0 (ModelSelection "gpt-6-astra" "medium") Map.empty)
+
+saveModelSettingsDraft :: Service -> ModelSettingsDraft -> IO ModelSettingsDraft
+saveModelSettingsDraft s requested = do
+ current <- readModelSettingsDraft s
+ require (modelSettingsRevision requested == modelSettingsRevision current) 409 "Model settings changed elsewhere. Close and reopen Models before saving."
+ require (modelSettingsRevision current < 2147483647) 409 "Model settings revision limit reached."
+ forM_ (Map.keys (modelSettingsOverrides requested)) $ \owner -> do
+  -- Retiring a Sapi must not make its unchanged saved override block other edits.
+  unless (Map.lookup owner (modelSettingsOverrides requested) == Map.lookup owner (modelSettingsOverrides current)) $ requireActive s owner
+ let saved=requested {modelSettingsRevision=modelSettingsRevision current+1}
+ writeJSON (serviceRoot s </> "model-settings-draft.json") saved
+ pure saved

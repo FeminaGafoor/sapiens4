@@ -70,7 +70,9 @@ view m = case m.dialog of
     [V.div (if M.corporaDialog d.kind then "corpora-menu-heading" else "modal-top") [V.span [V.cls "tiny-label"] "SAPIENS4",V.icon (if M.corporaDialog d.kind then "Close" else "Close dialog") "×" CloseDialog]
     ,V.node "div" [V.id $ if M.corporaDialog d.kind then "corpora-dialog-body" else "modal-content"] [V.textNode "h2" [V.id "dialog-title"] (d.title),body m d,V.textNode "p" [V.cls "corpora-feedback",V.attr "role" "status"] ((M.dialogError d))]
     ,V.when (d.kind == M.Models) $ V.div "model-save-row"
-      [V.button "button" "Close preview" CloseDialog,V.node "button" [V.attr "type" "button",V.cls "button primary",V.disabled true] [V.text "Save changes"]]]
+      [V.button "button" "Close" CloseDialog,V.control [V.cls "button primary",V.disabled $ M.dialogBusy d || case d.content of
+        F.ModelPreview draft -> not (F.modelDraftValid draft && F.modelDraftChanged draft)
+        _ -> true] "Save draft" (DialogCommand Intent.SaveModelSettings)]]
 
 body :: M.Model -> M.Dialog -> V.Html
 body m d = case d.kind of
@@ -84,8 +86,9 @@ body m d = case d.kind of
       ,V.p "" "Talk to your Sapis in chat, manage their notes, and save documents in their workspaces. Sapis can delegate requests through ChiefSapi."
       ,V.p "" "Use the corpora menu to switch workspaces. Active and Paused describe execution on the host; Connecting means this device is restoring its connection."]]
   M.Models -> case d.content of
-    F.ModelPreview draft -> modelSettings m draft
-    _ -> V.p "" "Close and reopen Models to load the preview."
+    F.ModelPreview draft | draft.loaded -> V.node "fieldset" [V.cls "model-settings-controls",V.disabled $ M.dialogBusy d] [modelSettings m draft]
+    F.ModelPreview _ -> if M.dialogBusy d then V.p "model-hint" "Loading saved settings…" else V.button "button" "Retry loading settings" $ DialogCommand Intent.ReloadModelSettings
+    _ -> V.p "" "Close and reopen Models to load settings."
   M.Computer -> V.div "" [V.p "" "Blindly4 is the main computer-use tool. Ask a Sapi in chat to work on your computer.",V.div "settings-row" [V.span [] (if m.snapshot.computer.built then "Blindly4 is built" else "Build required: run " <> if windows then ".\\start.ps1" else "./start.sh"),V.span [V.cls "tag"] (if owner == "" then "Available" else "In use · " <> (M.agent m owner).name)],V.p "" $ "Sapis share one computer. " <> if windows then "Windows UI Automation works with accessible apps on your desktop. Elevated apps and secure system dialogs cannot be controlled." else "macOS Accessibility access is required for desktop interaction; permission failures appear in chat."]
   M.AgentSettings -> form "Save"
     [V.node "div" [V.cls "settings-tabs",V.attr "role" "tablist",V.label "Sapi settings"] $ map (\caption -> V.textNode "button" [V.attr "type" "button",V.attr "role" "tab",V.attr "aria-selected" $ show $ caption == "Profile",V.disabled $ caption /= "Profile"] (caption)) ["Profile","Context","Usage","Limits"]
@@ -146,8 +149,9 @@ body m d = case d.kind of
 
 modelSettings :: M.Model -> F.ModelDraft -> V.Html
 modelSettings m draft = V.div "model-settings"
-  [V.p "model-intro" "Set the default provider and model for this corpora."
-  ,V.p "model-preview-note" "Preview only. Changes are not saved."
+  [V.p "model-intro" "Choose a default model and customize individual Sapis."
+  ,V.p "model-preview-note" "Saved drafts do not affect work yet. Execution still uses the existing settings."
+  ,V.textNode "p" [V.cls "model-hint",V.attr "role" "status",V.attr "aria-live" "polite"] m.toast
   ,V.div "model-section-heading" [V.textNode "h3" [] "Default provider",V.span [] $ D.fallback "Current corpora" m.snapshot.corpora.name]
   ,configFields F.CorporaDefault "Default" draft.defaults
   ,V.node "details" [V.cls "model-sapi-details"]
@@ -180,9 +184,9 @@ modelSettings m draft = V.div "model-settings"
         F.CatalogReady rows -> V.div ""
           [V.div "model-section-heading" [V.textNode "h3" [] "Model & effort",checkbox ("Customize " <> S.toLower prefix <> " model") custom $ F.EditModel target <<< F.CustomizeModel]
           ,case config.choice of
-            F.RecommendedModel -> V.div "model-recommended" [V.span [] $ case F.catalogDefault draft.catalog of
-              Just row -> row.label <> " · Codex default effort: " <> row.defaultEffort
-              Nothing -> "No default model available"]
+            F.RecommendedModel -> V.div "model-recommended"
+              [V.span [] "Sapiens4 recommendation: Astra · medium"
+              ,V.when (not $ A.any (\row -> row.model == "gpt-6-astra" && A.elem "medium" row.efforts) rows) $ V.p "model-hint" "The recommended model or effort is unavailable. Choose another model before saving."]
             F.CustomModel modelName effort -> V.div "model-custom-fields"
               [V.node "label" [] [V.text "Model",V.node "select" [V.label $ prefix <> " model",V.value modelName,V.change $ edit <<< F.ModelName] $ map (\row -> V.textNode "option" [V.value row.model,V.bool "selected" $ row.model == modelName] (row.label <> if row.isDefault then " · Codex default" else "")) rows]
               ,case A.find ((_ == modelName) <<< _.model) rows of

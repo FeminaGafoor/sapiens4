@@ -512,3 +512,5 @@ body.sapi-workspace .notes-wiki :is(h1,h2) { font-family:Georgia,"Times New Roma
  :root body.sapi-workspace .model-settings input[type=text],:root body.sapi-workspace .model-settings select{font-size:16px}
  :root body.sapi-workspace .model-settings .model-check,:root body.sapi-workspace .model-efforts label{min-height:44px}
 }
+
+:root body.sapi-workspace .model-settings-controls{border:0;padding:0;margin:0;min-width:0}

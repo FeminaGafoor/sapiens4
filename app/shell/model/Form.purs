@@ -1,7 +1,7 @@
 module Sapiens.Form where
 
 import Prelude
-import Data.Argonaut.Core (Json)
+import Data.Argonaut.Core (Json, toObject)
 import Data.Array as A
 import Data.Maybe (Maybe(..), fromMaybe)
 import Sapiens.Domain as X
@@ -129,7 +129,7 @@ type ModelConfig = {provider :: ModelProvider, choice :: ModelChoice}
 type CatalogModel = {model :: String, label :: String, isDefault :: Boolean, defaultEffort :: String, efforts :: Array String}
 data ModelCatalog = CatalogLoading | CatalogReady (Array CatalogModel) | CatalogFailed String
 derive instance eqModelCatalog :: Eq ModelCatalog
-type ModelDraft = {defaults :: ModelConfig, overrides :: O.Object ModelConfig, sapi :: String, catalog :: ModelCatalog}
+type ModelDraft = {defaults :: ModelConfig, overrides :: O.Object ModelConfig, sapi :: String, catalog :: ModelCatalog, loaded :: Boolean, revision :: Number, saved :: Json}
 
 catalogRows :: ModelCatalog -> Array CatalogModel
 catalogRows = case _ of
@@ -158,7 +158,36 @@ modelEffortName = case _ of
   CatalogEffort effort -> effort
 
 modelDraft :: String -> ModelDraft
-modelDraft sapi = {defaults:{provider:Codex,choice:RecommendedModel},overrides:O.empty,sapi,catalog:CatalogLoading}
+modelDraft sapi = {defaults:{provider:Codex,choice:RecommendedModel},overrides:O.empty,sapi,catalog:CatalogLoading,loaded:false,revision:0.0,saved:D.null}
+
+-- The product recommendation is separate from the provider catalog default.
+resolvedModelConfig :: ModelCatalog -> ModelConfig -> {provider :: String, model :: String, effort :: String}
+resolvedModelConfig catalog config = case config.choice of
+  RecommendedModel -> {provider:provider,model:"gpt-6-astra",effort:"medium"}
+  CustomModel modelName effort -> {provider:provider,model:modelName,effort:case effort of
+    RecommendedEffort -> fromMaybe "" $ _.defaultEffort <$> A.find ((_ == modelName) <<< _.model) (catalogRows catalog)
+    CatalogEffort value -> value}
+  where
+  provider = if config.provider == Codex then "codex" else "claude"
+
+modelDraftPayload :: ModelDraft -> Json
+modelDraftPayload draft = D.json {revision:draft.revision,defaults:resolvedModelConfig draft.catalog draft.defaults,overrides:map (resolvedModelConfig draft.catalog) draft.overrides}
+
+modelDraftValid :: ModelDraft -> Boolean
+modelDraftValid draft = draft.loaded && valid draft.defaults && A.all valid (O.values draft.overrides)
+  where
+  valid config = let choice = resolvedModelConfig draft.catalog config in
+    config.provider == Codex && A.any (\row -> row.model == choice.model && A.elem choice.effort row.efforts) (catalogRows draft.catalog)
+
+modelDraftChanged :: ModelDraft -> Boolean
+modelDraftChanged draft = draft.revision == 0.0 || modelDraftPayload draft /= draft.saved
+
+savedModelDraft :: Json -> ModelDraft -> ModelDraft
+savedModelDraft value draft = draft {defaults=choice (D.get "defaults" value),overrides=map choice $ fromMaybe O.empty $ toObject $ D.get "overrides" value,revision=D.n "revision" value,saved=value,loaded=true}
+  where
+  choice raw = {provider:if D.s "provider" raw == "claude" then Claude else Codex,choice:
+    if D.s "model" raw == "gpt-6-astra" && D.s "effort" raw == "medium" then RecommendedModel
+    else CustomModel (D.s "model" raw) (CatalogEffort $ D.s "effort" raw)}
 
 previewConfig :: ModelTarget -> ModelDraft -> ModelConfig
 previewConfig target draft = case target of
@@ -177,9 +206,11 @@ updateModelPreview action draft = case action of
           ChooseProvider _ -> config
           CustomizeModel false -> config {choice=RecommendedModel}
           CustomizeModel true -> case config.choice of
-            RecommendedModel | config.provider == Codex -> case catalogDefault draft.catalog of
-              Just row -> config {choice=CustomModel row.model RecommendedEffort}
-              Nothing -> config
+            RecommendedModel | config.provider == Codex -> case A.find (\row -> row.model == "gpt-6-astra" && A.elem "medium" row.efforts) (catalogRows draft.catalog) of
+              Just row -> config {choice=CustomModel row.model (CatalogEffort "medium")}
+              Nothing -> case catalogDefault draft.catalog of
+                Just row -> config {choice=CustomModel row.model RecommendedEffort}
+                Nothing -> config
             RecommendedModel -> config
             _ -> config
           ModelName modelName -> case config.choice of

@@ -82,6 +82,8 @@ data DialogIntent
   = SuggestNames
   | PreviewModel F.ModelPreviewAction
   | ReloadModels
+  | ReloadModelSettings
+  | SaveModelSettings
   | CreateAgent
   | MentionGroup X.Entity
   | ResetRelay

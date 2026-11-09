@@ -41,7 +41,7 @@ handle runtime dispatch action = case action of
       when (kind == M.ConnectRemote && M.remote m) $ liftEffect $ B.historyPush $ D.json {dialog: true}
       E.sync
       case kind of
-        M.Models -> loadModels m d
+        M.Models -> loadModels m d *> loadModelSettings m d
         M.DecisionPrompts -> receive d.identity (\value -> E.modifyDialog d.identity _ {content=F.Prompts $ map F.prompt $ D.rows "prompts" value,fields=F.decode $ D.first $ D.rows "prompts" value,status=M.Editing}) $ E.api runtime m "/api/decision-prompts" "GET" D.null
         M.RelayList -> receive d.identity (\value -> E.modifyDialog d.identity _ {content=F.relayRegistry value,status=M.Editing}) $ C.json "/api/host/relays" "GET" D.null
         M.HostPairing -> dispatch $ HostPairPoll d.identity
@@ -98,6 +98,10 @@ handle runtime dispatch action = case action of
   runDialog d done operation = do
     E.modifyDialog d.identity _ {status=M.Submitting ""}
     receive d.identity done operation
+  loadModelSettings m d = runDialog d (acceptModelSettings d.identity) $ E.api runtime m "/api/model-settings-draft" "GET" D.null
+  acceptModelSettings identity value = E.modifyDialog identity \current -> case current.content of
+    F.ModelPreview draft -> current {content=F.ModelPreview $ F.savedModelDraft value draft,status=M.Editing}
+    _ -> current
   loadModels m d = do
     let setCatalog catalog current = case current.content of
           F.ModelPreview draft -> current {content=F.ModelPreview $ draft {catalog=catalog}}
@@ -206,6 +210,11 @@ handle runtime dispatch action = case action of
       Intent.InstallPrompt -> void $ H.fork $ void $ H.liftAff $ try $ toAffE B.installPrompt
       _ -> traverse_ (\d -> unless (M.dialogBusy d) $ dialogCommand m d command) m.dialog
   dialogCommand m d command = case command of
+    Intent.ReloadModelSettings -> when (d.kind == M.Models) $ loadModelSettings m d
+    Intent.SaveModelSettings -> case d.kind, d.content of
+      M.Models, F.ModelPreview draft | F.modelDraftValid draft && F.modelDraftChanged draft ->
+        runDialog d (\value -> acceptModelSettings d.identity value *> E.notify "Configuration draft saved. Execution settings are unchanged.") $ E.api runtime m "/api/model-settings-draft" "PUT" (F.modelDraftPayload draft)
+      _, _ -> pure unit
     Intent.ReloadModels -> case d.kind, d.content of
       M.Models, F.ModelPreview draft | draft.catalog /= F.CatalogLoading -> loadModels m d
       _, _ -> pure unit
