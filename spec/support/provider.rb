@@ -10,6 +10,44 @@ if ARGV.include?('--version')
   exit
 end
 
+# Model discovery uses the real provider process boundary, without a model turn.
+if ARGV.first == 'app-server'
+  STDOUT.sync = true
+  initialized = false
+  default_model = {'model' => 'fixture-general', 'displayName' => 'Fixture General',
+    'hidden' => false, 'isDefault' => true, 'defaultReasoningEffort' => 'high',
+    'supportedReasoningEfforts' => [{'reasoningEffort' => 'low'}, {'reasoningEffort' => 'high'}]}
+  pages = config.fetch('catalog_pages', [{'data' => [default_model], 'nextCursor' => nil}])
+  STDIN.each_line do |line|
+    message = JSON.parse(line)
+    File.open(File.join(root, 'discovery.jsonl'), 'a') do |file|
+      file.puts JSON.generate(message.merge('pid' => Process.pid))
+    end
+    case message.fetch('method')
+    when 'initialize'
+      puts JSON.generate(id: message.fetch('id'), result: {})
+    when 'initialized'
+      initialized = true
+    when 'model/list'
+      raise 'Missing initialized notification' unless initialized
+      if config['catalog_block']
+        sleep 0.02 until File.exist?(File.join(root, 'released'))
+      end
+      if config['catalog_error']
+        puts JSON.generate(id: message.fetch('id'), error: {code: -1, message: 'Fixture catalog failure'})
+      elsif config['catalog_malformed']
+        puts 'not-json'
+      else
+        cursor = message.fetch('params')['cursor']
+        page = pages.fetch(cursor ? Integer(cursor) : 0)
+        puts JSON.generate(method: 'fixture/notification', params: {})
+        puts JSON.generate(id: message.fetch('id'), result: page)
+      end
+    end
+  end
+  exit
+end
+
 text = STDIN.read
 context = text.include?("\nContext:\n") ? JSON.parse(text.split("\nContext:\n", 2).last) : {}
 node = text[/decision at node (\w+)/, 1] || (text.start_with?('You are acting as yourself inside') ? 'group' :

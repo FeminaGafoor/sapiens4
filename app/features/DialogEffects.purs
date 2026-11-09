@@ -41,6 +41,7 @@ handle runtime dispatch action = case action of
       when (kind == M.ConnectRemote && M.remote m) $ liftEffect $ B.historyPush $ D.json {dialog: true}
       E.sync
       case kind of
+        M.Models -> loadModels m d
         M.DecisionPrompts -> receive d.identity (\value -> E.modifyDialog d.identity _ {content=F.Prompts $ map F.prompt $ D.rows "prompts" value,fields=F.decode $ D.first $ D.rows "prompts" value,status=M.Editing}) $ E.api runtime m "/api/decision-prompts" "GET" D.null
         M.RelayList -> receive d.identity (\value -> E.modifyDialog d.identity _ {content=F.relayRegistry value,status=M.Editing}) $ C.json "/api/host/relays" "GET" D.null
         M.HostPairing -> dispatch $ HostPairPoll d.identity
@@ -97,6 +98,15 @@ handle runtime dispatch action = case action of
   runDialog d done operation = do
     E.modifyDialog d.identity _ {status=M.Submitting ""}
     receive d.identity done operation
+  loadModels m d = do
+    let setCatalog catalog current = case current.content of
+          F.ModelPreview draft -> current {content=F.ModelPreview $ draft {catalog=catalog}}
+          _ -> current
+    E.modifyDialog d.identity (setCatalog F.CatalogLoading)
+    E.attempt (E.api runtime m "/api/providers/codex/models" "GET" D.null) \result -> E.inEpoch m.epoch \_ ->
+      E.modifyDialog d.identity $ setCatalog $ case result of
+        Left failure -> F.CatalogFailed (message failure)
+        Right value -> F.modelCatalog value
   saved caption _ = dispatch CloseDialog *> E.notify caption *> dispatch Poll
   submit m d = case d.kind of
     kind | kind == M.AgentSettings || kind == M.GroupSettings -> case Dialog.saveEntity d of
@@ -196,6 +206,9 @@ handle runtime dispatch action = case action of
       Intent.InstallPrompt -> void $ H.fork $ void $ H.liftAff $ try $ toAffE B.installPrompt
       _ -> traverse_ (\d -> unless (M.dialogBusy d) $ dialogCommand m d command) m.dialog
   dialogCommand m d command = case command of
+    Intent.ReloadModels -> case d.kind, d.content of
+      M.Models, F.ModelPreview draft | draft.catalog /= F.CatalogLoading -> loadModels m d
+      _, _ -> pure unit
     Intent.PreviewModel edit -> case d.kind, d.content of
       M.Models, F.ModelPreview draft -> E.modifyDialog d.identity _ {content=F.ModelPreview $ F.updateModelPreview edit draft}
       _, _ -> pure unit

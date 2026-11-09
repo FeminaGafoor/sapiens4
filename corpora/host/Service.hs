@@ -31,6 +31,7 @@ import Population
 import Workspace
 import Memo
 import qualified Management as Mgt
+import qualified Provider as Provider
 import qualified Execution as E
 import qualified Delegation as D
 import qualified Routines as R
@@ -170,6 +171,9 @@ savePreferences s d = do
  DB.saveSingleton s DB.Preferences current
  pure (obj [("saved",Bool True),("preferences",current)])
 dispatch :: Service -> Text -> Text -> Maybe Value -> IO (Int,BL.ByteString,Text)
+dispatch _ "GET" "/api/providers/codex/models" _ = do
+ value <- Provider.codexModels
+ pure (200,encode value,"application/json; charset=utf-8")
 dispatch s method target body = locked s $ do
  let (path,query)=T.breakOn "?" target; parts=filter (not . T.null) (T.splitOn "/" path); write=method `elem` ["POST","PUT"]; d=fromMaybe Null body
  when write $ require (case d of Object _->True; _->False) 400 "Expected a JSON object"

@@ -96,6 +96,81 @@ codexArguments :: FilePath -> CodexConfig -> [String]
 codexArguments workdir config =
  ["exec","-c","model_reasoning_effort=" ++ T.unpack (jsonText (str (codexEffort config))),"-c","model=" ++ T.unpack (jsonText (str (codexModel config))),"--skip-git-repo-check","--json","--dangerously-bypass-approvals-and-sandbox","--cd",workdir,"--color","never","-"]
 
+-- Discovery is an on-demand catalog read, never an agent turn. Keep it outside
+-- the service state lock; the process and every page share one deadline.
+codexModels :: IO Value
+codexModels = do
+ result <- timeout 30000000 discover
+ maybe (failure 504 "Codex model discovery timed out. Try again.") pure result
+ where
+ discover = do
+  binary <- codexBinary >>= maybe (failure 503 "Codex CLI was not found on this host.") pure
+  workdir <- getTemporaryDirectory
+  bracket (createProcess (proc binary ["app-server","--stdio"]) {cwd=Just workdir,std_in=CreatePipe,std_out=CreatePipe,std_err=CreatePipe,create_group=True,use_process_jobs=True,detach_console=os=="mingw32"}) cleanup $ \handles -> do
+   (hin,hout,herr) <- case handles of
+    (Just i,Just o,Just e,_) -> pure (i,o,e)
+    _ -> failure 502 "Codex discovery could not open its pipes."
+   mapM_ (`hSetBinaryMode` True) [hin,hout,herr]
+   buffer <- newIORef BS.empty
+   let send value = BS.hPut hin (TE.encodeUtf8 (jsonText value <> "\n")) >> hFlush hin
+       line = do
+        bytes <- readIORef buffer
+        case BC.elemIndex '\n' bytes of
+         Just index -> do
+          writeIORef buffer (BS.drop (index+1) bytes)
+          pure (BS.take index bytes)
+         Nothing -> do
+          chunk <- BS.hGetSome hout 8192
+          require (not (BS.null chunk)) 502 "Codex closed the model discovery connection."
+          require (BS.length bytes + BS.length chunk <= 1048576) 502 "Codex model response is too large."
+          writeIORef buffer (bytes <> chunk)
+          line
+       receive ident remaining = do
+        require (remaining > (0 :: Int)) 502 "Too many Codex discovery notifications."
+        raw <- line
+        value <- either (const (failure 502 "Codex returned invalid discovery JSON.")) pure (eitherDecodeStrict' raw)
+        if get value "id" /= num ident then receive ident (remaining-1) else do
+         require (not (has value "error")) 502 "Codex could not list models. Check its login and CLI version."
+         require (has value "result") 502 "Codex discovery response has no result."
+         pure (get value "result")
+       request ident method params = send (obj [("id",num ident),("method",str method),("params",params)]) >> receive ident 1024
+       pages ident seen cursor collected = do
+        require (ident <= 22) 502 "Codex returned too many model pages."
+        page <- request ident "model/list" (obj [("cursor",cursor),("limit",num 100),("includeHidden",Bool False)])
+        rows <- field 502 page "data" :: IO [Value]
+        require (length collected + length rows <= 2000) 502 "Codex returned too many models."
+        models <- traverse catalogModel rows
+        let next=get page "nextCursor"; allModels=collected ++ models
+        case next of
+         Null -> pure (obj [("data",arr (filter (\m -> get m "hidden" /= Bool True) allModels))])
+         String token -> do
+          require (not (T.null token) && token `notElem` seen) 502 "Codex returned an invalid pagination cursor."
+          pages (ident+1) (token:seen) next allModels
+         _ -> failure 502 "Codex returned an invalid pagination cursor."
+       drain = do
+        bytes <- BS.hGetSome herr 8192
+        unless (BS.null bytes) drain
+   withAsync drain $ \_ -> do
+    void (request 1 "initialize" (obj [("clientInfo",obj [("name",str "sapiens4"),("version",str "1")]),("capabilities",obj [("explicitGatewayOauth",Bool True)])]))
+    send (obj [("method",str "initialized")])
+    pages 2 [] Null []
+ cleanup (hin,hout,herr,ph) = do
+  killTree ph
+  void (waitForProcess ph)
+  forM_ (catMaybes [hin,hout,herr]) $ \h -> hClose h `catch` (\(_::IOException) -> pure ())
+
+catalogModel :: Value -> IO Value
+catalogModel = parseValue 502 $ withObject "Codex model" $ \o -> do
+ model <- o .: "model" :: Parser Text
+ label <- o .: "displayName" :: Parser Text
+ hidden <- o .: "hidden" :: Parser Bool
+ isDefault <- o .: "isDefault" :: Parser Bool
+ effort <- o .: "defaultReasoningEffort" :: Parser Text
+ options <- o .: "supportedReasoningEfforts" :: Parser [Value]
+ efforts <- forM options $ withObject "Reasoning effort" $ \option -> option .: "reasoningEffort" :: Parser Text
+ unless (not (T.null model) && not (T.null label) && not (null efforts) && all (not . T.null) efforts && effort `elem` efforts) $ fail "Invalid model or effort choices"
+ pure (obj [("model",str model),("displayName",str label),("hidden",Bool hidden),("isDefault",Bool isDefault),("defaultReasoningEffort",str effort),("efforts",toJSON (nub efforts))])
+
 codexBinary :: IO (Maybe FilePath)
 codexBinary = do
  override <- lookupEnv "SAPIENS_CODEX_BINARY"

@@ -121,12 +121,28 @@ derive instance eqContent :: Eq Content
 -- Local preview state only; these choices are never serialized as execution settings.
 data ModelProvider = Codex | Claude
 derive instance eqModelProvider :: Eq ModelProvider
-data ModelEffort = RecommendedEffort | MediumEffort | HighEffort
+data ModelEffort = RecommendedEffort | CatalogEffort String
 derive instance eqModelEffort :: Eq ModelEffort
 data ModelChoice = RecommendedModel | CustomModel String ModelEffort
 derive instance eqModelChoice :: Eq ModelChoice
 type ModelConfig = {provider :: ModelProvider, choice :: ModelChoice}
-type ModelDraft = {defaults :: ModelConfig, overrides :: O.Object ModelConfig, sapi :: String}
+type CatalogModel = {model :: String, label :: String, isDefault :: Boolean, defaultEffort :: String, efforts :: Array String}
+data ModelCatalog = CatalogLoading | CatalogReady (Array CatalogModel) | CatalogFailed String
+derive instance eqModelCatalog :: Eq ModelCatalog
+type ModelDraft = {defaults :: ModelConfig, overrides :: O.Object ModelConfig, sapi :: String, catalog :: ModelCatalog}
+
+catalogRows :: ModelCatalog -> Array CatalogModel
+catalogRows = case _ of
+  CatalogReady rows -> rows
+  _ -> []
+
+modelCatalog :: Json -> ModelCatalog
+modelCatalog value = CatalogReady $ map (\row -> {model:D.s "model" row,label:D.s "displayName" row,isDefault:D.b "isDefault" row,defaultEffort:D.s "defaultReasoningEffort" row,efforts:D.strings $ D.get "efforts" row}) $ D.rows "data" value
+
+catalogDefault :: ModelCatalog -> Maybe CatalogModel
+catalogDefault catalog = let rows = catalogRows catalog in case A.find _.isDefault rows of
+  Just row -> Just row
+  Nothing -> A.head rows
 data ModelTarget = CorporaDefault | SapiOverride String
 data ModelEdit = ChooseProvider ModelProvider | CustomizeModel Boolean | ModelName String | ChooseEffort ModelEffort
 data ModelPreviewAction = EditModel ModelTarget ModelEdit | SelectModelSapi String | InheritModel String Boolean
@@ -139,11 +155,10 @@ modelProviderName = case _ of
 modelEffortName :: ModelEffort -> String
 modelEffortName = case _ of
   RecommendedEffort -> "Recommended"
-  MediumEffort -> "Medium"
-  HighEffort -> "High"
+  CatalogEffort effort -> effort
 
 modelDraft :: String -> ModelDraft
-modelDraft sapi = {defaults:{provider:Codex,choice:RecommendedModel},overrides:O.empty,sapi}
+modelDraft sapi = {defaults:{provider:Codex,choice:RecommendedModel},overrides:O.empty,sapi,catalog:CatalogLoading}
 
 previewConfig :: ModelTarget -> ModelDraft -> ModelConfig
 previewConfig target draft = case target of
@@ -162,13 +177,16 @@ updateModelPreview action draft = case action of
           ChooseProvider _ -> config
           CustomizeModel false -> config {choice=RecommendedModel}
           CustomizeModel true -> case config.choice of
-            RecommendedModel -> config {choice=CustomModel "" RecommendedEffort}
+            RecommendedModel | config.provider == Codex -> case catalogDefault draft.catalog of
+              Just row -> config {choice=CustomModel row.model RecommendedEffort}
+              Nothing -> config
+            RecommendedModel -> config
             _ -> config
           ModelName modelName -> case config.choice of
-            CustomModel _ effort -> config {choice=CustomModel modelName effort}
+            CustomModel _ _ | config.provider == Codex && A.any ((_ == modelName) <<< _.model) (catalogRows draft.catalog) -> config {choice=CustomModel modelName RecommendedEffort}
             _ -> config
           ChooseEffort effort -> case config.choice of
-            CustomModel modelName _ -> config {choice=CustomModel modelName effort}
+            CustomModel modelName _ | effort == RecommendedEffort || A.any (\row -> row.model == modelName && A.elem (modelEffortName effort) row.efforts) (catalogRows draft.catalog) -> config {choice=CustomModel modelName effort}
             _ -> config
     in case target of
       CorporaDefault -> draft {defaults=changed}

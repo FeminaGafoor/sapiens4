@@ -168,20 +168,29 @@ modelSettings m draft = V.div "model-settings"
         custom = case config.choice of
           F.RecommendedModel -> false
           _ -> true
-        providerName = F.modelProviderName config.provider
         providerCard provider = V.node "label" [V.cls "model-provider"]
           [V.node "input" [V.attr "type" "radio",V.attr "name" $ prefix <> "-provider",V.label $ prefix <> " provider " <> F.modelProviderName provider,V.bool "checked" $ config.provider == provider,V.check $ \checked -> if checked then edit (F.ChooseProvider provider) else edit (F.ChooseProvider config.provider)] []
-          ,V.node "span" [] [V.textNode "strong" [] (F.modelProviderName provider),V.textNode "small" [] $ "Use your " <> F.modelProviderName provider <> " account"]]
+          ,V.node "span" [] [V.textNode "strong" [] (F.modelProviderName provider),V.textNode "small" [] $ if provider == F.Codex then "Models from this host's Codex CLI" else "Integration pending"]]
     in V.div "model-config"
-      [V.node "fieldset" [V.cls "model-providers"] ([V.textNode "legend" [V.cls "model-visually-hidden"] (prefix <> " provider")] <> map providerCard [F.Codex,F.Claude])
-      ,V.div "model-section-heading" [V.textNode "h3" [] "Model & effort",checkbox ("Customize " <> S.toLower prefix <> " model") custom $ F.EditModel target <<< F.CustomizeModel]
-      ,case config.choice of
-        F.RecommendedModel -> V.div "model-recommended" [V.span [] $ "Recommended for " <> providerName]
-        F.CustomModel name effort -> V.div "model-custom-fields"
-          [V.node "label" [] [V.text "Model",V.node "input" [V.attr "type" "text",V.label $ prefix <> " model",V.value name,V.attr "placeholder" "Provider model name",V.attr "maxlength" "200",V.input $ edit <<< F.ModelName] []]
-          ,V.node "fieldset" [V.cls "model-efforts"] ([V.textNode "legend" [] (prefix <> " effort")] <> map (\value -> V.node "label" []
-            [V.node "input" [V.attr "type" "radio",V.attr "name" $ prefix <> "-effort",V.label $ prefix <> " effort " <> F.modelEffortName value,V.bool "checked" $ effort == value,V.check $ \checked -> if checked then edit (F.ChooseEffort value) else edit (F.ChooseEffort effort)] [],V.text $ F.modelEffortName value]) [F.RecommendedEffort,F.MediumEffort,F.HighEffort])
-          ,V.p "model-hint" "Example model and effort choices."]]
+      [V.node "fieldset" [V.cls "model-providers",V.label $ prefix <> " provider"] $ map providerCard [F.Codex,F.Claude]
+      ,if config.provider == F.Claude then V.p "model-hint" "Claude model discovery is not connected yet." else case draft.catalog of
+        F.CatalogLoading -> V.textNode "p" [V.cls "model-hint",V.attr "role" "status"] "Loading Codex models…"
+        F.CatalogFailed failure -> V.div "model-hint" [V.textNode "p" [V.attr "role" "alert"] failure,V.button "button" "Retry model discovery" $ DialogCommand Intent.ReloadModels]
+        F.CatalogReady rows | A.null rows -> V.div "model-hint" [V.p "" "Codex returned no visible models.",V.button "button" "Retry model discovery" $ DialogCommand Intent.ReloadModels]
+        F.CatalogReady rows -> V.div ""
+          [V.div "model-section-heading" [V.textNode "h3" [] "Model & effort",checkbox ("Customize " <> S.toLower prefix <> " model") custom $ F.EditModel target <<< F.CustomizeModel]
+          ,case config.choice of
+            F.RecommendedModel -> V.div "model-recommended" [V.span [] $ case F.catalogDefault draft.catalog of
+              Just row -> row.label <> " · Codex default effort: " <> row.defaultEffort
+              Nothing -> "No default model available"]
+            F.CustomModel modelName effort -> V.div "model-custom-fields"
+              [V.node "label" [] [V.text "Model",V.node "select" [V.label $ prefix <> " model",V.value modelName,V.change $ edit <<< F.ModelName] $ map (\row -> V.textNode "option" [V.value row.model,V.bool "selected" $ row.model == modelName] (row.label <> if row.isDefault then " · Codex default" else "")) rows]
+              ,case A.find ((_ == modelName) <<< _.model) rows of
+                Nothing -> V.p "model-hint" "Choose an available model."
+                Just row -> V.node "label" [] [V.text "Reasoning effort",V.node "select" [V.label $ prefix <> " effort",V.value $ if effort == F.RecommendedEffort then "" else F.modelEffortName effort,V.change $ \value -> edit $ F.ChooseEffort $ if value == "" then F.RecommendedEffort else F.CatalogEffort value]
+                  ([V.textNode "option" [V.value "",V.bool "selected" $ effort == F.RecommendedEffort] ("Model default (" <> row.defaultEffort <> ")")] <> map (\value -> V.textNode "option" [V.value value,V.bool "selected" $ effort == F.CatalogEffort value] value) row.efforts)]
+              ]
+          ]]
 
 relayList :: M.Dialog -> V.Html
 relayList d = if d.content == F.NoContent then V.p "" "Loading…" else V.div ""
