@@ -176,13 +176,13 @@ modelSettingsStatus m draft =
   in
     if saving then "Saving model settings…"
     else if not (A.null invalid) then "Cannot save yet. Check model availability and effort for: " <> S.joinWith "; " invalid <> "."
-    else if F.modelDraftChanged draft then "Unsaved changes. Save and apply saves both pages."
-    else "Model settings applied to new runs."
+    else if F.modelDraftChanged draft then "Unsaved changes"
+    else "Saved"
 
 modelSettings :: M.Model -> F.ModelDraft -> V.Html
 modelSettings m draft = V.div "model-settings"
-  [V.p "model-intro" "Choose a default model and customize individual Sapis."
-  ,V.p "model-preview-note" "Applies to new runs. Running work keeps its settings. Model and effort selections replace Normal/Deep mode."
+  [V.p "model-intro" "Models for this corpora and its Sapis."
+  ,V.p "model-preview-note" "Changes apply to new runs. Running work is unchanged."
   ,V.textNode "p" [V.cls "model-hint",V.attr "role" "status",V.attr "aria-live" "polite"] (modelSettingsStatus m draft)
   ,V.node "nav" [V.cls "model-page-navigation",V.label "Model settings pages"]
     [pageButton F.GlobalModels "Global settings",pageButton F.SapiModels "Sapi customization"]
@@ -191,18 +191,52 @@ modelSettings m draft = V.div "model-settings"
       [V.div "model-section-heading" [V.textNode "h3" [] "Default provider",V.span [] $ D.fallback "Current corpora" m.snapshot.corpora.name]
       ,configFields F.CorporaDefault "Default" draft.defaults]
     F.SapiModels -> V.node "section" [V.label "Sapi customization"]
-      [V.p "model-hint" "Choose a Sapi to customize, or keep the global settings. Save and apply saves changes from both pages."
+      [V.p "model-hint" "Choose a Sapi."
       ,if A.null sapis then V.p "model-hint" "No active Sapis in this corpora." else V.div "model-sapi-fields"
-        [V.node "label" [] [V.text "Sapi",V.node "select" [V.label "Sapi",V.value draft.sapi,V.change $ act <<< F.SelectModelSapi] $ map (\a -> V.textNode "option" [V.value a.id,V.bool "selected" $ a.id == draft.sapi] a.name) sapis]
-        ,checkbox "Use corpora default" inherited $ F.InheritModel draft.sapi
-        ,if inherited then V.p "model-hint" $ "Inherits " <> F.modelProviderName draft.defaults.provider <> " and the corpora model settings." else configFields (F.SapiOverride draft.sapi) "Sapi" (F.previewConfig (F.SapiOverride draft.sapi) draft)]]
+        [picker "model-sapi" "Sapi" draft.sapi false (map (\a -> {value:a.id,label:a.name}) sapis) F.SelectModelSapi
+        ,V.div "model-inheritance-card"
+          [checkbox "Use corpora default" inherited $ F.InheritModel draft.sapi
+          ,V.p "model-hint" $ if inherited then "Follows global settings." else "Applies only to this Sapi."
+          ,V.p "model-effective-summary" $ "Global default: " <> configSummary draft.defaults]
+        ,if inherited then V.text "" else V.div "model-sapi-override"
+          [V.div "model-section-heading" [V.textNode "h3" [] "Settings for this Sapi",V.span [V.cls "model-scope-badge"] "Override"]
+          ,configFields (F.SapiOverride draft.sapi) "Sapi" (F.previewConfig (F.SapiOverride draft.sapi) draft)]]]
   ]
   where
   sapis = A.filter (\a -> not (M.isGroup a || a.retired)) m.agents
   inherited = not $ O.member draft.sapi draft.overrides
+  configSummary config =
+    let resolved = F.resolvedModelConfig (F.providerCatalog config.provider draft) config
+        label = case A.find ((_ == resolved.model) <<< _.model) (F.catalogRows $ F.providerCatalog config.provider draft) of
+          Just row -> row.label
+          Nothing -> resolved.model
+    in F.modelProviderName config.provider <> " · " <> label <> " · " <> if resolved.effort == "" then "Provider default effort" else resolved.effort
   act = DialogCommand <<< Intent.PreviewModel
   pageButton page caption = V.control
     [V.cls "model-page-button",V.attr "aria-current" $ if draft.page == page then "page" else "false"] caption (act $ F.ShowModelSettingsPage page)
+  picker id caption value disabled options choose =
+    let expanded = draft.picker == id
+        selected = fromMaybe 0 $ A.findIndex ((_ == value) <<< _.value) options
+        label = maybeLabel $ A.find ((_ == value) <<< _.value) options
+        labels = map _.label options
+        option index row = V.controlWith
+          [V.id $ id <> "-option-" <> show index,V.cls "model-picker-option",V.attr "role" "option"
+          ,V.label row.label,V.attr "aria-selected" $ show $ row.value == value,V.attr "tabindex" "-1"
+          ,V.on "keydown" $ \event -> ModelPickerKey event id index labels]
+          [V.span [] row.label,V.span [V.cls "model-picker-check",V.attr "aria-hidden" "true"] $ if row.value == value then "✓" else ""]
+          (DialogCommand $ Intent.PickModelOption id $ choose row.value)
+    in V.div "model-picker"
+      [V.textNode "label" [V.attr "for" id] caption
+      ,V.controlWith [V.id id,V.cls "model-picker-trigger",V.label $ caption <> ": " <> label,V.disabled disabled
+        ,V.attr "aria-haspopup" "listbox",V.attr "aria-expanded" $ show expanded,V.attr "aria-controls" $ id <> "-list"
+        ,V.on "keydown" $ \event -> ModelPickerKey event id (-1) labels]
+        [V.span [] label,V.chevron false] (DialogCommand $ Intent.ToggleModelPicker id selected)
+      ,V.when expanded $ V.div "model-picker-popover"
+        [V.control [V.cls "model-picker-dismiss",V.attr "tabindex" "-1",V.label "Dismiss choices"] "" (DialogCommand $ Intent.ToggleModelPicker id selected)
+        ,V.node "div" [V.id $ id <> "-list",V.cls "model-picker-list",V.attr "role" "listbox",V.label caption] $ A.mapWithIndex option options]]
+  maybeLabel = case _ of
+    Just option -> option.label
+    Nothing -> "Choose a model"
   checkbox caption checked action = V.node "label" [V.cls "model-check"]
     [V.node "input" [V.attr "type" "checkbox",V.label caption,V.bool "checked" checked,V.check $ act <<< action] [],V.text caption]
   configFields target prefix config =
@@ -212,7 +246,7 @@ modelSettings m draft = V.div "model-settings"
           _ -> true
         providerCard provider = V.node "label" [V.cls "model-provider"]
           [V.node "input" [V.attr "type" "radio",V.attr "name" $ prefix <> "-provider",V.label $ prefix <> " provider " <> F.modelProviderName provider,V.bool "checked" $ config.provider == provider,V.check $ \checked -> if checked then edit (F.ChooseProvider provider) else edit (F.ChooseProvider config.provider)] []
-          ,V.node "span" [] [V.node "strong" [V.cls "model-provider-title"] [providerIcon provider,V.text $ F.modelProviderName provider],V.textNode "small" [] $ if provider == F.Codex then "Models from this host's Codex CLI" else "Models from this host's Claude CLI"]]
+          ,V.node "span" [] [V.node "strong" [V.cls "model-provider-title"] [providerIcon provider,V.text $ F.modelProviderName provider]]]
     in V.div "model-config"
       [V.node "fieldset" [V.cls "model-providers",V.label $ prefix <> " provider"] $ map providerCard [F.Codex,F.Claude]
       ,case F.providerCatalog config.provider draft of
@@ -223,14 +257,15 @@ modelSettings m draft = V.div "model-settings"
           [V.div "model-section-heading" [V.textNode "h3" [] "Model & effort",checkbox ("Customize " <> S.toLower prefix <> " model") custom $ F.EditModel target <<< F.CustomizeModel]
           ,case config.choice of
             F.RecommendedModel -> V.div "model-recommended"
-              [V.span [] $ if config.provider == F.Codex then "Sapiens4 recommendation: Astra · medium" else "Sapiens4 recommendation: Opus 5.5 · medium"
+              [V.span [] $ if config.provider == F.Codex then "Recommended: Astra · medium" else "Recommended: Opus 5.5 · medium"
               ,V.when (not $ A.any (\row -> row.model == F.recommendedModel config.provider && A.elem "medium" row.efforts) rows) $ V.p "model-hint" "The recommended model or effort is unavailable. Choose another model before saving."]
             F.CustomModel modelName effort -> V.div "model-custom-fields"
-              [V.node "label" [] [V.text "Model",V.node "select" [V.label $ prefix <> " model",V.value modelName,V.change $ edit <<< F.ModelName] $ map (\row -> V.textNode "option" [V.value row.model,V.bool "selected" $ row.model == modelName] (row.label <> if row.isDefault then " · " <> F.modelProviderName config.provider <> " default" else "")) rows]
+              [picker (S.toLower prefix <> "-model") (prefix <> " model") modelName false (map (\row -> {value:row.model,label:row.label}) rows) (F.EditModel target <<< F.ModelName)
               ,case A.find ((_ == modelName) <<< _.model) rows of
                 Nothing -> V.p "model-hint" "Choose an available model."
-                Just row -> V.node "label" [] [V.text "Reasoning effort",V.node "select" [V.label $ prefix <> " effort",V.disabled $ A.null row.efforts,V.value $ if effort == F.RecommendedEffort then "" else F.modelEffortName effort,V.change $ \value -> edit $ F.ChooseEffort $ if value == "" then F.RecommendedEffort else F.CatalogEffort value]
-                  ([V.textNode "option" [V.value "",V.bool "selected" $ effort == F.RecommendedEffort] (if row.defaultEffort == "" then "Provider default" else "Model default (" <> row.defaultEffort <> ")")] <> map (\value -> V.textNode "option" [V.value value,V.bool "selected" $ effort == F.CatalogEffort value] value) row.efforts)]
+                Just row -> picker (S.toLower prefix <> "-effort") (prefix <> " effort") (if effort == F.RecommendedEffort then "" else F.modelEffortName effort) (A.null row.efforts)
+                  ([{value:"",label:if row.defaultEffort == "" then "Provider default" else "Model default (" <> row.defaultEffort <> ")"}] <> map (\value -> {value,label:value}) row.efforts)
+                  (\value -> F.EditModel target $ F.ChooseEffort $ if value == "" then F.RecommendedEffort else F.CatalogEffort value)
               ]
           ]]
 

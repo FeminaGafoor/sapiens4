@@ -131,7 +131,7 @@ data ModelCatalog = CatalogLoading | CatalogReady (Array CatalogModel) | Catalog
 derive instance eqModelCatalog :: Eq ModelCatalog
 data ModelSettingsPage = GlobalModels | SapiModels
 derive instance eqModelSettingsPage :: Eq ModelSettingsPage
-type ModelDraft = {page :: ModelSettingsPage, defaults :: ModelConfig, overrides :: O.Object ModelConfig, sapi :: String, catalog :: ModelCatalog, claudeCatalog :: ModelCatalog, loaded :: Boolean, revision :: Number, saved :: Json}
+type ModelDraft = {picker :: String, page :: ModelSettingsPage, defaults :: ModelConfig, overrides :: O.Object ModelConfig, sapi :: String, catalog :: ModelCatalog, claudeCatalog :: ModelCatalog, loaded :: Boolean, revision :: Number, saved :: Json}
 
 catalogRows :: ModelCatalog -> Array CatalogModel
 catalogRows = case _ of
@@ -168,7 +168,7 @@ modelEffortName = case _ of
   CatalogEffort effort -> effort
 
 modelDraft :: String -> ModelDraft
-modelDraft sapi = {page:GlobalModels,defaults:{provider:Codex,choice:RecommendedModel},overrides:O.empty,sapi,catalog:CatalogLoading,claudeCatalog:CatalogLoading,loaded:false,revision:0.0,saved:D.null}
+modelDraft sapi = {picker:"",page:GlobalModels,defaults:{provider:Codex,choice:RecommendedModel},overrides:O.empty,sapi,catalog:CatalogLoading,claudeCatalog:CatalogLoading,loaded:false,revision:0.0,saved:D.null}
 
 -- The product recommendation is separate from the provider catalog default.
 resolvedModelConfig :: ModelCatalog -> ModelConfig -> {provider :: String, model :: String, effort :: String}
@@ -209,10 +209,10 @@ previewConfig target draft = case target of
 
 updateModelPreview :: ModelPreviewAction -> ModelDraft -> ModelDraft
 updateModelPreview action draft = case action of
-  ShowModelSettingsPage page -> draft {page=page}
-  SelectModelSapi sapi -> draft {sapi=sapi}
-  InheritModel id true -> draft {overrides=O.delete id draft.overrides}
-  InheritModel id false -> draft {overrides=O.insert id (previewConfig (SapiOverride id) draft) draft.overrides}
+  ShowModelSettingsPage page -> draft {page=page,picker=""}
+  SelectModelSapi sapi -> draft {sapi=sapi,picker=""}
+  InheritModel id true -> draft {overrides=O.delete id draft.overrides,picker=""}
+  InheritModel id false -> draft {overrides=O.insert id (previewConfig (SapiOverride id) draft) draft.overrides,picker=""}
   EditModel target edit ->
     let config = previewConfig target draft
         catalog = providerCatalog config.provider draft
@@ -234,8 +234,8 @@ updateModelPreview action draft = case action of
             CustomModel modelName _ | effort == RecommendedEffort || A.any (\row -> row.model == modelName && A.elem (modelEffortName effort) row.efforts) (catalogRows catalog) -> config {choice=CustomModel modelName effort}
             _ -> config
     in case target of
-      CorporaDefault -> draft {defaults=changed}
-      SapiOverride id -> draft {overrides=O.insert id changed draft.overrides}
+      CorporaDefault -> draft {defaults=changed,picker=""}
+      SapiOverride id -> draft {overrides=O.insert id changed draft.overrides,picker=""}
 
 prompt :: Json -> Prompt
 prompt row = {node:D.s "node" row,path:D.s "path" row,content:D.s "content" row}

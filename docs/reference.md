@@ -123,17 +123,28 @@ The draft endpoint remains inactive and is not consumed by execution.
 
 ### Applied model settings
 
+The Sapi customization page explicitly distinguishes inherited settings from a
+full per-Sapi override. It displays the global provider/model/effort summary and
+explains that removing inheritance creates settings for that Sapi only. Re-enabling
+inheritance removes the override on save. This presentation change does not enforce
+one provider per corpora or migrate existing mixed-provider configurations.
+Sapi, model and effort pickers share a themed, bounded list. Arrow keys, Home/End
+and initial-letter navigation move focus; Enter/Space selects, Escape cancels,
+and Tab leaves the picker. Clicking outside dismisses the list. Picker state is
+local to the dialog and never enters the saved settings payload.
+
 The Models dialog has Global settings and Sapi customization pages sharing one
 unsaved draft. Page navigation does not write settings. Save and apply saves both
 pages together; closing without saving discards pending edits. The selected page
 is presentation state and is not persisted in the settings payload.
 
 Feedback is derived from that draft: saving, invalid selections, unsaved changes,
-or settings applied to new runs. Invalid selections identify Global settings or
+or saved settings. Invalid selections identify Global settings or
 the affected Sapi even when that selection is on the other page. Successful-save
 feedback does not depend on the application's transient toast timer when reopening
 saved settings. A successful Save and apply closes the native modal before showing
-the confirmation toast, keeping the toast outside the blurred backdrop. The footer
+the confirmation toast. It rises from the bottom center, outside the blurred
+backdrop, and respects reduced-motion settings. The footer
 contains only Save and apply; the top-right close control dismisses unsaved edits.
 Failed saves keep the dialog and pending edits open, with revision-conflict and
 provider errors visible in the dialog.

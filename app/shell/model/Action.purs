@@ -25,6 +25,7 @@ data Action
   | TogglePane Pane
   | Home
   | Draft String
+  | ModelPickerKey Event String Int (Array String)
   | MessageKey Event
   | Send
   | RetryDocument String
@@ -80,6 +81,8 @@ data Success = Refresh | CloseAndRefresh String | SavedPrompt String
 
 data DialogIntent
   = SuggestNames
+  | ToggleModelPicker String Int
+  | PickModelOption String F.ModelPreviewAction
   | PreviewModel F.ModelPreviewAction
   | ReloadModels F.ModelProvider
   | ReloadModelSettings

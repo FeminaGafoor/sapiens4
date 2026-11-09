@@ -24,10 +24,15 @@ render :: M.Model -> V.Html
 render m = V.node "div" []
   [V.div "app" [header m,emptyCorpora m,installGate m,V.textNode "p" [V.id "corpora-startup-feedback",V.attr "role" "status"] (m.feedback)
     ,V.node "div" [V.cls "main-grid",V.hidden $ A.null m.agents || m.installRequired,V.attr "data-visible-panes" $ show $ A.length panes,V.style $ "grid-template-columns:" <> S.joinWith " " columns] [sidebar m,conversation m,Workspace.view m]]
-  ,Dialog.view m,V.textNode "div" [V.id "toast",V.cls $ "toast " <> if m.toast /= "" then "visible" else "",V.attr "role" "status",V.attr "aria-live" "polite"] (m.toast)]
+  ,Dialog.view m,toast m]
   where
   panes = M.visiblePanes m
   columns = [(if A.elem N.Sidebar panes then if A.length panes == 1 then "minmax(0,1fr)" else "clamp(205px,18vw,250px)" else "0px"),(if A.elem N.ChatPane panes then "minmax(300px,1fr)" else "0px"),(if A.elem N.Workspace panes then "minmax(350px,1.2fr)" else "0px")]
+
+toast :: M.Model -> V.Html
+toast m = V.textNode "div"
+  [V.id "toast",V.cls $ "toast " <> if m.toast /= "" then "visible" else ""
+  ,V.attr "role" "status",V.attr "aria-live" "polite",V.attr "aria-atomic" "true"] m.toast
 
 status :: M.Model -> String
 status m = if (M.busy m) then "Connecting…" else if m.active == "" then "Not connected" else if not (M.online m) then "Offline" else if (M.activeRecord m).stopping then "Pausing…" else stateName $ (M.activeRecord m).status

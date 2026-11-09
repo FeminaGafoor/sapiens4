@@ -1,5 +1,6 @@
 module Sapiens.DialogEffects where
 
+import Web.Event.Event as Event
 import Sapiens.Form as F
 import Prelude
 import Control.Promise (toAffE)
@@ -48,6 +49,34 @@ handle runtime dispatch action = case action of
         M.EditCorpora -> liftEffect $ B.focus "#corpora-dialog textarea"
         M.ConnectRemote -> liftEffect $ B.focus "#paste-invitation textarea"
         _ -> pure unit
+  ModelPickerKey event picker index labels -> do
+    key <- Browser.key <$> liftEffect (B.eventData event)
+    m <- H.get
+    traverse_ (\d -> case d.content of
+      F.ModelPreview draft | not (M.dialogBusy d) -> do
+        let count = A.length labels
+            open = draft.picker == picker
+            letter = if CU.length key.key == 1 && key.key /= " " then S.toLower key.key else ""
+            order = A.drop (index+1) labels <> A.take (index+1) labels
+            matched = if letter == "" then Nothing else A.findIndex (S.startsWith (S.Pattern letter) <<< S.toLower) order
+            target = case key.key of
+              "ArrowDown" -> Just $ if index < 0 then 0 else mod (index+1) (max 1 count)
+              "ArrowUp" -> Just $ if index < 0 then count-1 else mod (index-1+count) (max 1 count)
+              "Home" -> Just 0
+              "End" -> Just $ count-1
+              _ -> map (\offset -> mod (index+1+offset) (max 1 count)) matched
+        if key.key == "Escape" && open then do
+          liftEffect $ Event.preventDefault event *> Event.stopPropagation event
+          E.modifyDialog d.identity _ {content=F.ModelPreview $ draft {picker=""}}
+          liftEffect $ B.focus $ "#" <> picker
+        else if key.key == "Tab" && open then do
+          E.modifyDialog d.identity _ {content=F.ModelPreview $ draft {picker=""}}
+          liftEffect $ B.focus $ "#" <> picker
+        else unless (key.ctrl || key.meta || key.composing) $ traverse_ (\next -> when (count > 0) do
+          liftEffect $ Event.preventDefault event *> Event.stopPropagation event
+          E.modifyDialog d.identity _ {content=F.ModelPreview $ draft {picker=picker}}
+          liftEffect $ B.focus $ "#" <> picker <> "-option-" <> show next) target
+      _ -> pure unit) m.dialog
   CloseDialog -> do
     void $ H.fork $ H.liftAff $ C.cancelPairing runtime
     H.modify_ Dialog.close
@@ -210,10 +239,21 @@ handle runtime dispatch action = case action of
       Intent.InstallPrompt -> void $ H.fork $ void $ H.liftAff $ try $ toAffE B.installPrompt
       _ -> traverse_ (\d -> unless (M.dialogBusy d) $ dialogCommand m d command) m.dialog
   dialogCommand m d command = case command of
+    Intent.ToggleModelPicker picker index -> case d.content of
+      F.ModelPreview draft -> do
+        let opening = draft.picker /= picker
+        E.modifyDialog d.identity _ {content=F.ModelPreview $ draft {picker=if opening then picker else ""}}
+        liftEffect $ B.focus $ "#" <> picker <> if opening then "-option-" <> show index else ""
+      _ -> pure unit
+    Intent.PickModelOption picker edit -> case d.content of
+      F.ModelPreview draft -> do
+        E.modifyDialog d.identity _ {content=F.ModelPreview $ F.updateModelPreview edit draft}
+        liftEffect $ B.focus $ "#" <> picker
+      _ -> pure unit
     Intent.ReloadModelSettings -> when (d.kind == M.Models) $ loadModelSettings m d
     Intent.SaveModelSettings -> case d.kind, d.content of
       M.Models, F.ModelPreview draft | F.modelDraftValid draft && F.modelDraftChanged draft ->
-        runDialog d (saved "Model settings applied to new runs.") $ E.api runtime m "/api/model-settings" "PUT" (F.modelDraftPayload draft)
+        runDialog d (saved "Model settings saved.") $ E.api runtime m "/api/model-settings" "PUT" (F.modelDraftPayload draft)
       _, _ -> pure unit
     Intent.ReloadModels provider -> case d.kind, d.content of
       M.Models, F.ModelPreview draft | F.providerCatalog provider draft /= F.CatalogLoading -> loadModels provider m d
