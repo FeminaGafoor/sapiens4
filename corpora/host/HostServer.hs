@@ -86,6 +86,8 @@ application service bridge registry onboarding port req respond = respond =<< re
   stopping <- readIORef (serviceStopping service)
   when write (require (not stopping) 503 "Host is shutting down")
   case (method,T.splitOn "/" path) of
+   ("GET",["","api","host","computer"]) -> maybe (failure 404 "Local setup unavailable") (fmap (jsonResponse 200) . O.computerView) onboarding
+   ("POST",["","api","host","computer"]) -> maybe (failure 404 "Local setup unavailable") (fmap (jsonResponse 200) . flip O.computerAction data_) onboarding
    ("GET",["","api","host","onboarding"]) -> maybe (failure 404 "Local setup unavailable") (fmap (jsonResponse 200) . O.onboardingView) onboarding
    ("POST",["","api","host","onboarding"]) -> maybe (failure 404 "Local setup unavailable") (fmap (jsonResponse 200) . flip O.onboardingAction data_) onboarding
    ("GET",["","api","host"]) -> jsonResponse 200 <$> registryRecords r

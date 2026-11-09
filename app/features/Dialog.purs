@@ -261,7 +261,7 @@ setupButton d name caption = V.control [V.cls "button",V.disabled $ M.dialogBusy
 
 signInView :: Json -> V.Html
 signInView value = V.div "account-sign-in" $
-  [V.textNode "p" [V.attr "role" "status"] $ if signing then "Finish signing in with ChatGPT in your browser. Waiting for sign-in…" else if provider == "sign_in_required" && not (A.elem state ["failed","expired"]) then "Finish signing in with ChatGPT in your browser." else ""
+  [V.textNode "p" [V.attr "role" "status"] $ if signing then "Finish signing in with ChatGPT in your browser. Waiting for sign-in…" else if provider == "sign_in_required" && not retry then "Finish signing in with ChatGPT in your browser." else ""
   ,V.when (provider == "missing") $ V.p "" "The Codex installation is missing or couldn't start. Reinstall Sapiens if the problem persists."
   ,V.when (provider == "unavailable") $ V.p "" "Your account may still be connected. Try checking again."
   ,V.when (state == "failed" || state == "expired" || state == "browser_busy" || state == "logout_failed" || state == "cancelled") $ V.p "" $ case state of
@@ -270,7 +270,7 @@ signInView value = V.div "account-sign-in" $
     "logout_failed" -> "We couldn’t finish signing out. Recheck your connection, then try signing out again."
     "cancelled" -> "Sign-in cancelled. You can try again when you’re ready."
     _ -> "Sign-in didn't finish. Try again or use a one-time code."
-  ,V.when (provider == "sign_in_required") $ V.button "button primary" (if state == "failed" || state == "expired" then "Try again" else "Connect") $ DialogCommand $ Intent.Setup "login"
+  ,V.when (provider == "sign_in_required") $ V.button "button primary" (if retry then "Try again" else "Connect") $ DialogCommand $ Intent.Setup "login"
   ,V.when (provider == "sign_in_required") $ V.p "form-hint" "Your browser will open to complete sign-in."
   ,V.when (signing && D.s "url" login /= "") $ V.div "account-actions"
     [V.button "button" (if D.s "code" login == "" then "Open browser again" else "Open sign-in page") $ DialogCommand $ Intent.Setup "open-login"
@@ -289,6 +289,7 @@ signInView value = V.div "account-sign-in" $
   login = D.get "login" value
   state = D.s "state" login
   signing = provider == "signing_in"
+  retry = A.elem state ["failed","expired"]
 
 accountView :: M.Dialog -> V.Html
 accountView d = V.node "section" [V.cls "ai-provider-detail-body",V.label "Codex account"] $
@@ -347,7 +348,7 @@ aiProvidersView d value =
       inAuth = page == M.CodexAuth
       needsAttention = A.elem (D.s "state" (D.get "login" value)) ["failed","expired","browser_busy","logout_failed"]
       status = case provider of
-        "signed_in" -> if hold == "review" then "Connected" else if hold /= "" then "Needs attention" else "Connected"
+        "signed_in" -> if hold /= "" && hold /= "review" then "Needs attention" else "Connected"
         "signing_in" -> "Connecting…"
         "signing_out" -> "Disconnecting…"
         "missing" -> "Needs attention"
@@ -356,10 +357,7 @@ aiProvidersView d value =
       navigate = ProviderNavigate M.CodexDetails
       codex = case provider of
         "sign_in_required" -> if needsAttention then providerLink "codex" "Codex" status navigate else providerRow "codex" "Codex" status (setupButton d "login" "Connect")
-        "signed_in" -> providerLink "codex" "Codex" status navigate
-        "signing_in" -> providerLink "codex" "Codex" status (ProviderNavigate M.CodexAuth)
-        "signing_out" -> providerLink "codex" "Codex" status (ProviderNavigate M.CodexAuth)
-        _ -> providerLink "codex" "Codex" status navigate
+        _ -> providerLink "codex" "Codex" status (if A.elem provider ["signing_in","signing_out"] then ProviderNavigate M.CodexAuth else navigate)
   in V.div "ai-providers" $ if inAuth then
     [if provider == "signing_out" then V.p "form-hint" "Signing out of the previous account…" else signInView value
     ,V.when (A.elem provider ["signing_in","signing_out"]) $ V.p "form-hint" "Stay here until sign-in finishes, or cancel sign-in to leave."]
@@ -371,8 +369,7 @@ aiProvidersView d value =
 
 providersView :: M.Dialog -> Json -> V.Html
 providersView d value =
-  let permission = D.s "computer_permission" value
-      setup = setupButton d
+  let setup = setupButton d
       signing = D.s "provider" value == "signing_in"
       alreadyConnected = D.s "provider" value == "signed_in"
   in V.div "setup-screen" $ case D.s "step" value of
@@ -380,22 +377,9 @@ providersView d value =
       [V.p "form-hint" "Start with Codex. More AI tools are on the way."
       ,V.div "ai-provider-list" $ [providerRow "codex" "Codex" (if alreadyConnected then "Already connected" else "OpenAI")
           (V.control [V.cls "button primary",V.disabled $ M.dialogBusy d] (if alreadyConnected then "Continue" else "Connect") $ DialogCommand $ Intent.Setup "connect")] <> comingSoonProviders]
-    "sign_in" ->
+    _ ->
       [signInView value
       ,V.when (not signing) $ setup "choose" "Back to providers"]
-    "permissions" -> [V.p "form-hint" "Codex connected. Finishing setup…"]
-    _ ->
-      [V.p "form-hint" "Optional · Configure computer access only when you need it."
-      ,V.p "" $ case permission of
-        "missing" -> "The computer helper is missing. Reinstall Sapiens to repair it."
-        "granted" -> "Computer control is enabled."
-        "denied" -> "To interact with apps on your Mac, Sapiens needs Accessibility permission."
-        "unavailable" -> "Couldn't check Accessibility. Check again or open System Settings."
-        "not_required" -> "Computer control works with accessible Windows apps."
-        _ -> "Computer control needs macOS Accessibility permission."
-      ,V.when (A.elem permission ["not_requested","denied","unavailable"]) $ setup "permission" "Enable Accessibility"
-      ,V.when (permission == "granted" || permission == "unavailable") $ setup "refresh" "Check again"
-      ,V.button "button" (if A.elem permission ["not_requested","denied","unavailable"] then "Not now" else "Done") CloseDialog]
 
 computerAccess :: M.Dialog -> Json -> V.Html
 computerAccess d value = V.div "setup-screen"

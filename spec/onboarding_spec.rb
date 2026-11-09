@@ -57,6 +57,17 @@ RSpec.describe 'Local Codex setup' do
       end
       load #{File.join(__dir__, 'support/provider.rb').inspect}
     RUBY
+    helper = File.join(host.root, 'blindly')
+    File.write(helper, <<~RUBY)
+      #!#{RbConfig.ruby}
+      require 'json'
+      root = ENV.fetch('SAPIENS_CONTRACT_ENV')
+      File.open(File.join(root, 'computer-checks'), 'a') { |f| f.puts ARGV.join(' ') }
+      puts JSON.generate(code: File.exist?(File.join(root, 'computer-denied')) ? 'accessibility_permission_denied' : 'focus_unavailable')
+      exit 77
+    RUBY
+    File.chmod(0755, helper)
+    host.environment['SAPIENS_BLINDLY_BINARY'] = helper
     host.start
     %w[codex claude gemini kimi].each do |provider|
       code, icon, headers = host.request('GET', "/ai-#{provider}.svg")
@@ -65,10 +76,20 @@ RSpec.describe 'Local Codex setup' do
       expect(icon).to include('<svg')
     end
     expect(host.api('GET', '/api/host/onboarding')).to include('provider' => 'sign_in_required', 'step' => 'welcome', 'completed' => false)
+    # AI monitoring never checks Accessibility; explicit computer checks stay live.
+    expect(File.exist?(File.join(host.root, 'computer-checks'))).to eq(false)
+    expect(host.api('GET', '/api/host/computer')).to include('computer_permission' => 'granted')
+    File.write(File.join(host.root, 'computer-denied'), '')
+    expect(host.api('POST', '/api/host/computer', action: 'refresh')).to include('computer_permission' => 'denied')
+    expect(host.request('GET', '/api/host/computer', nil, 'Origin' => 'https://untrusted.example').first).to eq(403)
+    expect(host.request('POST', '/api/host/computer', {action: 'permission'}, 'X-Sapiens-Local' => '').first).to eq(403)
     host.api('POST', '/api/host/onboarding', {action: 'finish'}, status: 409)
     # Connect follows the supplied onboarding flow: begin, then immediate login.
     expect(host.api('POST', '/api/host/onboarding', action: 'begin')).to include('step' => 'sign_in', 'completed' => false)
-    expect(host.api('POST', '/api/host/onboarding', action: 'login').fetch('provider')).to eq('signing_in')
+    status_calls = -> { File.readlines(File.join(host.root, 'auth-invocations.jsonl')).count { |line| JSON.parse(line).fetch('args').include?('status') } }
+    checks = status_calls.call
+    expect(host.api('POST', '/api/host/onboarding', action: 'connect').fetch('provider')).to eq('signing_in')
+    expect(status_calls.call - checks).to eq(1)
     Contract.wait { host.api('GET', '/api/host/onboarding').dig('login', 'url').to_s.include?('response_type=code') }
     host.api('POST', '/api/host/onboarding', {action: 'login'}, status: 409)
     expect(host.api('POST', '/api/host/onboarding', action: 'cancel').dig('login', 'state')).to eq('cancelled')

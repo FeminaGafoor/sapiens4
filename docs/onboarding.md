@@ -40,6 +40,10 @@ removed. Disconnect and account replacement take an exclusive profile lock;
 running AI work retains a shared lease. Queued work remains paused after account
 replacement until **Resume AI work**. Chats and settings are retained.
 
+AI connection requests use `/api/host/onboarding`; computer permission requests
+use `/api/host/computer`. AI monitoring does not launch Blindly. Neither live
+Codex status nor explicit permission checks are cached.
+
 Accessibility permission is optional on macOS and can be requested/rechecked
 from Computer settings. Windows does not display macOS permission instructions
 for its normal permission state. Automatic recovery UI triggered by a denied

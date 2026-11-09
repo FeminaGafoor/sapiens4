@@ -107,9 +107,24 @@ providerStatus = do
    pure (case result of Just ExitSuccess -> "signed_in"; Just _ | not stored -> "sign_in_required"; _ -> "unavailable")) `catch` (\(_::IOException) -> pure "unavailable")
 
 onboardingView :: Onboarding -> IO Value
-onboardingView onboarding@(Onboarding root _ progress _ _) = do
+onboardingView onboarding@(Onboarding _ _ progress _ _) = do
  login <- readIORef progress
  provider <- if at login "state" `elem` ["signing_in","signing_out"] then pure (at login "state") else checkedProviderStatus onboarding
+ initial <- setupState onboarding
+ -- Reconcile a completed login after success or a restart. Persist before the
+ -- UI can close onboarding; a failed write stays a recoverable setup error.
+ when (provider=="signed_in" && boolean (get initial "welcomed") && not (boolean (get initial "completed"))) $
+  saveSetup onboarding (put "completed" (Bool True))
+ saved <- setupState onboarding
+ hold <- P.profileHold
+ let welcomed=boolean (get saved "welcomed")
+     ready=provider=="signed_in"
+     complete=welcomed && boolean (get saved "completed")
+     step=if not welcomed then "welcome" else if ready then "complete" else "sign_in"
+ pure (obj [("schema",num (1::Int)),("step",str step),("completed",Bool complete),("provider",str provider),("login",login),("ready",Bool ready),("hold",str hold)])
+
+computerView :: Onboarding -> IO Value
+computerView (Onboarding root _ _ _ _) = do
  binary <- C.blindlyBinary root
  built <- doesFileExist binary
  computer <- if not built then pure "missing" else if os/="darwin" then pure "not_required" else do
@@ -123,27 +138,29 @@ onboardingView onboarding@(Onboarding root _ progress _ _) = do
     "accessibility_permission_denied" -> "denied"
     _ -> "unavailable"
    _ -> "unavailable"
- initial <- setupState onboarding
- -- Reconcile a completed login after success or a restart. Persist before the
- -- UI can close onboarding; a failed write stays a recoverable setup error.
- when (provider=="signed_in" && boolean (get initial "welcomed") && not (boolean (get initial "completed"))) $
-  saveSetup onboarding (put "completed" (Bool True))
- saved <- setupState onboarding
- hold <- P.profileHold
- let welcomed=boolean (get saved "welcomed")
-     ready=provider=="signed_in"
-     complete=welcomed && boolean (get saved "completed")
-     step=if not welcomed then "welcome" else if not ready then "sign_in" else if complete then "complete" else "permissions"
- pure (obj [("schema",num (1::Int)),("step",str step),("completed",Bool complete),("provider",str provider),("login",login),("computer_permission",str computer),("computer_available",Bool built),("ready",Bool ready),("hold",str hold)])
+ pure (obj [("computer_permission",str computer),("computer_available",Bool built)])
+
+computerAction :: Onboarding -> Value -> IO Value
+computerAction onboarding@(Onboarding root _ _ _ _) value = do
+ case at value "action" of
+  "permission" -> do
+   require (os=="darwin") 400 "Accessibility approval is only required on macOS."
+   binary <- C.blindlyBinary root
+   exists <- doesFileExist binary
+   require exists 503 "Computer helper is missing. Reinstall Sapiens to repair it."
+   (code,_,_) <- C.invoke binary ["request-permission"] 10
+   require (code==ExitSuccess) 503 "Could not request Accessibility access. Open System Settings > Privacy & Security > Accessibility, then try again."
+  "refresh" -> pure ()
+  _ -> failure 400 "Unknown computer action"
+ computerView onboarding
 
 onboardingAction :: Onboarding -> Value -> IO Value
-onboardingAction onboarding@(Onboarding root worker progress _ _) value = do
+onboardingAction onboarding@(Onboarding _ worker progress _ _) value = do
  case at value "action" of
   "begin" -> saveSetup onboarding (put "welcomed" (Bool True))
   "connect" -> do
    saveSetup onboarding (put "welcomed" (Bool True))
-   status <- checkedProviderStatus onboarding
-   unless (status=="signed_in") $ startAuth onboarding "login"
+   startAuth onboarding "connect"
   "choose" -> do
    login <- readIORef progress
    require (at login "state" `notElem` ["signing_in","signing_out"]) 409 "Cancel sign-in first."
@@ -179,13 +196,6 @@ onboardingAction onboarding@(Onboarding root worker progress _ _) value = do
     P.holdProfile (if boolean (get saved "completed") then "review" else "")
    writeIORef progress (loginState (if status=="signed_in" then "complete" else "cancelled") "")
    pure (closed,Nothing)
-  "permission" -> do
-   require (os=="darwin") 400 "Accessibility approval is only required on macOS."
-   binary <- C.blindlyBinary root
-   exists <- doesFileExist binary
-   require exists 503 "Computer helper is missing. Reinstall Sapiens to repair it."
-   (code,_,_) <- C.invoke binary ["request-permission"] 10
-   require (code==ExitSuccess) 503 "Could not request Accessibility access. Open System Settings > Privacy & Security > Accessibility, then try again."
   "refresh" -> pure ()
   _ -> failure 400 "Unknown setup action"
  onboardingView onboarding
@@ -206,19 +216,21 @@ startAuth onboarding@(Onboarding _ worker progress _ _) action = modifyMVar_ wor
   (P.profileLock Exclusive >>= maybe (failure 409 "Finish running tasks before changing your ChatGPT account. Another sign-in may also be in progress.") pure)
   unlockFile $ \lease -> do
    status <- checkedProviderStatus onboarding
-   if replacing then require (status `elem` ["signed_in","unavailable"]) 409 "ChatGPT is already disconnected."
+   if action=="connect" && status=="signed_in" then unlockFile lease >> pure (False,Nothing)
    else do
-    require (status/="signed_in") 409 "ChatGPT is already connected."
-    require (status=="sign_in_required") 503 "Could not check your existing sign-in. Recheck before continuing."
-   -- Persist the hold before revocation or login can begin. A crash cannot
-   -- release queued work under an uncertain or newly selected account.
-   P.holdProfile (if replacing then "uncertain" else "disconnected")
-   writeIORef progress (loginState (if replacing then "signing_out" else "signing_in") "")
-   task <- async $ flip finally (unlockFile lease) $
-    authFlow binary environment saved `catch` (\(errorValue::SomeException) -> case fromException errorValue :: Maybe SomeAsyncException of
-     Just _ -> throwIO errorValue
-     Nothing -> writeIORef progress (loginState "failed" ""))
-   pure (False,Just task)
+    if replacing then require (status `elem` ["signed_in","unavailable"]) 409 "ChatGPT is already disconnected."
+    else do
+     require (status/="signed_in") 409 "ChatGPT is already connected."
+     require (status=="sign_in_required") 503 "Could not check your existing sign-in. Recheck before continuing."
+    -- Persist the hold before revocation or login can begin. A crash cannot
+    -- release queued work under an uncertain or newly selected account.
+    P.holdProfile (if replacing then "uncertain" else "disconnected")
+    writeIORef progress (loginState (if replacing then "signing_out" else "signing_in") "")
+    task <- async $ flip finally (unlockFile lease) $
+     authFlow binary environment saved `catch` (\(errorValue::SomeException) -> case fromException errorValue :: Maybe SomeAsyncException of
+      Just _ -> throwIO errorValue
+      Nothing -> writeIORef progress (loginState "failed" ""))
+    pure (False,Just task)
  where
  authFlow binary environment saved = do
   removed <- if action `elem` ["change-account","sign-out"] then do

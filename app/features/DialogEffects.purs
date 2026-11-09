@@ -2,7 +2,7 @@ module Sapiens.DialogEffects where
 
 import Sapiens.Form as F
 import Prelude
-import Control.Promise (toAffE)
+import Control.Promise (Promise, toAffE)
 import Data.Argonaut.Core (Json, toString)
 import Data.Array as A
 import Data.Either (Either(..))
@@ -11,7 +11,8 @@ import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.String as S
 import Data.String.CodeUnits as CU
 import Data.Tuple (Tuple(..))
-import Effect.Aff (Aff, Milliseconds(..), delay, try, throwError)
+import Effect (Effect)
+import Effect.Aff (Aff, try, throwError)
 import Effect.Class (liftEffect)
 import Effect.Exception (error, message)
 import Effect.Ref as Ref
@@ -29,6 +30,11 @@ import Sapiens.Effects as E
 import Sapiens.Model as M
 import Sapiens.Navigation as N
 import Sapiens.Remote as R
+
+foreign import afterRender :: Effect (Promise Unit)
+
+setupPath :: M.Dialog -> String
+setupPath d = if d.kind == M.Computer then "/api/host/computer" else "/api/host/onboarding"
 
 handle :: C.Runtime -> E.Dispatch -> Action -> E.UI Unit
 handle runtime dispatch action = case action of
@@ -56,7 +62,7 @@ handle runtime dispatch action = case action of
             F.Setup previous -> D.s "provider" previous == "signing_in"
             _ -> false
       when signedIn $ liftEffect $ B.nativeMessage $ D.json {activate: true}
-      H.modify_ _ {account=value}
+      when (d.kind /= M.Computer) $ H.modify_ _ {account=value}
       E.modifyDialog id \current ->
         let page = if d.kind == M.AIProviders && (current.providerPage == M.CodexAuth || D.s "hold" value == "review" && current.providerPage == M.Providers) && D.s "provider" value == "signed_in" then M.CodexDetails else current.providerPage
         in current {content=F.Setup value,status=M.Editing,providerPage=page}
@@ -64,10 +70,8 @@ handle runtime dispatch action = case action of
       when (D.s "provider" value == "signing_in" && (case d.content of
         F.Setup previous -> D.s "provider" previous /= "signing_in"
         _ -> true)) $ focusSetup id "#cancel-codex-login"
-      when (d.kind == M.Onboarding && D.s "step" value == "permissions") $
-        dispatch $ DialogCommand $ Intent.Setup "finish"
       when (d.kind == M.Onboarding && D.b "completed" value && D.b "ready" value) $ dispatch CloseDialog
-      when (A.elem (D.s "provider" value) ["signing_in","signing_out"]) $ E.later 1000.0 $ dispatch $ OnboardingPoll id) $ C.json "/api/host/onboarding" "GET" D.null
+      when (A.elem (D.s "provider" value) ["signing_in","signing_out"]) $ E.later 1000.0 $ dispatch $ OnboardingPoll id) $ C.json (setupPath d) "GET" D.null
   CloseDialog -> do
     m <- H.get
     case m.dialog of
@@ -78,7 +82,9 @@ handle runtime dispatch action = case action of
         E.sync
   ProviderNavigate page -> do
     m <- H.get
-    traverse_ (\d -> when (d.kind == M.AIProviders && not (Dialog.authenticating d)) $ E.modifyDialog d.identity _ {providerPage=page}) m.dialog
+    traverse_ (\d -> when (d.kind == M.AIProviders && not (M.dialogBusy d) && (not (Dialog.authenticating d) || page == M.CodexAuth)) do
+      E.modifyDialog d.identity _ {providerPage=page}
+      when (page == M.CodexAuth) $ focusSetup d.identity "#cancel-codex-login") m.dialog
   Field key value -> do
     H.modify_ \m -> m {dialog=map (\d -> if d.kind == M.AIProviders && M.dialogBusy d then d else Dialog.updateField key value d) m.dialog}
     when (key == F.ShowLink) do
@@ -103,9 +109,9 @@ handle runtime dispatch action = case action of
   DialogCommand command -> commandAction command
   _ -> pure unit
   where
-  -- Focus after Halogen commits the new page; the old control may have been removed.
+  -- Let rendering finish, then recheck the dialog generation before focusing.
   focusSetup id target = void $ H.fork do
-    H.liftAff $ delay $ Milliseconds 32.0
+    H.liftAff $ toAffE afterRender
     E.inDialog id \_ -> liftEffect $ B.focus target
   attach m operation = E.attempt operation \result -> E.inEpoch m.epoch \current -> do
     H.modify_ _ {uploading=max 0 $ current.uploading-1}
@@ -234,7 +240,7 @@ handle runtime dispatch action = case action of
       let requested = d {identity=m.sequence+1}
       H.modify_ _ {dialog=Just requested,sequence=requested.identity}
       runDialog requested (\value -> do
-        H.modify_ _ {account=value}
+        when (requested.kind /= M.Computer) $ H.modify_ _ {account=value}
         E.modifyDialog requested.identity \current ->
           let page = if requested.kind /= M.AIProviders then M.Providers
                 else if A.elem setupAction ["login","device-login","change-account"] then
@@ -245,7 +251,7 @@ handle runtime dispatch action = case action of
           in current {content=F.Setup value,status=M.Editing,providerPage=page}
         focusSetup requested.identity (if D.s "provider" value == "signing_in" then "#cancel-codex-login" else "#dialog-title")
         when (requested.kind == M.Onboarding && D.b "completed" value && D.b "ready" value) $ dispatch CloseDialog
-        when (A.elem (D.s "provider" value) ["signing_in","signing_out"]) $ E.later 1000.0 $ dispatch $ OnboardingPoll requested.identity) $ C.json "/api/host/onboarding" "POST" $ D.json {action: setupAction}
+        when (A.elem (D.s "provider" value) ["signing_in","signing_out"]) $ E.later 1000.0 $ dispatch $ OnboardingPoll requested.identity) $ C.json (setupPath requested) "POST" $ D.json {action: setupAction}
     Intent.SuggestNames -> do
       E.modifyDialog d.identity (\s -> s {identity=s.identity+1})
       H.modify_ (\s -> s {sequence=s.sequence+1})
