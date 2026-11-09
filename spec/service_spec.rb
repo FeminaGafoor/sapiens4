@@ -345,8 +345,8 @@ RSpec.describe 'Local service contracts' do
       host.stop
       hold_response = -> { ready << true; release.pop }
       in_body = -> { interrupt_transcription && whisper.requests == 2 }
-      # Both an HTTP error and a successful response without speech must be retryable.
-      whisper = WhisperStub.new('  ', status: interrupt_transcription ? 500 : 200,
+      # Both an HTTP error and a malformed successful response must be retryable.
+      whisper = WhisperStub.new(nil, status: interrupt_transcription ? 500 : 200,
         before_reply: -> { hold_response.call unless in_body.call },
         before_body: -> { hold_response.call if in_body.call })
       host.environment['SAPIENS_WHISPER_URL'] = whisper.url

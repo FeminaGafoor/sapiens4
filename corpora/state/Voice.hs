@@ -338,5 +338,5 @@ whisper manager base path = do
  when (status /= 200) $ failure 502 ("Whisper answered HTTP " <> T.pack (show status))
  case decode (H.responseBody response) of
   -- Whisper returns one line per segment with leading spaces; keep plain sentences.
-  Just value | String raw <- get value "text", let wordsOnly = T.unwords (T.words raw), not (T.null wordsOnly) -> pure wordsOnly
+  Just value | String raw <- get value "text" -> pure (T.unwords (T.words raw))
   _ -> failure 502 "Whisper returned no text"

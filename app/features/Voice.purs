@@ -75,10 +75,14 @@ handle runtime dispatch action = case action of
             _ -> stopRecorder recorder
     pure true
   VoiceTick subscription -> do
-    H.gets _.voice >>= traverse_ \v -> when (v.subscription == subscription && not (M.isStopping v.phase)) do
-      now <- liftEffect B.now
-      H.modify_ \m -> m { voice = map (_ { elapsed = now - v.startedAt }) m.voice }
-      E.later 1000.0 (dispatch (VoiceTick subscription))
+    m <- H.get
+    case m.voice of
+      Just v | v.subscription == subscription ->
+        if v.epoch /= m.epoch then abandon v else unless (M.isStopping v.phase) do
+          now <- liftEffect B.now
+          H.modify_ \s -> s { voice = map (_ { elapsed = now - v.startedAt }) s.voice }
+          E.later 1000.0 (dispatch (VoiceTick subscription))
+      _ -> pure unit
     pure true
   VoiceStop -> do
     stopWith M.Review
@@ -88,11 +92,11 @@ handle runtime dispatch action = case action of
     pure true
   VoiceCancel -> do
     H.gets _.voice >>= traverse_ \v -> do
-      traverse_ stopRecorder (M.phaseRecorder v.phase)
-      H.unsubscribe v.subscription
-      H.modify_ \m -> m { voice = Nothing, attachments = O.update (Just <<< A.filter (not <<< fromRecording v.recording)) v.owner m.attachments }
-      E.save dispatch
-      cancelOnHost v
+      abandon v
+      E.inEpoch v.epoch \_ -> do
+        H.modify_ \m -> m { attachments = O.update (Just <<< A.filter (not <<< fromRecording v.recording)) v.owner m.attachments }
+        E.save dispatch
+        cancelOnHost v
     pure true
   VoiceSend -> do
     m <- H.get
@@ -128,7 +132,7 @@ handle runtime dispatch action = case action of
   VoiceRetry id -> do
     m <- H.get
     let owner = m.selected
-    E.attempt (E.api runtime m (M.ownerPath m <> "/attachments/" <> id <> "/transcribe") "POST" (D.json {})) case _ of
+    E.attempt (E.api runtime m (M.ownerPath m <> "/attachments/" <> id <> "/transcribe") "POST" (D.json {})) \result -> E.inEpoch m.epoch \_ -> case result of
       Left err -> E.notify ("Could not retry the transcription: " <> message err)
       Right reply -> do
         let row = X.attachment reply
@@ -143,9 +147,8 @@ handle runtime dispatch action = case action of
     traverse_ stopRecorder (M.phaseRecorder v.phase)
   fromRecording recording item = recording /= "" && maybe false (\note -> note.recording == recording) (X.voiceOf item)
   -- Tell the host this recording is cancelled: it deletes the audio and refuses any late piece.
-  cancelOnHost v = unless (v.recording == "") do
-    m <- H.get
-    E.attempt (E.api runtime m (v.path <> "/" <> v.recording <> "/cancel") "POST" (D.json {})) case _ of
+  cancelOnHost v = unless (v.recording == "") $ E.inEpoch v.epoch \m -> do
+    E.attempt (E.api runtime m (v.path <> "/" <> v.recording <> "/cancel") "POST" (D.json {})) \result -> E.inEpoch v.epoch \_ -> case result of
       Left err -> E.notify ("The cancelled recording could not be removed from the computer: " <> message err)
       Right _ -> dispatch Poll
   drain = H.get >>= \m -> traverse_ (step m) m.voice
@@ -155,7 +158,8 @@ handle runtime dispatch action = case action of
     | otherwise = traverse_ (upload m v) (A.head v.queue)
   upload m v piece = do
     H.modify_ _ { voice = Just v { sending = true } }
-    E.attempt (E.api runtime m v.path "POST" piece.wire) \result -> H.gets _.voice >>= case _ of
+    E.attempt (E.api runtime m v.path "POST" piece.wire) \result -> H.get >>= \current -> case current.voice of
+      Just w | w.subscription == v.subscription && w.epoch /= current.epoch -> abandon w
       -- The same recording is still running: a reply from a cancelled or replaced recording is ignored.
       Just w | w.subscription == v.subscription -> case result of
         Right reply -> do
@@ -224,7 +228,7 @@ handle runtime dispatch action = case action of
     dispatch Poll
     m <- H.get
     case v.phase of
-      M.Stopping M.SendAfter | m.selected == v.owner -> dispatch VoiceSend
+      M.Stopping M.SendAfter | m.selected == v.owner && A.any X.isVoice (M.attachments m) -> dispatch Send
       _ -> pure unit
   abandon v = do
     traverse_ stopRecorder (M.phaseRecorder v.phase)

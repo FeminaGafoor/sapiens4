@@ -1,7 +1,35 @@
 require_relative 'support/desktop'
 require_relative 'support/proxy'
+require_relative 'support/voice'
+require 'securerandom'
 
 RSpec.describe 'Navigating work', :desktop do
+  include VoiceAudio
+
+  it 'applies the Send button availability to the keyboard shortcut for a voice draft' do
+    @host = desktop_host
+    owner = chief
+    clip = host.api('POST', "/api/agents/#{owner}/voice",
+      recording: SecureRandom.uuid, index: 0, final: true, data: voice_piece(1)).fetch('messages').first
+    host.api('PUT', '/api/preferences', attachment_drafts: {owner => [clip.fetch('id')]})
+    lifecycle = lambda do |action|
+      host.api('PUT', '/api/corpora/lifecycle', action: action, operation: SecureRandom.uuid, revision: host.state['corpora']['revision'])
+    end
+    lifecycle.call('pause')
+    start_desktop
+    desktop.see('Transcribing…')
+    desktop.fill('Message ChiefSapi', 'Keep this draft')
+    desktop.key('enter')
+    expect(desktop.text).not_to include('Sending voice messages in order')
+
+    lifecycle.call('activate')
+    Contract.wait(description: 'Send button enabled') { desktop.find('Send message')['enabled'] }
+    desktop.click('Message ChiefSapi')
+    desktop.key('enter')
+    desktop.see('Sending voice messages in order')
+    expect(host.calls).to be_empty
+  end
+
   def completed_task
     @host = desktop_host
     host.configure(mode: 'Exec')

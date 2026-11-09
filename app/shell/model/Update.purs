@@ -299,9 +299,9 @@ update action m = case action of
   RetryDocument key -> Changed (m {documents=O.delete key m.documents}) [LoadDocument]
   Draft value -> Changed (m {drafts=O.insert m.selected value m.drafts}) [ResizeComposer,UpdateMention,SavePreferences]
   -- Voice messages go out one by one, in order, as each transcript is ready (Sapiens.Voice).
-  Send | A.any X.isVoice (M.attachments m) -> Commands [Dispatch Shell.VoiceSend]
   Send -> case submission m of
     Nothing -> Unchanged
+    Just _ | A.any X.isVoice (M.attachments m) -> Commands [Dispatch Shell.VoiceSend]
     Just request -> Changed (m {sending=Set.insert m.selected m.sending,mention=Nothing}) [SendMessage request]
   MessageReceived request result
     | request.epoch /= m.epoch -> Unchanged
