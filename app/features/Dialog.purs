@@ -71,7 +71,7 @@ view m = case m.dialog of
     [V.div (if M.corporaDialog d.kind then "corpora-menu-heading" else "modal-top") [V.span [V.cls "tiny-label"] "SAPIENS4",V.icon (if M.corporaDialog d.kind then "Close" else "Close dialog") "×" CloseDialog]
     ,V.node "div" [V.id $ if M.corporaDialog d.kind then "corpora-dialog-body" else "modal-content"] [V.textNode "h2" [V.id "dialog-title"] (d.title),body m d,V.textNode "p" [V.cls "corpora-feedback",V.attr "role" "status"] ((M.dialogError d))]
     ,V.when (d.kind == M.Models) $ V.div "model-save-row"
-      [V.button "button" "Close" CloseDialog,V.control [V.cls "button primary",V.disabled $ M.dialogBusy d || case d.content of
+      [V.control [V.cls "button primary",V.disabled $ M.dialogBusy d || case d.content of
         F.ModelPreview draft -> not (F.modelDraftValid draft && F.modelDraftChanged draft)
         _ -> true] "Save and apply" (DialogCommand Intent.SaveModelSettings)]]
 

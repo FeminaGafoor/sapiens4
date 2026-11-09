@@ -6,6 +6,14 @@ RSpec.describe 'Model settings', :desktop do
     desktop.press('Workspace & settings')
     desktop.press('Models')
     desktop.see('Choose a default model and customize individual Sapis.')
+    expect(desktop.tree.any? { |node| node['role'] == 'AXButton' && %w[title description].any? { |key| node[key] == 'Close' } }).to eq(false)
+  end
+
+  def expect_saved_and_closed
+    desktop.see('Model settings applied to new runs.')
+    desktop.find('Message ChiefSapi')
+    expect(desktop.text).not_to include('Save and apply')
+    expect(desktop.tree.any? { |node| node['role'] == 'AXButton' && node['description'] == 'Close dialog' }).to eq(false)
   end
 
   it 'previews provider and Sapi choices without changing execution settings or the chat draft' do
@@ -33,7 +41,7 @@ RSpec.describe 'Model settings', :desktop do
     desktop.press('Sapi customization')
     desktop.see('Inherits Claude and the corpora model settings.')
 
-    desktop.click('Close')
+    desktop.press('Close dialog')
     expect(desktop.find('Message ChiefSapi')['value']).to eq('Keep my unsent message')
     expect(host.state.fetch('orchestration').transform_values { |entry| entry.fetch('execution') }).to eq(original)
     open_models
@@ -52,7 +60,7 @@ RSpec.describe 'Model settings', :desktop do
     desktop.press('Customize default model')
     desktop.find('Default model')
     desktop.find('Default effort')
-    desktop.click('Close')
+    desktop.press('Close dialog')
   end
   it 'resets the effort when switching to a model with fewer supported choices' do
     start_desktop
@@ -77,7 +85,7 @@ RSpec.describe 'Model settings', :desktop do
     desktop.press('Default effort')
     expect(desktop.text).not_to include('ultra')
     desktop.key('escape')
-    desktop.click('Close')
+    desktop.press('Close dialog')
   end
 
   it 'applies a custom model and restores it on reopening' do
@@ -88,15 +96,13 @@ RSpec.describe 'Model settings', :desktop do
     desktop.press('Customize default model')
     desktop.value('Default model', 'Fixture General · Codex default')
     desktop.click('Save and apply')
-    desktop.see('Model settings applied to new runs.')
-    expect(desktop.find('Save and apply', role: 'AXButton')['enabled']).to eq(false)
-    desktop.click('Close')
+    expect_saved_and_closed
     open_models
     desktop.value('Default model', 'Fixture General · Codex default')
     desktop.value('Default effort', 'high')
     expect(host.state.fetch('orchestration')).to eq(original)
     expect(host.api('GET', '/api/model-settings').fetch('defaults')).to include('model' => 'fixture-general', 'effort' => 'high')
-    desktop.click('Close')
+    desktop.press('Close dialog')
     host.turn(host.submit(chief, 'Use the model selected in settings'))
     expect(host.calls).not_to be_empty
     host.calls.each do |call|
@@ -115,7 +121,7 @@ RSpec.describe 'Model settings', :desktop do
     desktop.see('Model settings changed elsewhere. Close and reopen Models before saving.')
     desktop.value('Default model', 'Fixture General · Codex default')
     expect(host.api('GET', '/api/model-settings').fetch('revision')).to eq(1)
-    desktop.click('Close')
+    desktop.press('Close dialog')
   end
 
   it 'applies the Claude recommendation and restores it on reopening' do
@@ -124,11 +130,10 @@ RSpec.describe 'Model settings', :desktop do
     desktop.press('Default provider Claude')
     desktop.see('Sapiens4 recommendation: Opus 5.5 · medium')
     desktop.click('Save and apply')
-    desktop.see('Model settings applied to new runs.')
-    desktop.click('Close')
+    expect_saved_and_closed
     open_models
     desktop.see('Sapiens4 recommendation: Opus 5.5 · medium')
-    desktop.click('Close')
+    desktop.press('Close dialog')
     host.turn(host.submit(chief))
     expect(host.calls).not_to be_empty
     host.calls.each do |call|
@@ -151,12 +156,11 @@ RSpec.describe 'Model settings', :desktop do
     desktop.value('Default effort', 'Provider default')
     expect(desktop.find('Default effort', role: 'AXPopUpButton')['enabled']).to eq(false)
     desktop.click('Save and apply')
-    desktop.see('Model settings applied to new runs.')
-    desktop.click('Close')
+    expect_saved_and_closed
     open_models
     desktop.value('Default effort', 'Provider default')
     expect(desktop.find('Default effort', role: 'AXPopUpButton')['enabled']).to eq(false)
-    desktop.click('Close')
+    desktop.press('Close dialog')
   end
 
   it 'preserves changes across pages and saves global settings and a Sapi override together' do
@@ -177,11 +181,10 @@ RSpec.describe 'Model settings', :desktop do
     desktop.value('Sapi model', 'Fixture General · Codex default')
     desktop.value('Sapi effort', 'Model default (high)')
     desktop.click('Save and apply')
-    desktop.see('Model settings applied to new runs.')
+    expect_saved_and_closed
     saved = host.api('GET', '/api/model-settings')
     expect(saved.fetch('defaults')).to include('provider' => 'claude')
     expect(saved.fetch('overrides').fetch(chief)).to include('provider' => 'codex', 'model' => 'fixture-general', 'effort' => 'high')
-    desktop.click('Close')
     open_models
     desktop.see('Sapiens4 recommendation: Opus 5.5 · medium')
     desktop.press('Sapi customization')
@@ -189,7 +192,7 @@ RSpec.describe 'Model settings', :desktop do
     desktop.value('Sapi effort', 'high')
     desktop.press('Global settings')
     expect(desktop.find('Save and apply', role: 'AXButton')['enabled']).to eq(false)
-    desktop.click('Close')
+    desktop.press('Close dialog')
   end
 
   it 'explains why an invalid override blocks saving from the global page' do
@@ -209,12 +212,11 @@ RSpec.describe 'Model settings', :desktop do
     desktop.press('Global settings')
     desktop.see('Unsaved changes. Save and apply saves both pages.')
     desktop.click('Save and apply')
-    desktop.see('Model settings applied to new runs.')
-    desktop.click('Close')
+    expect_saved_and_closed
     open_models
     desktop.see('Model settings applied to new runs.')
     expect(desktop.find('Save and apply', role: 'AXButton')['enabled']).to eq(false)
-    desktop.click('Close')
+    desktop.press('Close dialog')
   end
 
 end

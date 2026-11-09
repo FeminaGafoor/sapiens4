@@ -213,7 +213,7 @@ handle runtime dispatch action = case action of
     Intent.ReloadModelSettings -> when (d.kind == M.Models) $ loadModelSettings m d
     Intent.SaveModelSettings -> case d.kind, d.content of
       M.Models, F.ModelPreview draft | F.modelDraftValid draft && F.modelDraftChanged draft ->
-        runDialog d (\value -> acceptModelSettings d.identity value *> E.notify "Model settings applied to new runs.") $ E.api runtime m "/api/model-settings" "PUT" (F.modelDraftPayload draft)
+        runDialog d (saved "Model settings applied to new runs.") $ E.api runtime m "/api/model-settings" "PUT" (F.modelDraftPayload draft)
       _, _ -> pure unit
     Intent.ReloadModels provider -> case d.kind, d.content of
       M.Models, F.ModelPreview draft | F.providerCatalog provider draft /= F.CatalogLoading -> loadModels provider m d

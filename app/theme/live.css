@@ -162,7 +162,7 @@
 :root body.sapi-workspace .tiny-label { font:10px var(--sapi-font);letter-spacing:.5px;color:var(--muted); }
 :root body.sapi-workspace .icon-button { border-radius:6px; }
 :root body.sapi-workspace :is(.icon-button:hover,.theme-toggle:hover) { background:var(--sapi-purple-tint); }
-:root body.sapi-workspace .toast { background:var(--ink);color:var(--sapi-white);border:0;border-radius:10px;font:12px/1.5 var(--sapi-font);box-shadow:0 6px 24px #0002; }
+:root body.sapi-workspace .toast { background:var(--ink);color:var(--sapi-white);border:0;border-radius:10px;font:14px/1.5 var(--sapi-font);box-shadow:0 6px 24px #0002;padding:12px 18px;max-width:calc(100vw - 32px);box-sizing:border-box;white-space:normal;overflow-wrap:anywhere;text-align:center; }
 :root[data-theme] body.sapi-workspace .send-button { background:var(--ink);color:var(--sapi-white);border:0; }
 :root body.sapi-workspace .settings-row { border-color:var(--line); }
 

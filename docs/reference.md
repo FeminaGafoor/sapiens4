@@ -131,8 +131,12 @@ is presentation state and is not persisted in the settings payload.
 Feedback is derived from that draft: saving, invalid selections, unsaved changes,
 or settings applied to new runs. Invalid selections identify Global settings or
 the affected Sapi even when that selection is on the other page. Successful-save
-feedback does not depend on the application's transient toast timer. Existing
-revision-conflict and provider errors remain visible in the dialog.
+feedback does not depend on the application's transient toast timer when reopening
+saved settings. A successful Save and apply closes the native modal before showing
+the confirmation toast, keeping the toast outside the blurred backdrop. The footer
+contains only Save and apply; the top-right close control dismisses unsaved edits.
+Failed saves keep the dialog and pending edits open, with revision-conflict and
+provider errors visible in the dialog.
 
 The Models screen now uses `GET /api/model-settings` and `PUT /api/model-settings`
 with the same object shape and validation rules. **Save and apply** atomically
