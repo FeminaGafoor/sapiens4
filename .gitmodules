@@ -3,4 +3,5 @@
 	url = https://github.com/ubu-sapi4-cool/blindly4.git
 [submodule "libs4"]
 	path = submodules/libs4
-	url = https://github.com/Ammar291/libs4.git
+	url = https://github.com/aleski-green/libs4.git
+	branch = main

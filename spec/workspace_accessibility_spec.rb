@@ -13,10 +13,27 @@ RSpec.describe 'Working with browser tabs and documents', :desktop do
     end
     @host = desktop_host
     host.control(chief, 'workspace_open', url: @pages.url + '/first')
+    # Restore two tabs, with the second one in the background.
+    if RSpec.current_example.metadata[:lazy_tabs]
+      first = host.state.dig('preferences', 'workspaces', chief, 'activeTab')
+      host.control(chief, 'workspace_open', url: @pages.url + '/second')
+      host.control(chief, 'workspace_focus', id: first)
+    end
     start_desktop
     desktop.see('Play First')
   end
   after { @pages&.close }
+
+  it 'loads restored background tabs only on selection and retains visited pages', :lazy_tabs do
+    expect(@pages.requests.map { |r| r[:path] }).not_to include('/second')
+    desktop.fill(first_input, 'Keep this page')
+    second = host.state.dig('preferences', 'workspaces', chief, 'tabs').find { |t| t['url'].end_with?('/second') }
+    host.control(chief, 'workspace_focus', id: second.fetch('id'))
+    desktop.see('Play Second')
+    desktop.press('First player')
+    expect(desktop.find(first_input, role: 'AXTextField')['value']).to eq('Keep this page')
+    expect(@pages.requests.count { |r| r[:path] == '/first' }).to eq(1)
+  end
 
   it 'opens a site that forbids framing and follows its links' do
     desktop.click('Play First')
@@ -43,12 +60,21 @@ RSpec.describe 'Working with browser tabs and documents', :desktop do
     expect(desktop.see('Play First')).not_to include('Play Second')
   end
 
-  it 'keeps the workspace menu usable above a guest and returns to the guest afterward' do
+  it 'restores the guest after workspace menus and history-filter selection' do
     desktop.fill(first_input, 'A draft on the website')
     desktop.press('Workspace options')
     desktop.see('Open file…')
     expect(desktop.text).not_to include('Play First')
     desktop.press('Workspace options')
+    expect(desktop.find(first_input, role: 'AXTextField')['value']).to eq('A draft on the website')
+    identity = host.api('GET', '/api/corpora')
+    host.api('PUT', '/api/corpora/lifecycle', action: 'pause', operation: 'history-visibility', revision: identity['revision'])
+    desktop.see('Paused')
+    desktop.press('Work menu')
+    desktop.press('Tasks')
+    desktop.press('Task history')
+    expect(desktop.text).not_to include('Play First')
+    desktop.press('Executed')
     expect(desktop.find(first_input, role: 'AXTextField')['value']).to eq('A draft on the website')
     desktop.click('Play First')
     desktop.see('Pause First')

@@ -61,6 +61,25 @@ instance FromJSON ProviderEvent where
     pure ((if started then ToolStarted else ToolCompleted) identity label)
    else if not started && kind=="agent_message" then AgentMessage <$> item .: "text" else pure OtherEvent
 
+data ProviderState = ProviderState
+ { providerTools :: M.Map Text Text, providerMessage :: Maybe Text }
+
+providerStep :: Double -> ProviderEvent -> ProviderState -> Value -> Validation (ProviderState,Value)
+providerStep time event state activity = case event of
+ ProviderFailed details -> Left (APIError 500 ("Codex turn failed: " <> jsonText details))
+ _ -> Right (updated,mergeFields [("updated",toJSON time),("phase",str (if M.null tools then "Waiting for model" else "Running tool")),("tool",str (fromMaybe "" (listToMaybe (M.elems tools))))] reported)
+ where
+ updated=case event of
+  ToolStarted key label -> state { providerTools=M.insert key label (providerTools state) }
+  ToolCompleted key _ -> state { providerTools=M.delete key (providerTools state) }
+  AgentMessage message -> state { providerMessage=Just message }
+  _ -> state
+ tools=providerTools updated
+ reported=case event of
+  SessionStarted session -> put "session" (str session) activity
+  ToolCompleted _ label -> put "last_action" (str label) activity
+  _ -> activity
+
 modelDefaults :: IO (Text,Text)
 modelDefaults = (,) <$> (maybe "gpt-6-sol" T.pack <$> lookupEnv "SAPIENS_CODEX_MODEL") <*> (maybe "high" T.pack <$> lookupEnv "SAPIENS_CODEX_REASONING_EFFORT")
 codexBinary :: IO (Maybe FilePath)
@@ -147,14 +166,14 @@ invokeModel s run input = do
  environment <- getEnvironment
  started <- realToFrac . (*1000) <$> getPOSIXTime :: IO Double
  writeIORef (runActivity run) (obj [("started",toJSON started),("updated",toJSON started),("phase",str "Waiting for model"),("last_action",str "")])
+ notifyChange s
  bracket (createProcess (proc binary args) { cwd=Just workdir,env=Just (("SAPIENS_AGENCY_RUN",T.unpack (runIdText (runId run))):filter ((/="SAPIENS_AGENCY_RUN") . fst) environment),std_in=CreatePipe,std_out=CreatePipe,std_err=CreatePipe,create_group=True,use_process_jobs=True,detach_console=os=="mingw32" }) cleanup $ \handles -> do
   (hin,hout,herr,ph) <- case handles of
    (Just inputHandle,Just outputHandle,Just errorHandle,process) -> pure (inputHandle,outputHandle,errorHandle,process)
    _ -> failure 500 "Provider process did not expose its configured pipes"
   modifyMVar_ (runProcess run) (const (pure (Just ph)))
   mapM_ (`hSetBinaryMode` True) [hin,hout,herr]
-  tools <- newIORef M.empty
-  final <- newIORef Nothing
+  stream <- newIORef (ProviderState M.empty Nothing)
   recent <- newIORef []
   errors <- newIORef []
   timedOut <- newIORef False
@@ -165,16 +184,13 @@ invokeModel s run input = do
         Left _ -> pure ()
         Right rawEvent -> do
          event <- decodeValue 500 rawEvent
-         case event of
-          SessionStarted session -> modifyIORef' (runActivity run) (put "session" (str session))
-          ToolStarted key label -> modifyIORef' tools (M.insert key label)
-          ToolCompleted key label -> modifyIORef' tools (M.delete key) >> modifyIORef' (runActivity run) (put "last_action" (str label))
-          AgentMessage message -> writeIORef final (Just message)
-          ProviderFailed details -> failure 500 ("Codex turn failed: " <> jsonText details)
-          OtherEvent -> pure ()
-         current <- readIORef tools
-         updated <- realToFrac . (*1000) <$> getPOSIXTime :: IO Double
-         modifyIORef' (runActivity run) (mergeFields [("updated",toJSON updated),("phase",str (if M.null current then "Waiting for model" else "Running tool")),("tool",str (fromMaybe "" (listToMaybe (M.elems current))))])
+         state <- readIORef stream
+         activity <- readIORef (runActivity run)
+         time <- realToFrac . (*1000) <$> getPOSIXTime :: IO Double
+         (updated,reported) <- validated (providerStep time event state activity)
+         writeIORef stream updated
+         writeIORef (runActivity run) reported
+         when (reported /= activity) (notifyChange s)
       drain h f = let loop = do eof <- hIsEOF h; unless eof (BC.hGetLine h >>= f . TE.decodeUtf8With (\_ _ -> Just '\xfffd') >> loop) in loop
   withAsync ((BS.hPut hin (TE.encodeUtf8 input) `catch` (\(_::IOException) -> pure ())) `finally` hClose hin) $ \writer ->
    withAsync (drain herr (append errors)) $ \stderrReader ->
@@ -197,7 +213,7 @@ invokeModel s run input = do
      err <- T.unlines . reverse <$> readIORef errors
      out <- T.unlines . reverse <$> readIORef recent
      require (exit == ExitSuccess) 500 ("codex exec failed: " <> err <> out)
-     readIORef final >>= maybe (failure 500 "Codex completed without an agent message.") pure
+     (providerMessage <$> readIORef stream) >>= maybe (failure 500 "Codex completed without an agent message.") pure
  where cleanup (hin,hout,herr,ph) = do
         killTree ph
         void (waitForProcess ph)
