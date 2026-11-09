@@ -73,6 +73,11 @@ the adapter does not bypass policy.
 
 ## Implementation and qualification
 
+Workspace tabs load when first selected and retain visited pages in the background.
+After one uninterrupted background hour, an unchanged local plain-text view may be
+released and reloaded on selection. HTML forms, web pages, visible tabs, downloads
+and tabs with navigation history keep their views. Stale expiry messages are ignored.
+
 | Capability | Implementation | Test evidence / remaining work |
 | --- | --- | --- |
 | Native host and desktop launch | Implemented | Launcher and native lifecycle tests; desktop rejects absent display |

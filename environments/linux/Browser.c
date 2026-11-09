@@ -228,6 +228,11 @@ static Tab *tab_new(Browser *browser, const char *owner, const char *id) {
         char *data = g_build_filename(browser->data, "browser", digest, "data", NULL);
         char *cache = g_build_filename(browser->data, "browser", digest, "cache", NULL);
         WebKitWebsiteDataManager *storage = webkit_website_data_manager_new("base-data-directory", data, "base-cache-directory", cache, NULL);
+        g_mkdir_with_parents(data, 0700);
+        char *cookies = g_build_filename(data, "cookies.sqlite", NULL);
+        webkit_cookie_manager_set_persistent_storage(webkit_website_data_manager_get_cookie_manager(storage),
+            cookies, WEBKIT_COOKIE_PERSISTENT_STORAGE_SQLITE);
+        g_free(cookies);
         session = webkit_web_context_new_with_website_data_manager(storage);
         g_signal_connect(session, "download-started", G_CALLBACK(download_started), browser);
         g_object_unref(storage);
@@ -253,15 +258,15 @@ static Tab *tab_new(Browser *browser, const char *owner, const char *id) {
     return tab;
 }
 
-static void apply(Tab *tab, JsonObject *spec) {
+static void apply(Tab *tab, JsonObject *spec, gboolean fresh) {
     double zoom = number(spec, "zoom");
     if (zoom >= 0.25 && zoom <= 5) webkit_web_view_set_zoom_level(tab->view, zoom);
     JsonObject *command = object(spec, "command");
     const char *sequence = string(command, "seq"), *action = string(command, "action");
-    if (!*sequence || !g_strcmp0(sequence, tab->sequence)) return;
+    if (!fresh && (!*sequence || !g_strcmp0(sequence, tab->sequence))) return;
     g_free(tab->sequence); tab->sequence = g_strdup(sequence);
     g_free(tab->error); tab->error = g_strdup("");
-    if (!g_strcmp0(action, "navigate")) {
+    if (fresh || !g_strcmp0(action, "navigate")) {
         const char *uri = string(spec, "url");
         g_free(tab->requested); tab->requested = g_strdup(uri);
         if (guest_allowed(tab->browser, uri)) webkit_web_view_load_uri(tab->view, uri);
@@ -274,6 +279,7 @@ static void apply(Tab *tab, JsonObject *spec) {
 
 static void synchronize(Browser *browser, JsonObject *message) {
     JsonObject *workspaces = object(message, "workspaces"), *rect = object(message, "rect");
+    if (!workspaces) return;
     GHashTableIter iterator;
     gpointer value;
     g_hash_table_iter_init(&iterator, browser->tabs);
@@ -292,16 +298,17 @@ static void synchronize(Browser *browser, JsonObject *message) {
             if (!*id) continue;
             char *key = g_strdup_printf("%zu:%s%s", strlen(owner), owner, id);
             Tab *tab = g_hash_table_lookup(browser->tabs, key);
-            if (!tab && g_hash_table_size(browser->tabs) < 128) {
+            gboolean fresh = tab == NULL;
+            gboolean shown = boolean(message, "visible") && !g_strcmp0(owner, string(message, "owner")) &&
+                !g_strcmp0(id, string(message, "active"));
+            if (!tab && shown && g_hash_table_size(browser->tabs) < 128) {
                 tab = tab_new(browser, owner, id);
                 g_hash_table_insert(browser->tabs, g_strdup(key), tab);
             }
             g_free(key);
             if (!tab) continue;
             tab->retained = TRUE;
-            apply(tab, spec);
-            gboolean shown = boolean(message, "visible") && !g_strcmp0(owner, string(message, "owner")) &&
-                !g_strcmp0(id, string(message, "active"));
+            apply(tab, spec, fresh);
             if (shown) {
                 if (!gtk_widget_get_parent(GTK_WIDGET(tab->view))) gtk_overlay_add_overlay(browser->overlay, GTK_WIDGET(tab->view));
                 double scale = webkit_web_view_get_zoom_level(browser->shell);
@@ -321,6 +328,28 @@ static void synchronize(Browser *browser, JsonObject *message) {
     g_list_free(owners);
     g_hash_table_iter_init(&iterator, browser->tabs);
     while (g_hash_table_iter_next(&iterator, NULL, &value)) if (!((Tab *)value)->retained) g_hash_table_iter_remove(&iterator);
+}
+
+static void unload_idle(Browser *browser, JsonObject *message) {
+    const char *owner = string(message, "owner"), *id = string(message, "id"), *path = string(message, "path");
+    char *key = g_strdup_printf("%zu:%s%s", strlen(owner), owner, id);
+    Tab *tab = g_hash_table_lookup(browser->tabs, key);
+    if (tab && g_path_is_absolute(path) && !g_strcmp0(tab->sequence, string(message, "seq")) &&
+        !*tab->error && !tab->download && !gtk_widget_get_visible(GTK_WIDGET(tab->view)) &&
+        !webkit_web_view_is_loading(tab->view) && !webkit_web_view_can_go_back(tab->view) &&
+        !webkit_web_view_can_go_forward(tab->view)) {
+        WebKitWebResource *resource = webkit_web_view_get_main_resource(tab->view);
+        WebKitURIResponse *response = resource ? webkit_web_resource_get_response(resource) : NULL;
+        char *uri = g_filename_to_uri(path, NULL, NULL);
+        // Only WebKit's read-only plain-text document is reloadable. HTML may
+        // contain unsaved forms or scripts, regardless of its file extension.
+        if (response && !g_strcmp0(webkit_uri_response_get_mime_type(response), "text/plain") &&
+            uri && !g_strcmp0(uri, webkit_web_view_get_uri(tab->view)) &&
+            g_file_test(path, G_FILE_TEST_IS_REGULAR))
+            g_hash_table_remove(browser->tabs, key);
+        g_free(uri);
+    }
+    g_free(key);
 }
 
 static void file_pick_free(FilePick *pick) {
@@ -375,6 +404,7 @@ static void message(WebKitUserContentManager *manager, WebKitJavascriptResult *r
         if (JSON_NODE_HOLDS_OBJECT(root)) {
             JsonObject *value = json_node_get_object(root);
             if (boolean(value, "pickFile")) pick_file(browser, value);
+            else if (object(value, "unloadIdle")) unload_idle(browser, object(value, "unloadIdle"));
             else synchronize(browser, value);
         }
     }

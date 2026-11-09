@@ -212,13 +212,16 @@ RSpec.describe 'Linux native browser behavior' do
     status, other = Contract.http(@url + '/api/agents', 'POST', {name: 'BrowserGuest', role: 'Research'})
     expect(status).to eq(201), other.inspect
     control('workspace_open', owner: other.fetch('id'), url: @pages.url + '/read')
+    native_action('press', native_control('Open BrowserGuest', role: 'Button'))
     tab_title('No cookie', owner: other.fetch('id'))
     @desktop.signal('TERM')
     expect(@desktop.finish.last).to eq(0)
     @desktop.close
     start_browser
+    native_action('press', native_control('Open ChiefSapi', role: 'Button'))
     control('workspace_reload')
     tab_title('Chief cookie')
+    native_action('press', native_control('Open BrowserGuest', role: 'Button'))
     control('workspace_reload', owner: other.fetch('id'))
     tab_title('No cookie', owner: other.fetch('id'))
   end
