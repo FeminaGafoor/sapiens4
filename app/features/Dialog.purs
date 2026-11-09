@@ -191,8 +191,7 @@ modelSettings m draft = V.div "model-settings"
       [V.div "model-section-heading" [V.textNode "h3" [] "Default provider",V.span [] $ D.fallback "Current corpora" m.snapshot.corpora.name]
       ,configFields F.CorporaDefault "Default" draft.defaults]
     F.SapiModels -> V.node "section" [V.label "Sapi customization"]
-      [V.p "model-hint" "Choose a Sapi."
-      ,if A.null sapis then V.p "model-hint" "No active Sapis in this corpora." else V.div "model-sapi-fields"
+      [if A.null sapis then V.p "model-hint" "No active Sapis in this corpora." else V.div "model-sapi-fields"
         [picker "model-sapi" "Sapi" draft.sapi false (map (\a -> {value:a.id,label:a.name}) sapis) F.SelectModelSapi
         ,V.div "model-inheritance-card"
           [checkbox "Use corpora default" inherited $ F.InheritModel draft.sapi
