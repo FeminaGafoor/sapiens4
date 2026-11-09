@@ -29,7 +29,6 @@ data Action
   | Send
   | RetryDocument String
   | ToggleExpanded String
-  | Clarify X.Workload
   | Menu String
   | CloseMenu
   | OpenDialog DialogKind F.Context
@@ -58,6 +57,16 @@ data Action
   | AttachmentKind X.AttachmentKind
   | RemoveAttachment String
   | Browser Browser.Command
+  | VoiceStart
+  | VoiceStop
+  | VoiceStopSend
+  | VoicePiece X.VoicePiece
+  | VoicePieceRejected String
+  | VoiceCancel
+  | VoiceTick
+  | VoiceSend
+  | VoiceFlush String
+  | VoiceRetry String
   | Address String
   | OpenAddress
   | EditAddress

@@ -6,6 +6,7 @@ import Assets
 import HTTP
 import Bridge
 import Registry
+import Voice (transcribeLoop)
 import Control.Concurrent
 import Control.Concurrent.STM hiding (check)
 import qualified Control.Concurrent.STM as STM
@@ -56,11 +57,16 @@ startHost root requested managed = do
    worker <- async $ withAsync (watchSnapshotFiles service) $ \watcher -> link watcher >> runSettingsSocket settings socket (application service bridge registry port)
    void (race (wait worker) (takeMVar ready))
    Service.startService service
+   -- Keep the worker's handle: shutdown stops it before the database it uses is closed,
+   -- and a crash in it is not silently lost.
+   transcriber <- async (transcribeLoop service)
    stopped <- newMVar False
    let stop = modifyMVar_ stopped $ \done -> if done then pure True else do
         mapM_ closeRegistry registry
         closeBridge bridge
         readMVar shutdown >>= id
+        cancel transcriber
+        void (waitCatch transcriber)
         -- Children can retain Windows socket handles until their work is stopped.
         Service.closeService service
         void (waitCatch worker)
