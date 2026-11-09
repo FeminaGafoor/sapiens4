@@ -1,7 +1,7 @@
 require 'securerandom'
 
 RSpec.describe 'Ubuntu development package' do
-  it 'installs, reinstalls, upgrades and rolls back supplied versions without losing user data or enabling the extension' do
+  it 'installs, reinstalls, upgrades and rolls back supplied versions without losing user data' do
     administration = {'PATH' => '/usr/sbin:/usr/bin:/sbin:/bin'}
     skip 'Disposable package-test filesystem required' unless ENV['SAPIENS_TEST_LINUX_PACKAGE_LIFECYCLE'] == '1' && File.file?('/run/sapiens-package-test')
     package = ENV.fetch('SAPIENS_TEST_PACKAGE')
@@ -54,7 +54,6 @@ RSpec.describe 'Ubuntu development package' do
         FileUtils.cp_r(fixture.root, File.join(backup, 'corpus'))
       end
       expect(File.read(marker)).to eq('Preserve user data')
-      expect(Dir.glob(File.join(Dir.home, '.local/share/gnome-shell/extensions/*'))).to be_empty
     end
     FileUtils.remove_entry(fixture.root)
     FileUtils.cp_r(File.join(backup, 'corpus'), fixture.root)
@@ -77,7 +76,7 @@ RSpec.describe 'Ubuntu development package' do
     end
   end
 
-  it 'contains a relocatable runtime and optional extension without installation hooks' do
+  it 'contains a relocatable runtime without installation hooks' do
     skip 'Linux package validation required' unless ENV['SAPIENS_TEST_LINUX_PACKAGE'] == '1'
     Dir.mktmpdir('sapiens package ') do |directory|
       package = ENV['SAPIENS_TEST_PACKAGE'] || File.join(directory, 'sapiens4.deb')
@@ -92,17 +91,12 @@ RSpec.describe 'Ubuntu development package' do
       expect(Dir.children(File.join(contents, 'DEBIAN'))).to contain_exactly('control')
       runtime = File.join(contents, 'opt/sapiens4')
       expect(File.executable?(File.join(runtime, '.build/domain/sapiens-domain'))).to eq(true)
-      expect(File).to exist(File.join(runtime, 'submodules/blindly4/linux/gnome/Foreground.js'))
-      expect(Dir.glob(File.join(contents, '**/gnome-shell/extensions/*'))).to be_empty
       output, error, status = Contract.capture(File.join(runtime, '.build/bin/sapiens-linux'), '--help')
       expect(status).to eq(0), error
       expect(output).to include('Usage: sapiens-linux')
       output, error, status = Contract.capture(File.join(runtime, 'submodules/blindly4/.build/release/blindly4'), 'schema')
       expect(status).to eq(0), error
       expect(JSON.parse(output).fetch('platform')).to eq('linux')
-      output, error, status = Contract.capture(File.join(runtime, 'submodules/blindly4/.build/release/blindly4-input'))
-      expect(status).to eq(64), output + error
-      expect(error).to include('--consent')
       _, error, status = Contract.capture('desktop-file-validate', File.join(contents, 'usr/share/applications/org.sapiens.Sapiens4.desktop'))
       expect(status).to eq(0), error
       if ENV['SAPIENS_TEST_LINUX_DESKTOP'] == '1'

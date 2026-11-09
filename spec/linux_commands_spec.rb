@@ -122,7 +122,7 @@ RSpec.describe 'Linux desktop generated agent commands' do
   end
 
   it 'returns to the originating desktop after a turn uses another application on Xorg' do
-    skip 'Wayland compositors may decline automatic activation' unless ENV['XDG_SESSION_TYPE'] == 'x11'
+    skip 'X11 session required' unless ENV['XDG_SESSION_TYPE'] == 'x11'
     other = Host.new(start: false)
     window = Contract::Child.new(File.join(@runtime, '.build/bin/sapiens-linux'), '--data-dir', other.root,
       env: other.environment.merge('SAPIENS_REPOSITORY' => nil))

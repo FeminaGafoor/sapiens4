@@ -1,8 +1,7 @@
+require_relative 'support/desktop'
 require_relative 'support/http_peer'
-require_relative 'support/linux_input'
 
 RSpec.describe 'Linux native browser behavior' do
-  include LinuxInput
   before do
     skip 'Linux desktop session required' unless ENV['SAPIENS_TEST_LINUX_DESKTOP'] == '1'
     @fixture = Host.new(start: false)
@@ -10,8 +9,6 @@ RSpec.describe 'Linux native browser behavior' do
   end
 
   after do
-    @input&.signal('TERM')
-    @input&.close
     @desktop&.signal('TERM')
     @desktop&.close
     @pages&.close
@@ -55,7 +52,7 @@ RSpec.describe 'Linux native browser behavior' do
   end
 
   def native_control(label = nil, role: nil, value: nil, focused: false)
-    driver = File.join(Contract::ROOT, 'submodules/blindly4/.build/debug/blindly4')
+    driver = Desktop.driver
     arguments = ['find', '--pid', @desktop.pid.to_s, '--depth', '40']
     arguments.concat(['--title', label]) if label
     arguments.concat(['--role', role]) if role
@@ -70,14 +67,14 @@ RSpec.describe 'Linux native browser behavior' do
   end
 
   def native_action(operation, node, *arguments)
-    driver = File.join(Contract::ROOT, 'submodules/blindly4/.build/debug/blindly4')
+    driver = Desktop.driver
     output, error, status = Contract.capture(driver, operation, '--pid', @desktop.pid.to_s,
       '--path', node.fetch('path'), *arguments)
     expect(status).to eq(0), output + error
   end
 
   it 'asks for a download destination and cancels without writing a file' do
-    skip 'Foreground verification required' unless ENV['SAPIENS_TEST_GNOME_FOREGROUND'] == '1' || ENV['XDG_SESSION_TYPE'] == 'x11'
+    skip 'Foreground verification required' unless ENV['XDG_SESSION_TYPE'] == 'x11'
     @pages = HTTPPeer.new { |_| [200, 'Download fixture', {'Content-Type' => 'application/octet-stream', 'Content-Disposition' => 'attachment; filename="fixture.txt"'}] }
     control('workspace_open', url: @pages.url)
     native_control('Save download')
@@ -87,7 +84,7 @@ RSpec.describe 'Linux native browser behavior' do
   end
 
   it 'saves a download only to the explicitly selected destination' do
-    skip 'Foreground verification required' unless ENV['SAPIENS_TEST_GNOME_FOREGROUND'] == '1' || ENV['XDG_SESSION_TYPE'] == 'x11'
+    skip 'Foreground verification required' unless ENV['XDG_SESSION_TYPE'] == 'x11'
     @pages = HTTPPeer.new { |_| [200, 'Download fixture', {'Content-Type' => 'application/octet-stream', 'Content-Disposition' => 'attachment; filename="fixture.txt"'}] }
     control('workspace_open', url: @pages.url)
     native_control('Save download')
@@ -99,7 +96,7 @@ RSpec.describe 'Linux native browser behavior' do
   end
 
   it 'refuses to overwrite an existing download destination' do
-    skip 'Foreground verification required' unless ENV['SAPIENS_TEST_GNOME_FOREGROUND'] == '1' || ENV['XDG_SESSION_TYPE'] == 'x11'
+    skip 'Foreground verification required' unless ENV['XDG_SESSION_TYPE'] == 'x11'
     destination = File.join(@fixture.root, 'existing.txt')
     File.write(destination, 'Original content')
     @pages = HTTPPeer.new { |_| [200, 'Replacement content', {'Content-Type' => 'application/octet-stream', 'Content-Disposition' => 'attachment; filename="fixture.txt"'}] }
@@ -114,7 +111,7 @@ RSpec.describe 'Linux native browser behavior' do
   end
 
   it 'cancels a pending download when its tab is closed' do
-    skip 'Foreground verification required' unless ENV['SAPIENS_TEST_GNOME_FOREGROUND'] == '1' || ENV['XDG_SESSION_TYPE'] == 'x11'
+    skip 'Foreground verification required' unless ENV['XDG_SESSION_TYPE'] == 'x11'
     @pages = HTTPPeer.new { |_| [200, 'Download fixture', {'Content-Type' => 'application/octet-stream', 'Content-Disposition' => 'attachment; filename="fixture.txt"'}] }
     control('workspace_open', url: @pages.url)
     native_control('Save download')
@@ -128,9 +125,8 @@ RSpec.describe 'Linux native browser behavior' do
   end
 
   it 'opens a Unicode file path selected through the native chooser' do
-    skip 'Foreground verification required' unless ENV['SAPIENS_TEST_GNOME_FOREGROUND'] == '1' || ENV['XDG_SESSION_TYPE'] == 'x11'
-    driver = File.join(Contract::ROOT, 'submodules/blindly4/.build/debug/blindly4')
-    consent_input(binary: driver, pid: @desktop.pid) if ENV['XDG_SESSION_TYPE'] == 'wayland'
+    skip 'Foreground verification required' unless ENV['XDG_SESSION_TYPE'] == 'x11'
+    driver = Desktop.driver
     path = File.join(@fixture.root, 'Selected café.html')
     File.write(path, '<title>Selected local file</title><h1>Selected local file</h1>')
     control('workspace_open', url: 'about:blank')
@@ -264,7 +260,7 @@ RSpec.describe 'Linux native browser behavior' do
     end
     control('workspace_open', url: @pages.url)
     tab_title('Pointer fixture')
-    driver = File.join(Contract::ROOT, 'submodules/blindly4/.build/debug/blindly4')
+    driver = Desktop.driver
     button = nil
     Contract.wait(description: 'native guest button coordinates') do
       output, _, status = Contract.capture(driver, 'find', '--pid', @desktop.pid.to_s,

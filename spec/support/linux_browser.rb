@@ -7,11 +7,10 @@ class LinuxBrowser
 
   def initialize(engine, url)
     @profile = Dir.mktmpdir("sapiens-#{engine}-")
-    wayland = ENV['XDG_SESSION_TYPE'] == 'wayland'
     binary = ENV.fetch("SAPIENS_TEST_#{engine.upcase}_EXECUTABLE", engine)
     args = case engine
     when 'chromium'
-      ["--user-data-dir=#{@profile}", "--ozone-platform=#{wayland ? 'wayland' : 'x11'}",
+      ["--user-data-dir=#{@profile}", "--ozone-platform=x11",
        '--no-first-run', '--no-default-browser-check', '--force-renderer-accessibility', '--disable-gpu']
     when 'firefox'
       File.write(File.join(@profile, 'user.js'), "user_pref(\"accessibility.force_disabled\", -1);\n")
@@ -20,7 +19,7 @@ class LinuxBrowser
       raise ArgumentError, "Unknown browser #{engine}"
     end
     @process = Contract::Child.new(binary, *args, url, env: {
-      'MOZ_ENABLE_WAYLAND' => wayland ? '1' : '0', 'ACCESSIBILITY_ENABLED' => '1', 'LIBGL_ALWAYS_SOFTWARE' => '1'
+      'MOZ_ENABLE_WAYLAND' => '0', 'ACCESSIBILITY_ENABLED' => '1', 'LIBGL_ALWAYS_SOFTWARE' => '1'
     })
     @pid = @process.pid
   rescue StandardError

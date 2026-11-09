@@ -71,17 +71,6 @@ RSpec.describe 'Linux virtual execution' do
     expect(status).to eq(64)
     expect(error).to include('Usage:')
   end
-
-  it 'rejects invalid GNOME fixture arguments before starting services' do
-    skip 'Linux only' unless RUBY_PLATFORM.include?('linux')
-    launcher = File.join(Contract::ROOT, 'spec/support/gnome-session.sh')
-    _, error, status = Contract.capture('sh', launcher)
-    expect(status).to eq(64)
-    expect(error).to include('Usage:')
-    _, error, status = Contract.capture('sh', launcher, 'true', env: {'SAPIENS_TEST_SCALE' => '3'})
-    expect(status).to eq(64)
-    expect(error).to include('Fixture scale must be 1 or 2')
-  end
 end
 
 RSpec.describe 'Linux computer diagnostics' do

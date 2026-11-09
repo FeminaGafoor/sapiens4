@@ -5,7 +5,7 @@ if [ "$#" -ne 1 ]; then echo 'Usage: package.sh OUTPUT.deb (build desktop and re
 if [ "$(uname -m)" != x86_64 ]; then echo 'Only amd64 is qualified for this package.' >&2; exit 64; fi
 build=${SAPIENS_LINUX_BUILD_DIR:-$root/.build}
 driver=${SAPIENS_LINUX_DRIVER_DIR:-$root/submodules/blindly4/.build/release}
-for binary in "$build/bin/sapiens4" "$build/bin/sapiens-linux" "$build/domain/sapiens-domain" "$driver/blindly4" "$driver/blindly4-input"; do
+for binary in "$build/bin/sapiens4" "$build/bin/sapiens-linux" "$build/domain/sapiens-domain" "$driver/blindly4"; do
     required=$(objdump -T "$binary" | sed -n 's/.*(GLIBC_\([0-9.]*\)).*/\1/p' | sort -V | tail -1)
     newest=$(printf '%s\n2.35\n' "$required" | sort -V | tail -1)
     if [ -z "$required" ] || [ "$newest" != 2.35 ]; then
@@ -27,15 +27,12 @@ for binary in sapiens4 sapiens-linux; do
 done
 install -m 755 "$build/domain/sapiens-domain" "$payload/.build/domain/"
 strip "$payload/.build/domain/sapiens-domain"
-for binary in blindly4 blindly4-input; do
-    install -m 755 "$driver/$binary" "$payload/submodules/blindly4/.build/release/"
-done
+install -m 755 "$driver/blindly4" "$payload/submodules/blindly4/.build/release/"
 for asset in app.js guest.js sw.js; do install -m 644 "$root/.build/web/$asset" "$payload/.build/web/"; done
 cp -R "$root/app" "$root/license" "$payload/"
 cp -R "$root/corpora/prompts" "$payload/corpora/"
 cp -R "$root/submodules/libs4/web" "$root/submodules/libs4/license" "$payload/submodules/libs4/"
 cp -R "$root/submodules/blindly4/license" "$payload/submodules/blindly4/"
-cp -R "$root/submodules/blindly4/linux/gnome" "$payload/submodules/blindly4/linux/"
 install -m 644 "$root/submodules/blindly4/linux/README.md" "$root/submodules/blindly4/linux/Cargo.lock" "$payload/submodules/blindly4/linux/"
 cargo metadata --locked --offline --format-version 1 --filter-platform x86_64-unknown-linux-gnu \
     --manifest-path "$root/submodules/blindly4/linux/Cargo.toml" > "$temporary/cargo.json"
@@ -63,7 +60,7 @@ inventory = [{key: package.get(key) for key in ('name', 'version', 'license', 'r
 (destination / 'inventory.json').write_text(json.dumps(inventory, indent=2) + '\n')
 PY
 rm "$temporary/cargo.json"
-install -m 644 "$root/environments/linux/NATIVE.md" "$payload/README.md"
+install -m 644 "$root/environments/linux/README.md" "$payload/README.md"
 cat > "$temporary/usr/bin/sapiens4" <<'EOF'
 #!/bin/sh
 exec /opt/sapiens4/.build/bin/sapiens-linux "$@"
@@ -87,11 +84,9 @@ Priority: optional
 Architecture: amd64
 Maintainer: Sapiens4 <license@sapiens4.ai>
 Depends: libc6 (>= 2.35), libgtk-3-0 (>= 3.24) | libgtk-3-0t64 (>= 3.24), libwebkit2gtk-4.1-0 (>= 2.40), libjson-glib-1.0-0, libgmp10, libffi8, libnuma1, zlib1g, dbus-user-session, at-spi2-core, xdg-utils, libglib2.0-bin
-Recommends: xdg-desktop-portal-gnome
 Description: Sapiens4 Linux development preview
  Native GTK/WebKit desktop and Blindly4 accessibility CLI.
- Enterprise production qualification is pending. The optional GNOME
- foreground extension requires separate explicit installation and enablement.
+ Desktop control requires an X11 session. Production qualification is pending.
 EOF
 mkdir -p "$(dirname -- "$output")"
 dpkg-deb --root-owner-group --build "$temporary" "$output"

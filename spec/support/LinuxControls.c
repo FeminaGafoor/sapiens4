@@ -13,16 +13,7 @@ static void button_position(void) {
     GdkSurface *surface = gtk_native_get_surface(GTK_NATIVE(window));
     graphene_rect_t bounds;
     if (!gtk_widget_compute_bounds(send, GTK_WIDGET(window), &bounds)) return;
-    if (!GDK_IS_X11_SURFACE(surface)) {
-        if (gtk_window_is_fullscreen(window)) {
-            // The private Mutter fixture uses physical monitor layout.
-            int scale = gdk_surface_get_scale_factor(surface);
-            printf("BUTTON %.0f %.0f FULLSCREEN\n", (bounds.origin.x + bounds.size.width / 2) * scale,
-                (bounds.origin.y + bounds.size.height / 2) * scale);
-            fflush(stdout);
-        }
-        return;
-    }
+    if (!GDK_IS_X11_SURFACE(surface)) return;
     G_GNUC_BEGIN_IGNORE_DEPRECATIONS
     Display *display = gdk_x11_display_get_xdisplay(gdk_surface_get_display(surface));
     int x, y;
@@ -67,7 +58,6 @@ static gboolean input(GIOChannel *channel, GIOCondition condition, gpointer data
         if (!g_strcmp0(line, "focus-send")) gtk_widget_grab_focus(send);
         if (!g_strcmp0(line, "point")) button_position();
         if (!g_strcmp0(line, "scale")) { printf("SCALE %d\n", gtk_widget_get_scale_factor(GTK_WIDGET(window))); fflush(stdout); }
-        if (!g_strcmp0(line, "fullscreen")) gtk_window_fullscreen(window);
     }
     g_free(line);
     return G_SOURCE_CONTINUE;

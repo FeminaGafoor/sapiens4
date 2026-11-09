@@ -7,7 +7,7 @@ RSpec.describe 'Linux computer settings', :desktop do
     start_desktop
     desktop.click('Open shared computer')
     desktop.see('AT-SPI accessibility is available')
-    expect(desktop.text).to include('GNOME foreground extension', 'Xorg uses native window ownership checks')
+    expect(desktop.text).to include('Desktop control requires an X11 session', 'Wayland is not supported')
     expect(desktop.text).not_to include('macOS Accessibility', 'Windows UI Automation')
   end
 end

@@ -1,3 +1,4 @@
+require_relative 'support/desktop'
 require_relative 'support/http_peer'
 
 RSpec.describe 'Linux desktop lifecycle' do
@@ -103,7 +104,7 @@ RSpec.describe 'Linux desktop lifecycle' do
     end
   rescue StandardError
     if desktop
-      output, error, status = Contract.capture(File.join(Contract::ROOT, 'submodules/blindly4/.build/debug/blindly4'),
+      output, error, status = Contract.capture(Desktop.driver,
         'find', '--pid', desktop.pid.to_s, '--title', 'Native guest content', '--depth', '40')
       warn "Direct accessibility (#{status}): #{output} #{error}"
     end
@@ -118,14 +119,14 @@ RSpec.describe 'Linux desktop lifecycle' do
   end
 
   it 'opens and cancels a native file picker from the workspace menu' do
-    skip 'Foreground verification required' unless ENV['SAPIENS_TEST_GNOME_FOREGROUND'] == '1' || ENV['XDG_SESSION_TYPE'] == 'x11'
+    skip 'Foreground verification required' unless ENV['XDG_SESSION_TYPE'] == 'x11'
     desktop = Contract::Child.new(File.join(Contract::ROOT, '.build/bin/sapiens-linux'),
       '--data-dir', @fixture.root, env: @fixture.environment)
     url = nil
     Contract.wait(description: 'Linux desktop readiness') { url = desktop.stdout[%r{READY (http://127.0.0.1:\d+)}, 1] }
     chief = Contract.http(url + '/api/state', 'GET')[1].fetch('main_agent_id')
     expect(Contract.http(url + "/api/agents/#{chief}/control", 'POST', {op: 'workspace_open', url: 'about:blank'}).first).to eq(200)
-    driver = File.join(Contract::ROOT, 'submodules/blindly4/.build/debug/blindly4')
+    driver = Desktop.driver
     ['Workspace options', 'Open file…'].each do |label|
       node = nil
       observation = nil
@@ -145,14 +146,10 @@ RSpec.describe 'Linux desktop lifecycle' do
     Contract.wait(description: 'native file dialog') do
       output, _, status = Contract.capture(driver, 'apps')
       next false unless status == 0
-      owner = Contract.capture('gdbus', 'call', '--session', '--dest', 'org.freedesktop.DBus',
-        '--object-path', '/org/freedesktop/DBus', '--method', 'org.freedesktop.DBus.GetConnectionUnixProcessID', 'org.gnome.Nautilus').first
-      providers = [desktop.pid, owner[/uint32 (\d+)/, 1]&.to_i]
-      candidates = JSON.parse(output).fetch('apps').select { |app| providers.include?(app['pid']) || app['name'].start_with?('xdg-desktop-portal-') }
+      candidates = JSON.parse(output).fetch('apps').select { |app| app['pid'] == desktop.pid || app['name'].start_with?('xdg-desktop-portal-') }
       candidates.any? do |app|
         picker_pid = app.fetch('pid').to_s
-        label = app['pid'] == providers.last ? 'Close' : 'Cancel'
-        output, _, status = Contract.capture(driver, 'find', '--pid', picker_pid, '--title', label, '--role', 'Button', '--depth', '40')
+        output, _, status = Contract.capture(driver, 'find', '--pid', picker_pid, '--title', 'Cancel', '--role', 'Button', '--depth', '40')
         cancel = JSON.parse(output).fetch('matches').find { |item| item.fetch('actions', []).include?('AXPress') } if status == 0
       end
     end

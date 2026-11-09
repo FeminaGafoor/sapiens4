@@ -138,10 +138,9 @@ linuxComputer m d = V.div ""
       [V.p "" $ if access.built then "Computer backend is installed" else "Build required: follow the Linux setup guide"
       ,V.p "" $ if access.trusted then "AT-SPI accessibility is available" else "AT-SPI accessibility is unavailable"
       ,V.p "" $ if access.foregroundAvailable then "Foreground window verification is available" else "No foreground window can currently be verified"
-      ,V.when (access.session == "wayland") $ V.p "" $ if access.inputAvailable then "Consented input helper is connected" else "Keyboard and pointer input need a consented input helper"
       ,V.when (access.error /= "") $ V.p "" $ access.error]
     _ -> V.p "" "Checking computer access…"
-  ,V.p "" "Wayland requires the optional GNOME foreground extension. Keyboard and pointer input also require desktop portal consent. Xorg uses native window ownership checks."
+  ,V.p "" "Desktop control requires an X11 session. Wayland is not supported."
   ,V.p "" "Sapis share one computer. Access is checked again for each action; these observations do not grant permission."]
   where
   owner = m.snapshot.computer.owner

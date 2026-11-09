@@ -57,46 +57,21 @@ contracts remain pending on macOS.
 Failed desktop scenarios write accessible content to `tmp/desktop-failure.txt`
 and a separate accessibility-tree JSON file under `.build/` for each failed example.
 
-On Linux, build with `runghc build/Build.hs --desktop` and run
-`spec/linux_commands_spec.rb` inside `spec/support/gnome-session.sh`. Set
-`SAPIENS_TEST_XORG=1` for isolated Xorg or `SAPIENS_TEST_HEADLESS=1` for isolated
-Wayland. These tests start a temporary desktop corpus and execute its generated
-control/computer commands, including inside fixture-provider turns, checking
-exclusive ownership, cancellation and expired runs. The forwarding-only example
-also runs without a display. `environments/linux/qualify.sh` includes this suite.
-
-Shared UI workflows also run on isolated Linux Xorg. Build the Linux Blindly4
-driver, then run:
+On Linux, build with `runghc build/Build.hs --desktop` and build the Blindly4
+Linux driver. Desktop control requires X11; Wayland is unsupported. Run the
+Linux and shared desktop suites on an isolated software-rendered X11 display:
 
 ```sh
-SAPIENS_TEST_XORG=1 SAPIENS_TEST_GNOME_FOREGROUND=1 \
-  spec/support/gnome-session.sh ruby submodules/libs4/ruby/bundle.rb exec rspec --tag desktop
+sh environments/linux/qualify.sh .build/qualification-x11
 ```
 
-The fixture uses the production GTK/WebKit shell and browser
-adapter. Xorg qualification includes the applicable shared suites. These tests
-use explicit ASCII keyboard transport for WebKit editors; encoded file URLs
-exercise files with Unicode paths. Native editable-control and file-chooser
-Unicode coverage remains in the Linux suites. Shared pointer-coordinate tests
-remain gated on Wayland, where global accessibility coordinates are unavailable.
-Set `SAPIENS_TEST_GNOME_LOGS` to preserve session diagnostics in a separate directory.
-
-For a visible nested GNOME desktop on an existing X display (including WSLg), use:
-
-```sh
-sh environments/linux/qualify.sh visible-xorg .build/qualification-visible-xorg
-sh environments/linux/qualify.sh visible-wayland .build/qualification-visible-wayland
-```
-
-Run these serially and leave the test window alone. Both visible modes use
-Xephyr to display the desktop; this also avoids Mesa shared-memory rendering
-failures when nested Mutter connects directly to WSLg. Visible Xorg includes
-the shared GUI workflows; visible Wayland runs nested Mutter and the applicable
-Linux suites. Neither mode uses Xvfb or a headless compositor.
-Both use temporary desktop settings and data, and preserve logs in the new report
-directory. Nested Wayland cannot qualify pointer-scroll forwarding; shared tests
-requiring global coordinates remain Xorg-only. These runs do not establish native
-hardware, GDM login or physical-display coverage.
+The runner uses Xvfb and Openbox, and preserves logs and revision details in a
+new report directory. Install the prerequisites in
+[the Linux guide](../environments/linux/README.md). External Chromium/Firefox
+checks are opt-in with `SAPIENS_TEST_LINUX_EXTERNAL_DESKTOP=1`. Tests exercise
+real GTK/WebKit controls and generated computer commands against local fixtures.
+Run desktop suites serially. Virtual displays do not establish physical-display
+or mixed-monitor coverage.
 
 To exercise a desktop package, extract it with `dpkg-deb --extract` and set
 `SAPIENS_TEST_LINUX_RUNTIME` to the extracted `opt/sapiens4` directory before
