@@ -17,7 +17,7 @@ class Host
       File.write(binary, "#!#{RbConfig.ruby}\nload #{File.join(__dir__, 'provider.rb').inspect}\n")
       File.chmod(0755, binary)
     end
-    @environment = {'SAPIENS_CODEX_BINARY' => binary, 'SAPIENS_CONTRACT_ENV' => root,
+    @environment = {'SAPIENS_CODEX_BINARY' => binary, 'SAPIENS_CLAUDE_BINARY' => binary, 'SAPIENS_CONTRACT_ENV' => root,
       'SAPIENS_CONTRACT_RUBY' => RbConfig.ruby, 'SAPIENS_CONTRACT_PROVIDER' => File.join(__dir__, 'provider.rb'),
       'NO_COLOR' => '1', 'SAPIENS_CODEX_MODEL' => 'gpt-6-sol',
       'SAPIENS_CODEX_REASONING_EFFORT' => 'high'}.merge(environment)

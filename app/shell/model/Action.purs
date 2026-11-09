@@ -81,7 +81,7 @@ data Success = Refresh | CloseAndRefresh String | SavedPrompt String
 data DialogIntent
   = SuggestNames
   | PreviewModel F.ModelPreviewAction
-  | ReloadModels
+  | ReloadModels F.ModelProvider
   | ReloadModelSettings
   | SaveModelSettings
   | CreateAgent

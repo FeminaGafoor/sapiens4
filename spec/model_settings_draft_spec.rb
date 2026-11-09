@@ -57,7 +57,7 @@ RSpec.describe 'Saved model configuration drafts', :host do
   {
     'unknown model' => {defaults: {provider: 'codex', model: 'missing', effort: 'medium'}},
     'unsupported effort' => {defaults: {provider: 'codex', model: 'fixture-quick', effort: 'medium'}},
-    'unconnected provider' => {defaults: {provider: 'claude', model: 'opus', effort: 'medium'}},
+    'unknown provider' => {defaults: {provider: 'unknown', model: 'unsupported', effort: 'medium'}},
     'missing model' => {defaults: {provider: 'codex', effort: 'medium'}},
     'unknown setting' => {yolo: false},
     'negative revision' => {revision: -1},

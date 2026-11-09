@@ -41,7 +41,7 @@ handle runtime dispatch action = case action of
       when (kind == M.ConnectRemote && M.remote m) $ liftEffect $ B.historyPush $ D.json {dialog: true}
       E.sync
       case kind of
-        M.Models -> loadModels m d *> loadModelSettings m d
+        M.Models -> loadModels F.Codex m d *> loadModels F.Claude m d *> loadModelSettings m d
         M.DecisionPrompts -> receive d.identity (\value -> E.modifyDialog d.identity _ {content=F.Prompts $ map F.prompt $ D.rows "prompts" value,fields=F.decode $ D.first $ D.rows "prompts" value,status=M.Editing}) $ E.api runtime m "/api/decision-prompts" "GET" D.null
         M.RelayList -> receive d.identity (\value -> E.modifyDialog d.identity _ {content=F.relayRegistry value,status=M.Editing}) $ C.json "/api/host/relays" "GET" D.null
         M.HostPairing -> dispatch $ HostPairPoll d.identity
@@ -102,12 +102,12 @@ handle runtime dispatch action = case action of
   acceptModelSettings identity value = E.modifyDialog identity \current -> case current.content of
     F.ModelPreview draft -> current {content=F.ModelPreview $ F.savedModelDraft value draft,status=M.Editing}
     _ -> current
-  loadModels m d = do
+  loadModels provider m d = do
     let setCatalog catalog current = case current.content of
-          F.ModelPreview draft -> current {content=F.ModelPreview $ draft {catalog=catalog}}
+          F.ModelPreview draft -> current {content=F.ModelPreview $ if provider == F.Codex then draft {catalog=catalog} else draft {claudeCatalog=catalog}}
           _ -> current
     E.modifyDialog d.identity (setCatalog F.CatalogLoading)
-    E.attempt (E.api runtime m "/api/providers/codex/models" "GET" D.null) \result -> E.inEpoch m.epoch \_ ->
+    E.attempt (E.api runtime m (if provider == F.Codex then "/api/providers/codex/models" else "/api/providers/claude/models") "GET" D.null) \result -> E.inEpoch m.epoch \_ ->
       E.modifyDialog d.identity $ setCatalog $ case result of
         Left failure -> F.CatalogFailed (message failure)
         Right value -> F.modelCatalog value
@@ -215,8 +215,8 @@ handle runtime dispatch action = case action of
       M.Models, F.ModelPreview draft | F.modelDraftValid draft && F.modelDraftChanged draft ->
         runDialog d (\value -> acceptModelSettings d.identity value *> E.notify "Model settings applied to new runs.") $ E.api runtime m "/api/model-settings" "PUT" (F.modelDraftPayload draft)
       _, _ -> pure unit
-    Intent.ReloadModels -> case d.kind, d.content of
-      M.Models, F.ModelPreview draft | draft.catalog /= F.CatalogLoading -> loadModels m d
+    Intent.ReloadModels provider -> case d.kind, d.content of
+      M.Models, F.ModelPreview draft | F.providerCatalog provider draft /= F.CatalogLoading -> loadModels provider m d
       _, _ -> pure unit
     Intent.PreviewModel edit -> case d.kind, d.content of
       M.Models, F.ModelPreview draft -> E.modifyDialog d.identity _ {content=F.ModelPreview $ F.updateModelPreview edit draft}

@@ -48,6 +48,31 @@ if ARGV.first == 'app-server'
   exit
 end
 
+# Claude discovery has its own control protocol and never submits a user prompt.
+if ARGV.include?('--input-format')
+  STDOUT.sync = true
+  STDIN.each_line do |line|
+    request = JSON.parse(line)
+    File.open(File.join(root, 'claude-discovery.jsonl'), 'a') { |file| file.puts(JSON.generate(request.merge('pid' => Process.pid))) }
+    raise 'Unexpected Claude discovery request' unless request.dig('request', 'subtype') == 'initialize'
+    sleep 0.02 until !config['claude_catalog_block'] || File.exist?(File.join(root, 'released'))
+    models = config.fetch('claude_models', [
+      {value: 'default', resolvedModel: 'claude-opus-5-5', displayName: 'Default (recommended)', supportsEffort: true, supportedEffortLevels: %w[low medium high xhigh max]},
+      {value: 'opus', resolvedModel: 'claude-opus-5-5', displayName: 'Opus 5.5', supportsEffort: true, supportedEffortLevels: %w[low medium high xhigh max]},
+      {value: 'legacy', resolvedModel: 'claude-fixture-no-effort', displayName: 'Fixture no effort'}
+    ])
+    if config['claude_catalog_malformed']
+      puts 'not-json'
+    else
+      puts JSON.generate(type: 'control_response', response: {
+        subtype: config['claude_catalog_error'] ? 'error' : 'success',
+        request_id: request.fetch('request_id'), response: {models: models}})
+    end
+  end
+  exit
+end
+
+claude = ARGV.include?('--print')
 text = STDIN.read
 context = text.include?("\nContext:\n") ? JSON.parse(text.split("\nContext:\n", 2).last) : {}
 node = text[/decision at node (\w+)/, 1] || (text.start_with?('You are acting as yourself inside') ? 'group' :
@@ -57,7 +82,7 @@ key = "#{owner}:#{node}"
 rule = config.fetch('rules', {}).fetch(key, config.fetch('rules', {}).fetch(node, {}))
 matching = config.fetch('messages', []).find { |item| context.fetch('originalIntent', text).include?(item.fetch('contains')) }
 rule = rule.merge(matching.fetch('rule')) if matching
-record = {owner: owner, node: node, prompt: text, args: ARGV, cwd: Dir.pwd,
+record = {provider: claude ? 'claude' : 'codex', owner: owner, node: node, prompt: text, args: ARGV, cwd: Dir.pwd,
           pid: Process.pid, started: Time.now.to_f, agency_run: ENV['SAPIENS_AGENCY_RUN']}
 path = File.join(root, 'calls', SecureRandom.hex(12) + '.json')
 if rule['child']
@@ -104,5 +129,15 @@ reply = rule.fetch('response') do
   end
 end
 reply = JSON.generate(reply) unless reply.is_a?(String)
-puts JSON.generate(type: 'thread.started', thread_id: 'fixture-session')
-puts JSON.generate(type: 'item.completed', item: {type: 'agent_message', text: reply})
+if claude
+  puts JSON.generate(type: 'system', subtype: 'init', session_id: 'fixture-claude-session')
+  puts JSON.generate(type: 'assistant', message: {content: [{type: 'text', text: 'Intermediate text must not complete the turn'}]})
+  unless config['claude_missing_result']
+    failed = config.fetch('claude_result_error', false)
+    puts JSON.generate(type: 'result', subtype: failed ? 'error_during_execution' : 'success',
+      is_error: failed, result: reply, errors: failed ? ['Fixture Claude error'] : [])
+  end
+else
+  puts JSON.generate(type: 'thread.started', thread_id: 'fixture-session')
+  puts JSON.generate(type: 'item.completed', item: {type: 'agent_message', text: reply})
+end

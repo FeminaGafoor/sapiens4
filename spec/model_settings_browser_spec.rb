@@ -17,8 +17,8 @@ RSpec.describe 'Model settings', :desktop do
     expect(desktop.find('Save and apply', role: 'AXButton')['enabled']).to eq(false)
 
     desktop.press('Default provider Claude')
-    desktop.see('Claude model discovery is not connected yet.')
-    desktop.click('Customize a Sapi')
+    desktop.see('Sapiens4 recommendation: Opus 5.5 · medium')
+    desktop.press('Sapi customization')
     desktop.see('Inherits Claude and the corpora model settings.')
     desktop.press('Use corpora default')
     desktop.press('Sapi provider Codex')
@@ -27,6 +27,10 @@ RSpec.describe 'Model settings', :desktop do
     desktop.find('Sapi model')
     desktop.find('Sapi effort')
     desktop.press('Use corpora default')
+    desktop.see('Inherits Claude and the corpora model settings.')
+    desktop.press('Global settings')
+    desktop.see('Sapiens4 recommendation: Opus 5.5 · medium')
+    desktop.press('Sapi customization')
     desktop.see('Inherits Claude and the corpora model settings.')
 
     desktop.click('Close')
@@ -111,6 +115,80 @@ RSpec.describe 'Model settings', :desktop do
     desktop.see('Model settings changed elsewhere. Close and reopen Models before saving.')
     desktop.value('Default model', 'Fixture General · Codex default')
     expect(host.api('GET', '/api/model-settings').fetch('revision')).to eq(1)
+    desktop.click('Close')
+  end
+
+  it 'applies the Claude recommendation and restores it on reopening' do
+    start_desktop
+    open_models
+    desktop.press('Default provider Claude')
+    desktop.see('Sapiens4 recommendation: Opus 5.5 · medium')
+    desktop.click('Save and apply')
+    desktop.see('Model settings applied to new runs.')
+    desktop.click('Close')
+    open_models
+    desktop.see('Sapiens4 recommendation: Opus 5.5 · medium')
+    desktop.click('Close')
+    host.turn(host.submit(chief))
+    expect(host.calls).not_to be_empty
+    host.calls.each do |call|
+      expect(call.fetch('provider')).to eq('claude')
+      expect(call.fetch('args')).to include('--model', 'claude-opus-5-5', '--effort', 'medium')
+    end
+  end
+
+  it 'clears and disables effort when switching to a Claude model without effort support' do
+    start_desktop
+    open_models
+    desktop.press('Default provider Claude')
+    desktop.see('Sapiens4 recommendation: Opus 5.5 · medium')
+    desktop.press('Customize default model')
+    desktop.value('Default effort', 'medium')
+    desktop.press('Default model')
+    desktop.key('end')
+    desktop.key('return')
+    desktop.value('Default model', 'Fixture no effort')
+    desktop.value('Default effort', 'Provider default')
+    expect(desktop.find('Default effort', role: 'AXPopUpButton')['enabled']).to eq(false)
+    desktop.click('Save and apply')
+    desktop.see('Model settings applied to new runs.')
+    desktop.click('Close')
+    open_models
+    desktop.value('Default effort', 'Provider default')
+    expect(desktop.find('Default effort', role: 'AXPopUpButton')['enabled']).to eq(false)
+    desktop.click('Close')
+  end
+
+  it 'preserves changes across pages and saves global settings and a Sapi override together' do
+    start_desktop
+    open_models
+    original = host.api('GET', '/api/model-settings')
+    desktop.press('Default provider Claude')
+    desktop.press('Sapi customization')
+    expect(desktop.text).not_to include('Default provider Codex')
+    desktop.press('Use corpora default')
+    desktop.press('Sapi provider Codex')
+    desktop.press('Customize sapi model')
+    desktop.value('Sapi model', 'Fixture General · Codex default')
+    desktop.press('Global settings')
+    desktop.see('Sapiens4 recommendation: Opus 5.5 · medium')
+    expect(host.api('GET', '/api/model-settings')).to eq(original)
+    desktop.press('Sapi customization')
+    desktop.value('Sapi model', 'Fixture General · Codex default')
+    desktop.value('Sapi effort', 'Model default (high)')
+    desktop.click('Save and apply')
+    desktop.see('Model settings applied to new runs.')
+    saved = host.api('GET', '/api/model-settings')
+    expect(saved.fetch('defaults')).to include('provider' => 'claude')
+    expect(saved.fetch('overrides').fetch(chief)).to include('provider' => 'codex', 'model' => 'fixture-general', 'effort' => 'high')
+    desktop.click('Close')
+    open_models
+    desktop.see('Sapiens4 recommendation: Opus 5.5 · medium')
+    desktop.press('Sapi customization')
+    desktop.value('Sapi model', 'Fixture General · Codex default')
+    desktop.value('Sapi effort', 'high')
+    desktop.press('Global settings')
+    expect(desktop.find('Save and apply', role: 'AXButton')['enabled']).to eq(false)
     desktop.click('Close')
   end
 

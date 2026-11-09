@@ -89,7 +89,7 @@ RSpec.describe 'Applied Codex model settings', :host do
   {
     'stale revision' => [{revision: 0}, 409],
     'unsupported effort' => [{defaults: {provider: 'codex', model: 'fixture-quick', effort: 'medium'}}, 400],
-    'unconnected provider' => [{defaults: {provider: 'claude', model: 'opus', effort: 'medium'}}, 400],
+    'unknown provider' => [{defaults: {provider: 'unknown', model: 'unsupported', effort: 'medium'}}, 400],
     'nonexistent Sapi' => [{overrides: {'missing-sapi' => {provider: 'codex', model: 'gpt-6-astra', effort: 'medium'}}}, 404]
   }.each do |label, (changes, status)|
     it "rejects #{label} without replacing active settings" do

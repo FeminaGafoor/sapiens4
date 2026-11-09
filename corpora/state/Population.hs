@@ -268,20 +268,23 @@ corporaIdentity s = do
 
 -- Drafts remain inactive. Explicitly saved active settings use a separate file;
 -- reading settings never activates a draft or rewrites an existing installation.
-data ModelSelection = ModelSelection { selectionModel :: Text, selectionEffort :: Text }
+data ModelSelection = ModelSelection { selectionProvider :: ModelProvider, selectionModel :: Text, selectionEffort :: Text }
  deriving (Eq, Show)
 instance FromJSON ModelSelection where
  parseJSON value = do
   onlyFields ["provider","model","effort"] value
   withObject "Model selection" (\o -> do
    provider <- o .: "provider" :: Parser Text
-   unless (provider == "codex") $ fail "Only Codex configuration can be saved until Claude integration is connected"
+   kind <- case provider of
+    "codex" -> pure CodexProvider
+    "claude" -> pure ClaudeProvider
+    _ -> fail "Unsupported model provider"
    model <- o .: "model"
    effort <- o .: "effort"
-   unless (not (T.null model) && T.length model <= 200 && not (T.null effort) && T.length effort <= 80) $ fail "Choose a model and effort"
-   pure (ModelSelection model effort)) value
+   unless (not (T.null model) && T.length model <= 200 && (kind == ClaudeProvider || not (T.null effort)) && T.length effort <= 80) $ fail "Choose a model and effort"
+   pure (ModelSelection kind model effort)) value
 instance ToJSON ModelSelection where
- toJSON choice = obj [("provider",str "codex"),("model",str (selectionModel choice)),("effort",str (selectionEffort choice))]
+ toJSON choice = obj [("provider",str (providerName (selectionProvider choice))),("model",str (selectionModel choice)),("effort",str (selectionEffort choice))]
 
 data ModelSettingsDraft = ModelSettingsDraft
  { modelSettingsRevision :: Int, modelSettingsDefault :: ModelSelection, modelSettingsOverrides :: Map.Map Text ModelSelection }
@@ -300,7 +303,7 @@ instance ToJSON ModelSettingsDraft where
 
 readModelSettingsDraft :: Service -> IO ModelSettingsDraft
 readModelSettingsDraft s = readJSON (serviceRoot s </> "model-settings-draft.json")
- (ModelSettingsDraft 0 (ModelSelection "gpt-6-astra" "medium") Map.empty)
+ (ModelSettingsDraft 0 (ModelSelection CodexProvider "gpt-6-astra" "medium") Map.empty)
 
 saveModelSettingsDraft :: Service -> ModelSettingsDraft -> IO ModelSettingsDraft
 saveModelSettingsDraft s requested = do

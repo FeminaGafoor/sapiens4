@@ -171,6 +171,9 @@ savePreferences s d = do
  DB.saveSingleton s DB.Preferences current
  pure (obj [("saved",Bool True),("preferences",current)])
 dispatch :: Service -> Text -> Text -> Maybe Value -> IO (Int,BL.ByteString,Text)
+dispatch _ "GET" "/api/providers/claude/models" _ = do
+ value <- Provider.claudeModels
+ pure (200,encode value,"application/json; charset=utf-8")
 dispatch _ "GET" "/api/providers/codex/models" _ = do
  value <- Provider.codexModels
  pure (200,encode value,"application/json; charset=utf-8")

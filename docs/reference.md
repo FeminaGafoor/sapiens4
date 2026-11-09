@@ -117,7 +117,7 @@ outside the service state lock, then check the revision and Sapi identities unde
 the lock and atomically replace `model-settings-draft.json`. The response contains
 the incremented revision. A stale revision returns 409 without overwriting the
 saved draft. Invalid models/efforts or unsupported providers return 400; discovery
-failures leave the previous draft intact. Claude configuration cannot be saved yet.
+failures leave the previous draft intact. Both Codex and Claude selections are supported.
 
 The draft endpoint remains inactive and is not consumed by execution.
 
@@ -141,6 +141,36 @@ whole Routine or workload across multiple runs or restarts.
 
 Saving validates the catalog outside the service lock. Execution does not launch
 catalog discovery or silently fall back to a different model on provider failure.
-Existing Codex command permissions are unchanged. Claude integration and
-AgencyKind overrides remain subsequent work. Catalog entries advertise choices;
+Existing Codex command permissions are unchanged. AgencyKind overrides remain subsequent work. Catalog entries advertise choices;
 they do not guarantee account authorization for an eventual model call.
+
+
+### Claude provider
+
+`GET /api/providers/claude/models` obtains the installed CLI catalog through its
+streaming control initialization, without submitting a user prompt. Discovery uses
+safe mode with tools and MCP integrations disabled, a 30-second deadline, bounded
+responses and process cleanup. Entries use `resolvedModel` where available;
+duplicate aliases are collapsed. Effort choices come from the advertised metadata.
+An empty effort string means the Claude provider default; the CLI receives no
+`--effort` flag. Models without effort metadata expose only this default.
+
+The product recommendation is `claude-opus-5-5` with `medium`, enabled only when
+that exact model and effort appear in the catalog. It is independent of the CLI's
+changing `default` or `opus` aliases. Mixed-provider defaults and per-Sapi overrides
+are supported, with each required provider validated once per save.
+
+Execution uses the existing Sapi workspace, prompt, run identity, process deadline
+and cancellation handling. Claude runs with `--print --output-format stream-json
+--verbose --no-session-persistence --dangerously-skip-permissions`, an explicit
+model, and an effort flag only when configured. Only a successful terminal result
+completes the decision; intermediate text and error results cannot count as
+success. Decision records include the provider as well as the model and effort.
+The existing noninteractive permission policy is retained; read-only remains
+outside this change.
+
+`SAPIENS_CLAUDE_BINARY` overrides executable discovery. Otherwise it searches PATH,
+the native user installation and, on Unix, NVM installations. Windows requires a
+native executable. This integration does not install Claude or change login state.
+Model discovery does not prove that a subscription can execute a model. Tests use
+isolated simulated providers; live account behavior requires a separate smoke test.
