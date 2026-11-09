@@ -192,4 +192,29 @@ RSpec.describe 'Model settings', :desktop do
     desktop.click('Close')
   end
 
+  it 'explains why an invalid override blocks saving from the global page' do
+    start_desktop
+    open_models
+    desktop.press('Default provider Claude')
+    desktop.see('Unsaved changes. Save and apply saves both pages.')
+    desktop.press('Sapi customization')
+    desktop.press('Use corpora default')
+    desktop.press('Sapi provider Codex')
+    desktop.press('Global settings')
+    desktop.see('Cannot save yet. Check model availability and effort for: Sapi customization — ChiefSapi.')
+    expect(desktop.find('Save and apply', role: 'AXButton')['enabled']).to eq(false)
+    desktop.press('Sapi customization')
+    desktop.press('Customize sapi model')
+    desktop.value('Sapi model', 'Fixture General · Codex default')
+    desktop.press('Global settings')
+    desktop.see('Unsaved changes. Save and apply saves both pages.')
+    desktop.click('Save and apply')
+    desktop.see('Model settings applied to new runs.')
+    desktop.click('Close')
+    open_models
+    desktop.see('Model settings applied to new runs.')
+    expect(desktop.find('Save and apply', role: 'AXButton')['enabled']).to eq(false)
+    desktop.click('Close')
+  end
+
 end

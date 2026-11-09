@@ -185,10 +185,12 @@ modelDraftPayload draft = D.json {revision:draft.revision,defaults:resolve draft
   where resolve config = resolvedModelConfig (providerCatalog config.provider draft) config
 
 modelDraftValid :: ModelDraft -> Boolean
-modelDraftValid draft = draft.loaded && valid draft.defaults && A.all valid (O.values draft.overrides)
-  where
-  valid config = let choice = resolvedModelConfig (providerCatalog config.provider draft) config in
-    A.any (\row -> row.model == choice.model && ((config.provider == Claude && choice.effort == "") || A.elem choice.effort row.efforts)) (catalogRows $ providerCatalog config.provider draft)
+modelDraftValid draft = draft.loaded && modelConfigValid draft draft.defaults && A.all (modelConfigValid draft) (O.values draft.overrides)
+
+modelConfigValid :: ModelDraft -> ModelConfig -> Boolean
+modelConfigValid draft config =
+  let choice = resolvedModelConfig (providerCatalog config.provider draft) config
+  in A.any (\row -> row.model == choice.model && ((config.provider == Claude && choice.effort == "") || A.elem choice.effort row.efforts)) (catalogRows $ providerCatalog config.provider draft)
 
 modelDraftChanged :: ModelDraft -> Boolean
 modelDraftChanged draft = draft.revision == 0.0 || modelDraftPayload draft /= draft.saved

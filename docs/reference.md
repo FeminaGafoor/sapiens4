@@ -123,6 +123,17 @@ The draft endpoint remains inactive and is not consumed by execution.
 
 ### Applied model settings
 
+The Models dialog has Global settings and Sapi customization pages sharing one
+unsaved draft. Page navigation does not write settings. Save and apply saves both
+pages together; closing without saving discards pending edits. The selected page
+is presentation state and is not persisted in the settings payload.
+
+Feedback is derived from that draft: saving, invalid selections, unsaved changes,
+or settings applied to new runs. Invalid selections identify Global settings or
+the affected Sapi even when that selection is on the other page. Successful-save
+feedback does not depend on the application's transient toast timer. Existing
+revision-conflict and provider errors remain visible in the dialog.
+
 The Models screen now uses `GET /api/model-settings` and `PUT /api/model-settings`
 with the same object shape and validation rules. **Save and apply** atomically
 writes `model-settings.json`, using an independent revision counter. Until this
