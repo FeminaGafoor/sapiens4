@@ -18,6 +18,7 @@ import qualified Data.Text.Encoding as TE
 import Foreign hiding (void, new)
 import ObjC
 import Domain (BrowserCommand(..), BrowserAction(..))
+import System.Directory (doesFileExist)
 import System.FilePath
 
 field name (Object value) = fromMaybe Null (M.lookup (K.fromText name) value)
@@ -159,14 +160,7 @@ sync browser input = do
             when hidden $ returnFocus browser (tabView tab)
             void (obj1 (tabView tab) "setHidden:" (flag hidden))
     forM_ (Map.toList existing) $ \(identity,tab) -> unless (Set.member identity alive) $ do
-        returnFocus browser (tabView tab)
-        target <- readIORef (delegate browser)
-        forM_ ["title","URL"] $ \name -> str name >>= \s -> void (obj2 (tabView tab) "removeObserver:forKeyPath:" target s)
-        void (obj0 (tabView tab) "stopLoading"); void (obj0 (tabView tab) "removeFromSuperview")
-        modifyIORef' (tabs browser) (Map.delete identity)
-        void (obj1 (tabView tab) "setNavigationDelegate:" nullPtr)
-        void (obj1 (tabView tab) "setUIDelegate:" nullPtr)
-        void (obj0 (tabView tab) "release")
+        releaseTab browser identity tab
     let bounds = field "rect" input
         x = numeric 0 (field "x" bounds); y = numeric 0 (field "y" bounds)
         w = numeric 0 (field "width" bounds); h = numeric 0 (field "height" bounds)
@@ -177,6 +171,36 @@ sync browser input = do
             converted <- convertRect container sh (x,if flipped then y else shHeight-y-h,w,h)
             void (rect (tabView tab) "setFrame:" converted)
             void (obj1 (tabView tab) "setHidden:" (int 0))
+
+releaseTab browser identity tab = do
+    returnFocus browser (tabView tab)
+    target <- readIORef (delegate browser)
+    forM_ ["title","URL"] $ \name -> str name >>= \s -> void (obj2 (tabView tab) "removeObserver:forKeyPath:" target s)
+    void (obj0 (tabView tab) "stopLoading"); void (obj0 (tabView tab) "removeFromSuperview")
+    modifyIORef' (tabs browser) (Map.delete identity)
+    void (obj1 (tabView tab) "setNavigationDelegate:" nullPtr)
+    void (obj1 (tabView tab) "setUIDelegate:" nullPtr)
+    void (obj0 (tabView tab) "release")
+
+unloadIdle browser input = do
+    let identity = text (field "owner" input) <> ":" <> text (field "id" input)
+        path = text (field "path" input)
+    stored <- Map.lookup identity <$> readIORef (tabs browser)
+    forM_ stored $ \tab -> when (tabDocument tab == Just path && tabSequence tab == text (field "seq" input)
+                                && not (tabAwaiting tab) && T.null (tabError tab)) $ do
+        let view = tabView tab
+        hidden <- booleanValue view "isHidden"
+        loading <- booleanValue view "isLoading"
+        back <- booleanValue view "canGoBack"
+        forward <- booleanValue view "canGoForward"
+        u <- obj0 view "URL"
+        scheme <- textProp u "scheme"
+        actual <- textProp u "path"
+        -- This scheme serves our escaped, read-only text wrapper. Other URLs,
+        -- unsaved pages, and tabs with navigation history keep their view.
+        when (hidden && not (loading || back || forward) && scheme == "sapiens-file" && actual == path) $ do
+            exists <- doesFileExist (T.unpack path)
+            when exists $ releaseTab browser identity tab
 
 history browser tab predicate action = do
     let pending = tab { tabDocument = Nothing }
@@ -206,7 +230,9 @@ receive browser message = do
             when (T.isPrefixOf "/" directory) $ fileURL directory >>= void . obj1 panel "setDirectoryURL:"
             result <- long panel "runModal"
             when (result == 1) $ obj0 panel "URLs" >>= objects >>= mapM_ (\u -> textProp u "path" >>= \p -> emit browser (object ["owner" .= text (field "owner" input),"file" .= p]))
-          else sync browser input
+          else case field "unloadIdle" input of
+            request@(Object _) -> unloadIdle browser request
+            _ -> sync browser input
 
 sameOrigin left right = and <$> mapM (\property -> (==) <$> textProp left property <*> textProp right property) ["scheme","host"] >>= \same -> do
     lp <- obj0 left "port" >>= \o -> long o "integerValue"; rp <- obj0 right "port" >>= \o -> long o "integerValue"

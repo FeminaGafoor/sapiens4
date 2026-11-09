@@ -15,6 +15,7 @@ import Domain (BrowserCommand(..), BrowserAction(..), BrowserTransition(..), bro
 import Host
 import Native
 import qualified Navigation as Navigation
+import System.Directory (doesFileExist)
 import System.FilePath
 import qualified Crypto.Hash.SHA256 as SHA
 import qualified Data.Aeson.Key as K
@@ -27,7 +28,7 @@ import qualified Data.Text.Encoding as TE
 import qualified Data.Text.IO as TIO
 import qualified Data.Vector as V
 
-data Tab = Tab { tabOwner :: String, tabId :: String, tabView :: View, tabSequence :: IORef String, tabLoading :: IORef Bool, tabError :: IORef String, tabFocused :: IORef Bool, tabAlive :: IORef Bool }
+data Tab = Tab { tabOwner :: String, tabId :: String, tabView :: View, tabSequence :: IORef String, tabLoading :: IORef Bool, tabError :: IORef String, tabFocused :: IORef Bool, tabAlive :: IORef Bool, tabVisit :: IORef Int }
 data Browser = Browser { arena :: Arena, window :: Window, shell :: View, host :: Host, tabs :: IORef (M.Map String Tab), latest :: IORef Value, revision :: IORef Int, syncing :: IORef Bool, disposed :: IORef Bool, shellTop :: IORef Int, guestScript :: String }
 
 field :: String -> Value -> Value
@@ -126,7 +127,7 @@ createTab browser owner identity done = do
     visible view False
     dead <- readIORef (disposed browser)
     if dead then closeView view else do
-      tab <- Tab owner identity view <$> newIORef "" <*> newIORef False <*> newIORef "" <*> newIORef False <*> newIORef True
+      tab <- Tab owner identity view <$> newIORef "" <*> newIORef False <*> newIORef "" <*> newIORef False <*> newIORef True <*> newIORef 0
       settings <- getValue (core view) 3
       callInt settings 6 0
       callInt settings 16 0
@@ -134,6 +135,7 @@ createTab browser owner identity done = do
       let on index iid = onEvent (arena browser) (core view) index iid
           notify _ = observe browser tab
       on 7 "{9ADBE429-F36D-432B-9DDC-F8881FBD76E3}" $ \args -> do
+        modifyIORef' (tabVisit tab) (+1)
         url <- getString args 3
         base <- readIORef (origin $ host browser)
         let permitted = Navigation.guest base url
@@ -175,12 +177,55 @@ syncBrowser browser message = do
   unless dead $ if boolean (field "pickFile" message) then do
     selected <- pickFile (window browser) (string $ field "directory" message)
     forM_ selected $ \file -> report browser $ object ["owner" .= field "owner" message, "file" .= file]
-  else do
-    writeIORef (latest browser) message
-    modifyIORef' (revision browser) (+1)
-    positionGuest browser `catch` reportException
-    busy <- readIORef (syncing browser)
-    unless busy $ writeIORef (syncing browser) True >> applyLatest browser
+  else case field "unloadIdle" message of
+    request@(Object _) -> unloadIdle browser request
+    _ -> do
+      when (boolean (field "visible" message)) $ do
+        let active = string (field "owner" message) ++ "/" ++ string (field "active" message)
+        tabsNow <- readIORef (tabs browser)
+        forM_ (M.lookup active tabsNow) $ \tab -> modifyIORef' (tabVisit tab) (+1)
+      writeIORef (latest browser) message
+      modifyIORef' (revision browser) (+1)
+      positionGuest browser `catch` reportException
+      busy <- readIORef (syncing browser)
+      unless busy $ writeIORef (syncing browser) True >> applyLatest browser
+
+releaseTab :: Browser -> String -> Tab -> IO ()
+releaseTab browser key tab = do
+  writeIORef (tabAlive tab) False
+  modifyIORef' (tabs browser) (M.delete key)
+  closeView (tabView tab)
+
+unloadIdle :: Browser -> Value -> IO ()
+unloadIdle browser request = do
+  let owner = string (field "owner" request)
+      ident = string (field "id" request)
+      key = owner ++ "/" ++ ident
+  message <- readIORef (latest browser)
+  current <- readIORef (tabs browser)
+  let specs = array (field "tabs" $ field owner $ field "workspaces" message)
+      hidden = not (boolean (field "visible" message) && string (field "owner" message) == owner && string (field "active" message) == ident)
+  forM_ (M.lookup key current) $ \tab -> forM_ specs $ \spec -> do
+    let address = string (field "url" spec)
+    when (hidden && field "id" spec == field "id" request && field "path" spec == field "path" request
+          && field "seq" (field "command" spec) == field "seq" request && take 7 address == "file://") $ do
+      visit <- readIORef (tabVisit tab)
+      frameTree (arena browser) (tabView tab) $ \raw -> do
+        let tree = field "frameTree" (fromMaybe Null (decodeStrict' $ TE.encodeUtf8 $ T.pack raw))
+            frame = field "frame" tree
+        alive <- readIORef (tabAlive tab)
+        sameVisit <- (==visit) <$> readIORef (tabVisit tab)
+        when (alive && sameVisit && string (field "mimeType" frame) == "text/plain" &&
+              string (field "url" frame) == address && null (array (field "childFrames" tree))) $ do
+          let web = core (tabView tab)
+          source <- getString web 4
+          back <- getValue web 38 :: IO Int32
+          forward <- getValue web 39 :: IO Int32
+          loading <- readIORef (tabLoading tab)
+          err <- readIORef (tabError tab)
+          when (source == address && back == 0 && forward == 0 && not loading && null err) $ do
+            exists <- doesFileExist (string $ field "path" request)
+            when exists $ releaseTab browser key tab
 
 applyLatest :: Browser -> IO ()
 applyLatest browser = do
@@ -195,10 +240,7 @@ applyLatest browser = do
               showTab = keep && boolean (field "visible" message) && key == string (field "owner" message) ++ "/" ++ string (field "active" message)
           focused <- readIORef (tabFocused tab)
           when (focused && not showTab) $ callInt (controller $ shell browser) 12 0
-          if keep then visible (tabView tab) showTab else do
-            writeIORef (tabAlive tab) False
-            closeView (tabView tab)
-            modifyIORef' (tabs browser) (M.delete key)
+          if keep then visible (tabView tab) showTab else releaseTab browser key tab
         positionGuest browser
         currentVersion <- readIORef (revision browser)
         if currentVersion /= version then applyLatest browser else writeIORef (syncing browser) False

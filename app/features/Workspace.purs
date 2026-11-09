@@ -2,7 +2,7 @@ module Sapiens.Workspace where
 
 import Prelude
 import Data.Array as A
-import Data.Maybe (Maybe(..))
+import Data.Maybe (Maybe(..), maybe)
 import Data.Int as I
 import Data.Argonaut.Core (Json)
 import Data.String as S
@@ -10,6 +10,7 @@ import Data.Tuple (Tuple(..))
 import Foreign.Object as O
 import Effect (Effect)
 import Libs4.Browser as B
+import Sapiens.IdleTabs as IdleTabs
 import Sapiens.Action (Action(..))
 import Sapiens.Data as D
 import Sapiens.Browser as Browser
@@ -109,12 +110,21 @@ view m = V.node "main" [V.cls "workspace",V.id "workspace-panel",V.label "Agent 
       Nothing -> Browser $ Browser.Open (Browser.WebAddress b.url) Nothing
     ,V.icon ("Remove " <> b.title <> " bookmark") "×" $ Browser $ Browser.RemoveBookmark b.id]
 
-sync :: M.Model -> Effect Unit
-sync m = when (m.env.native) do
+sync :: IdleTabs.Timers -> M.Model -> Effect Unit
+sync timers m = when (m.env.native) do
   box <- Platform.measure "#workspace-content"
   background <- B.cssProperty ".workspace" "--sapi-bg"
   foreground <- B.cssProperty ".workspace" "--sapi-ink"
   -- Memo HTML is already decoded as UTF-8 by the host and rendered in
   -- Workspace. A native file view would guess the charset a second time.
   let guestTabs owner workspace = workspace {tabs=A.filter (not <<< M.isMemoTab (M.notes m owner)) workspace.tabs}
-  B.nativeMessage $ D.json {workspaces: if native m then O.mapWithKey guestTabs m.workspaces else O.empty, owner: if native m then m.selected else "", active: D.json (M.activeTab m).id, visible: native m && not (M.isMemoTab (M.notes m m.selected) (M.activeTab m)) && A.elem N.Workspace (M.visiblePanes m) && m.dialog == Nothing && m.menu == Nothing, dark: m.theme == "dark", background, foreground, captionBackground: background, rect:{x:box.x,y:box.y,width:box.width,height:box.height}}
+      workspaces = if native m then O.mapWithKey guestTabs m.workspaces else O.empty
+      active = M.activeTab m
+      visible = native m && not (M.isMemoTab (M.notes m m.selected) active) && A.elem N.Workspace (M.visiblePanes m) && m.dialog == Nothing && m.menu == Nothing && not m.env.hidden
+      sourceFor key | key.epoch == m.epoch = do
+        workspace <- O.lookup key.owner workspaces
+        tab <- A.find (\t -> t.id == key.id && t.path /= "") workspace.tabs
+        pure {path:tab.path, seq:maybe "" _.seq tab.command}
+      sourceFor _ = Nothing
+  B.nativeMessage $ D.json {workspaces, owner: if native m then m.selected else "", active:active.id, visible, dark: m.theme == "dark", background, foreground, captionBackground: background, rect:{x:box.x,y:box.y,width:box.width,height:box.height}}
+  IdleTabs.observe timers (if visible then Just {owner:m.selected, id:active.id, epoch:m.epoch} else Nothing) sourceFor

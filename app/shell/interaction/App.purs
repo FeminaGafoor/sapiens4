@@ -66,7 +66,7 @@ handle runtime input = session input
         liftEffect $ B.historyReplace $ m.env.path
         void $ H.fork $ void $ H.liftAff $ try $ toAffE $ B.registerWorker "/sw.js"
       unless required $ dispatch LoadRegistry
-      E.sync
+      E.sync runtime
     Finalize -> liftEffect $ C.dispose runtime
     Poll -> E.runUpdate runtime dispatch U.Poll
     Copy text caption -> do
@@ -76,7 +76,7 @@ handle runtime input = session input
         Left _ -> "Could not copy. You can select the task body to copy it."
     Resize -> do
       updateEnvironment
-      E.sync
+      E.sync runtime
     GlobalEvent name event -> do
       data_ <- liftEffect $ B.eventData event
       m <- H.get
@@ -92,7 +92,7 @@ handle runtime input = session input
       saved <- liftEffect $ B.storageRead "sapi-color-theme"
       env <- liftEffect Platform.environment
       H.modify_ _ {theme=if A.elem saved ["dark","light"] then saved else if env.dark then "dark" else "light"}
-      E.sync
+      E.sync runtime
     Theme -> H.get >>= \m -> E.runUpdate runtime dispatch $ U.SetTheme $ if m.theme == "dark" then "light" else "dark"
     Persist -> E.runUpdate runtime dispatch U.Persist
     Mutate path method body success -> do

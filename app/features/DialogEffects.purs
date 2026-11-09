@@ -39,7 +39,7 @@ handle runtime dispatch action = case action of
       let d = Dialog.make kind record m
       H.modify_ $ Dialog.open d
       when (kind == M.ConnectRemote && M.remote m) $ liftEffect $ B.historyPush $ D.json {dialog: true}
-      E.sync
+      E.sync runtime
       case kind of
         M.DecisionPrompts -> receive d.identity (\value -> E.modifyDialog d.identity _ {content=F.Prompts $ map F.prompt $ D.rows "prompts" value,fields=F.decode $ D.first $ D.rows "prompts" value,status=M.Editing}) $ E.api runtime m "/api/decision-prompts" "GET" D.null
         M.RelayList -> receive d.identity (\value -> E.modifyDialog d.identity _ {content=F.relayRegistry value,status=M.Editing}) $ C.json "/api/host/relays" "GET" D.null
@@ -50,7 +50,7 @@ handle runtime dispatch action = case action of
   CloseDialog -> do
     void $ H.fork $ H.liftAff $ C.cancelPairing runtime
     H.modify_ Dialog.close
-    E.sync
+    E.sync runtime
   Field key value -> do
     H.modify_ \m -> m {dialog=map (Dialog.updateField key value) m.dialog}
     when (key == F.ShowLink) do
@@ -139,14 +139,14 @@ handle runtime dispatch action = case action of
     m <- H.get
     let next = Dialog.make kind record m
     H.modify_ $ Dialog.push next
-    E.sync
+    E.sync runtime
   relayList content = do
     m <- H.get
     let previous = A.find (( _ == M.RelayList) <<< _.kind) m.dialogStack
         record = maybe F.NoRecord _.record previous
         next = Dialog.make M.RelayList record m
     H.modify_ _ {dialog=Just $ next {content=F.relayRegistry content},dialogStack=[],sequence=next.identity}
-    E.sync
+    E.sync runtime
   changeRelay d data_ = runDialog d (\value -> when (D.b "reset" value) (resetRelay true) *> relayList value) $ C.json "/api/host/relays" "POST" $ D.put "revision" (D.json (F.relays d.content).revision) data_
   confirmRelay d change to = do
     let current = fromMaybe (F.relay D.empty) $ A.find ((_ == (F.relays d.content).selected) <<< _.id) (F.relays d.content).servers
@@ -202,7 +202,7 @@ handle runtime dispatch action = case action of
       H.modify_ (\s -> s {sequence=s.sequence+1})
     Intent.DeleteTask -> saveTask m d true
     Intent.AddRelay -> push M.RelayAdd F.NoRecord
-    Intent.BackRelay -> if A.null m.dialogStack then dispatch CloseDialog else H.modify_ Dialog.back *> E.sync
+    Intent.BackRelay -> if A.null m.dialogStack then dispatch CloseDialog else H.modify_ Dialog.back *> E.sync runtime
     Intent.SelectRelay relay -> when (relay.id /= (F.relays d.content).selected) $ confirmRelay d (D.json {action: "switch", id: relay.id}) relay.name
     Intent.ConfirmRelay -> changeRelay d $ D.put "confirm_revoke" (D.bool true) $ (F.contextChange d.record).change
     Intent.EditRelay id -> runDialog d (push M.RelayAdd <<< F.relayContext) $ C.json ("/api/host/relays/" <> B.encodeURI id) "GET" D.null

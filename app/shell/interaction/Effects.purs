@@ -118,6 +118,7 @@ runUpdate runtime dispatch action = do
       persistLocal
       env <- liftEffect Platform.environment
       H.modify_ _ {restoringScroll=true,env=env}
+      H.get >>= liftEffect <<< W.sync runtime.idleTabs
       dispatch StopScan
     U.Resume -> dispatch Resize *> restoreScroll *> later 32.0 restoreScroll *> dispatch Poll
     U.SendNative report ->
@@ -156,7 +157,7 @@ runUpdate runtime dispatch action = do
     U.RestoreScroll -> restoreScroll
     U.Focus target -> liftEffect $ B.focus target
     U.SelectRange target start end -> liftEffect $ B.selectRange target start end
-    U.Sync -> sync
+    U.Sync -> sync runtime
     U.PersistTheme theme -> void $ liftEffect $ B.storageWrite "sapi-color-theme" theme
     U.FetchDocument request -> attempt (api runtime requested request.path "GET" D.null) $
       runUpdate runtime dispatch <<< U.ReceiveDocument request <<< either (Left <<< message) X.decodeDocument
@@ -168,7 +169,7 @@ runUpdate runtime dispatch action = do
     U.PollNow -> dispatch Poll
     U.ResizeComposer -> resizeComposer
     U.UpdateMention -> dispatch MentionCursor
-    U.SaveView -> save dispatch *> sync
+    U.SaveView -> save dispatch *> sync runtime
     U.SavePreferences -> save dispatch
     U.LoadDocument -> requestDocument runtime dispatch
     U.ScrollToStart -> liftEffect $ B.scroll "#conversation-body" 0.0
@@ -212,8 +213,8 @@ scrollBottom = do
   H.modify_ _ {scrollPosition=Just {selected:m.selected,bottom:true,key:"",offset:0.0,width:0.0,height:0.0},restoringScroll=true}
   restoreScroll
 
-sync :: UI Unit
-sync = do
+sync :: C.Runtime -> UI Unit
+sync runtime = do
   m <- H.get
   liftEffect do
     B.setAttribute "html" "data-theme" m.theme
@@ -223,7 +224,7 @@ sync = do
     if N.limit m.env < 3 then B.setAttribute "body" "data-mobile-ui" "" else B.removeAttribute "body" "data-mobile-ui"
     when (m.env.viewportScale == 1.0) $ B.setStyle "html" "--mobile-viewport-height" (show (m.env.viewportHeight) <> "px")
     B.showDialog (if maybe false (M.corporaDialog <<< _.kind) m.dialog then "#corpora-dialog" else "#modal") $ m.dialog /= Nothing
-    W.sync m
+    W.sync runtime.idleTabs m
   resizeComposer
 
 resizeComposer :: UI Unit

@@ -31,7 +31,7 @@ sections; about/map enter model context and the model reads relevant content as
 needed. Store media as separate files. Link to them from Notes.html with a relative workspace
 path or an HTTP(S) URL. Inline images and data URLs are unsupported.
 
-A restored tab loads its native browser view the first time it becomes visible. Switching away keeps its page and history in memory until the tab closes.
+A restored tab loads its native browser view the first time it becomes visible. After an uninterrupted hour in the background, Workspace can release a local read-only text preview with an existing file and no back or forward history. Its tab, bookmark and zoom remain in the owning Sapi's workspace. Selecting it reloads the file from disk and can reset its scroll position. Websites, HTML documents, media and pages of unknown type keep their views.
 
 Native desktop tabs open websites, local files and bookmarks. Text/source files
 render literally; HTML, PDF and media use the native browser. Closing a tab does

@@ -20,21 +20,23 @@ import Sapiens.Data as D
 import Sapiens.Domain as X
 import Sapiens.Remote as R
 import Sapiens.Updates as Updates
+import Sapiens.IdleTabs as IdleTabs
 
 data Pairing = NoPairing | LocalPairing String | RemotePairing R.Transport
 
-type Runtime = { updates :: Updates.Updates, clients :: Ref.Ref (O.Object R.Transport), credentials :: Ref.Ref (O.Object Json), camera :: Ref.Ref (Maybe B.Camera), pairing :: Ref.Ref Pairing, persistedSnapshot :: Ref.Ref (Maybe {key :: String, content :: X.SnapshotContent}) }
+type Runtime = { idleTabs :: IdleTabs.Timers, updates :: Updates.Updates, clients :: Ref.Ref (O.Object R.Transport), credentials :: Ref.Ref (O.Object Json), camera :: Ref.Ref (Maybe B.Camera), pairing :: Ref.Ref Pairing, persistedSnapshot :: Ref.Ref (Maybe {key :: String, content :: X.SnapshotContent}) }
 type Registry = { records :: Array X.Corpora, localAvailable :: Boolean }
 
 create :: Effect Runtime
 create = ado
+  idleTabs <- IdleTabs.create
   updates <- Updates.create
   clients <- Ref.new O.empty
   credentials <- Ref.new O.empty
   camera <- Ref.new Nothing
   pairing <- Ref.new NoPairing
   persistedSnapshot <- Ref.new Nothing
-  in {updates,clients,credentials,camera,pairing,persistedSnapshot}
+  in {idleTabs,updates,clients,credentials,camera,pairing,persistedSnapshot}
 
 read :: String -> Effect Json
 read key = D.parse <$> B.storageRead key
@@ -171,6 +173,7 @@ register runtime transport = do
 
 dispose :: Runtime -> Effect Unit
 dispose runtime = do
+  IdleTabs.stop runtime.idleTabs
   Updates.stop runtime.updates
   Ref.write Nothing runtime.persistedSnapshot
   Ref.read runtime.clients >>= traverse_ R.close <<< O.values
