@@ -118,6 +118,10 @@ static gboolean navigation(WebKitWebView *view, WebKitPolicyDecision *decision, 
 
 static gboolean failed(WebKitWebView *view, WebKitLoadEvent event, const char *uri, GError *error, Tab *tab) {
     (void)view; (void)event; (void)uri;
+    // Ignoring a navigation can asynchronously interrupt its frame load. Keep
+    // the reason reported by the policy decision and suppress the stock error page.
+    if (g_error_matches(error, WEBKIT_POLICY_ERROR, WEBKIT_POLICY_ERROR_FRAME_LOAD_INTERRUPTED_BY_POLICY_CHANGE))
+        return TRUE;
     if (!g_error_matches(error, WEBKIT_NETWORK_ERROR, WEBKIT_NETWORK_ERROR_CANCELLED)) {
         g_free(tab->error);
         tab->error = g_strdup(error->message);

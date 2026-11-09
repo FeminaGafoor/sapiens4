@@ -247,7 +247,7 @@ RSpec.describe 'Linux native browser behavior' do
     @pages = HTTPPeer.new { |_| [302, '', {'Location' => @url + '/workspace/'}] }
     control('workspace_open', url: @pages.url)
     Contract.wait(description: 'rejected guest destination') do
-      control('workspace').fetch('tabs').any? { |tab| tab['error'].to_s.include?('blocked') }
+      control('workspace').fetch('tabs').any? { |tab| !tab['loading'] && tab['error'].to_s.include?('blocked') }
     end
     expect(Contract.http(@url + '/api/health', 'GET').first).to eq(200)
   end
