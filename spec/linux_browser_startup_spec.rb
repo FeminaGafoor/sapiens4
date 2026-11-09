@@ -1,4 +1,5 @@
 require_relative 'support/http_peer'
+require_relative 'support/linux_browser'
 
 RSpec.describe 'Linux browser startup stability' do
   %w[chromium firefox].each do |engine|
@@ -8,16 +9,10 @@ RSpec.describe 'Linux browser startup stability' do
       expect(runs).to be_between(1, 100)
       pages = HTTPPeer.new { |_| [200, '<title>Startup fixture</title>', {'Content-Type' => 'text/html'}] }
       runs.times do |index|
-        browser = Contract::Child.new('node', File.join(Contract::ROOT, 'spec/support/DesktopBrowser.cjs'), engine, pages.url,
-          env: {'PLAYWRIGHT_BROWSERS_PATH' => File.join(Contract::ROOT, 'submodules/libs4/.cache/playwright')})
+        browser = LinuxBrowser.new(engine, pages.url)
         Contract.wait(description: "#{engine} launch #{index + 1}") do
-          raise browser.stderr unless browser.stderr.empty?
-          browser.stdout.include?('READY ')
+          pages.requests.count { |request| request[:path] == '/' } == index + 1
         end
-        browser.input.close
-        output, error, status = browser.finish(20)
-        expect(status).to eq(0), "Launch #{index + 1}: #{output}#{error}"
-        expect(output).to match(/READY \d+ \S+/)
       ensure
         browser&.close
       end

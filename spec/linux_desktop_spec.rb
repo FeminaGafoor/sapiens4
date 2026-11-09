@@ -40,7 +40,7 @@ RSpec.describe 'Linux desktop lifecycle' do
   it 'opens the UI and stops its host when the desktop closes' do
     desktop = Contract::Child.new('sh', File.join(Contract::ROOT, 'environments/linux/start.sh'),
       '--data-dir', @fixture.root, env: @fixture.environment.merge('SAPIENS_LINUX_BACKEND' => 'desktop',
-        'SAPIENS_BLINDLY_BINARY' => File.join(Contract::ROOT, 'environments/linux/headless.sh')))
+        'SAPIENS_BLINDLY_BINARY' => '/missing/external-driver'))
     url = nil
     Contract.wait(description: 'Linux desktop readiness') do
       url = desktop.stdout[%r{READY (http://127.0.0.1:\d+)}, 1]
@@ -52,7 +52,6 @@ RSpec.describe 'Linux desktop lifecycle' do
     chief = state.fetch('agents').find { |agent| agent.fetch('id') == state.fetch('main_agent_id') }
     instructions = Dir.glob(File.join(@fixture.root, '**/manifests/computer-use.md')).map { |path| File.read(path) }.join
     expect(instructions).to include('Blindly4 UI wrapper:')
-    expect(instructions).not_to include('owned headless browser', 'environments/linux/headless.sh')
     observer = Contract::Child.new(@probe, desktop.pid.to_s)
     Contract.wait(description: 'accessible Linux conversation') do
       names = observer.stdout.lines.map(&:strip)

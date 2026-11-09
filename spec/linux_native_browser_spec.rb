@@ -1,5 +1,6 @@
 require_relative 'support/http_peer'
 require_relative 'support/linux_input'
+require_relative 'support/linux_browser'
 
 RSpec.describe 'Linux external desktop browsers' do
   include LinuxInput
@@ -14,12 +15,8 @@ RSpec.describe 'Linux external desktop browsers' do
           [200, '<title>Native browser fixture</title><form method="post" action="/send"><label>Draft<input name="draft" value="Fixture draft"' + blocked + '></label><button>Send</button></form><label>Secret<input type="password" value="fixture-secret"></label>',
             {'Content-Type' => 'text/html; charset=utf-8'}]
         end
-        @browser = Contract::Child.new('node', File.join(Contract::ROOT, 'spec/support/DesktopBrowser.cjs'), engine, @pages.url,
-          env: {'PLAYWRIGHT_BROWSERS_PATH' => File.join(Contract::ROOT, 'submodules/libs4/.cache/playwright')})
-        Contract.wait(description: "#{engine} readiness") do
-          raise @browser.stderr unless @browser.stderr.empty?
-          @pid = @browser.stdout[/READY (\d+)/, 1]
-        end
+        @browser = LinuxBrowser.new(engine, @pages.url)
+        @pid = @browser.pid.to_s
         Contract.wait(description: "#{engine} native draft") do
           output, _, status = command('find', '--title', 'Draft', '--role', 'TextField', '--depth', '40')
           @draft = JSON.parse(output).fetch('matches').first if status == 0

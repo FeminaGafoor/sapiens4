@@ -134,7 +134,6 @@ snapshotUnlocked s = do
  agentRows <- forM rows $ \row -> put "retired" . Bool <$> retired s (at row "id") <*> pure row
  owner <- maybe Null (toJSON . fst) <$> readIORef (serviceLease s)
  built <- blindly s >>= doesFileExist
- backend <- if os=="linux" then fromMaybe "native" <$> lookupEnv "SAPIENS_LINUX_BACKEND" else pure "native"
  pulses <- DB.recentPulses s
  events <- DB.events s
  pulse <- readIORef (servicePulse s)
@@ -161,7 +160,7 @@ snapshotUnlocked s = do
      notes = [workspaceRoot s (at row "id") </> f | row <- rows ++ groups, f <- ["Notes.html","Notes.history.json"]]
      documents = [T.unpack (at t "path") | (_,w) <- pairs (get prefs "workspaces"), t <- items w "tabs", has t "path"]
  writeIORef (snapshotFiles s) $! Set.fromList $ [binary,repositoryRoot s </> "corpora/prompts/creation-request.md",serviceRoot s </> "corpora-settings.json",serviceRoot s </> "agentpy/corpora/directory.json"] ++ stateFiles ++ notes ++ archives ++ documents
- pure $ obj [("updates_revision",toJSON revision),("agents",arr agentRows),("turns",arr projected),("preferences",prefs),("corpora",corpora),("groups",arr groups),("routines",arr routines),("creation_template",str (T.strip creation)),("computer",obj [("owner",owner),("built",Bool built),("backend",str (T.pack backend)),("platform",str (if os=="mingw32" then "win32" else T.pack os))]),("pulses",arr pulses),("events",events),("pulse",pulse),("provider",str "codex"),("activity",obj [(agentIdText (runOwner r),v) | (r,v)<-activity]),("run_activity",obj [(runIdText (runId r),v) | (r,v)<-activity]),("main_agent_id",str chief),("workloads",arr (D.workSummaries works)),("attachment_drafts",obj drafts),("orchestration",obj orchestration)]
+ pure $ obj [("updates_revision",toJSON revision),("agents",arr agentRows),("turns",arr projected),("preferences",prefs),("corpora",corpora),("groups",arr groups),("routines",arr routines),("creation_template",str (T.strip creation)),("computer",obj [("owner",owner),("built",Bool built),("backend",str "native"),("platform",str (if os=="mingw32" then "win32" else T.pack os))]),("pulses",arr pulses),("events",events),("pulse",pulse),("provider",str "codex"),("activity",obj [(agentIdText (runOwner r),v) | (r,v)<-activity]),("run_activity",obj [(runIdText (runId r),v) | (r,v)<-activity]),("main_agent_id",str chief),("workloads",arr (D.workSummaries works)),("attachment_drafts",obj drafts),("orchestration",obj orchestration)]
 validatePreferenceShape :: Value -> Validation ()
 validatePreferenceShape d = do
  check (all (`elem` ["selected","panel","scope","groupView","panes","drafts","attachment_drafts"]) (keys d)) 400 "Unknown preference field"

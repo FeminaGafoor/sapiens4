@@ -1,5 +1,3 @@
-require 'socket'
-
 RSpec.describe 'Linux host launcher' do
   before do
     skip 'Linux launcher' unless RUBY_PLATFORM.include?('linux')
@@ -55,69 +53,6 @@ RSpec.describe 'Linux host launcher' do
     launch({'SAPIENS_DATA_DIR' => File.join(@directory, 'unused')}, '--data-dir', data)
     expect(File).to exist(File.join(data, 'corpora.sqlite3'))
     expect(File).not_to exist(File.join(@directory, 'unused'))
-  end
-
-  it 'provides Linux browser instructions and removes its private session on exit' do
-    launch('TMPDIR' => @directory) do |_child, state, url|
-      expect(state.fetch('computer')).to include('platform' => 'linux', 'backend' => 'headless')
-      status, diagnostics = Contract.http(url + '/api/computer', 'GET')
-      expect(status).to eq(200)
-      expect(diagnostics).to include('backend' => 'headless', 'built' => true, 'trusted' => true, 'nativeDesktopAccess' => false)
-      sessions = Dir.glob(File.join(@directory, 'sapiens-browser-*'))
-      expect(sessions.size).to eq(1)
-      expect(File.stat(sessions.first).mode & 0777).to eq(0700)
-      expect(File.socket?(File.join(sessions.first, 'browser.sock'))).to eq(true)
-      instructions = Dir.glob(File.join(@directory, '**/manifests/computer-use.md')).map { |path| File.read(path) }.join
-      expect(instructions).to include('owned headless browser', 'exact draft')
-    end
-    expect(Dir.glob(File.join(@directory, 'sapiens-browser-*'))).to be_empty
-  end
-
-  it 'executes the published headless command in a provider turn and releases ownership' do
-    @fixture.configure(rules: {'Assessing' => {actions: [
-      {generated_command: 'computer', arguments: ['blindly', 'apps']}
-    ]}})
-    launch do |_child, state, url|
-      owner = state.fetch('main_agent_id')
-      status, response = Contract.http(url + "/api/agents/#{owner}/messages", 'POST', {text: 'Exercise the generated headless command'})
-      expect(status).to eq(202), response.inspect
-      call = Contract.wait(description: 'generated headless command') do
-        @fixture.calls.find { |entry| entry.fetch('commands', []).any? }
-      end
-      result = call.fetch('commands').first
-      expect(result.fetch('status')).to eq(0), result.inspect
-      expect(JSON.parse(result.fetch('stdout'))).to eq('apps' => [])
-      Contract.wait(description: 'headless turn completion') do
-        current = Contract.http(url + '/api/state', 'GET')[1]
-        current.fetch('turns').any? { |turn| turn['status'] == 'done' } && current.fetch('computer').fetch('owner').nil?
-      end
-    end
-  end
-
-  it 'closes its browser and temporary profile when the host exits' do
-    skip 'Pinned browser binaries required' unless ENV['SAPIENS_TEST_HEADLESS_BROWSERS'] == '1'
-    launch('TMPDIR' => @directory) do |_child, _state|
-      socket = Dir.glob(File.join(@directory, 'sapiens-browser-*/browser.sock')).fetch(0)
-      output, error, status = Contract.capture('sh', File.join(Contract::ROOT, 'environments/linux/headless.sh'), 'launch', 'Browser',
-        env: {'SAPIENS_LINUX_BROWSER_SOCKET' => socket})
-      expect(status).to eq(0), output + error
-      expect(JSON.parse(output)).to include('launched' => true)
-      expect(Dir.glob(File.join(@directory, 'playwright*'))).not_to be_empty
-    end
-    expect(Dir.glob(File.join(@directory, 'sapiens-browser-*'))).to be_empty
-    expect(Dir.glob(File.join(@directory, 'playwright*'))).to be_empty
-  end
-
-  it 'shuts down with an incomplete local browser request still connected' do
-    launch('TMPDIR' => @directory) do |_child, _state|
-      client = UNIXSocket.new(Dir.glob(File.join(@directory, 'sapiens-browser-*/browser.sock')).fetch(0))
-      client.write('["launch"')
-      @incomplete_client = client
-    end
-    expect(@incomplete_client.read).to eq('')
-    expect(Dir.glob(File.join(@directory, 'sapiens-browser-*'))).to be_empty
-  ensure
-    @incomplete_client&.close
   end
 end
 

@@ -1,5 +1,7 @@
 # Ubuntu compatibility audit — 2026-11-02
 
+This audit describes the November 2 revision. Its historical test counts include the browser backend that was subsequently removed.
+
 **Result: partial compatibility; source defects repaired, release gates remain.**
 The current checkout cannot be described as supporting every Sapiens4 use case
 on Ubuntu, in either desktop or headless mode. The generated-command workflow
@@ -109,25 +111,6 @@ does not acquire computer ownership, start a turn or request portal consent.
 Missing backends and diagnostic failures are shown without claiming readiness.
 The sidebar identifies headless access as an owned browser. Behavioral API and
 native UI tests cover both backends and missing installations.
-
-### P2 — Headless automation is not full desktop or workspace-browser parity
-
-`Bridge.cjs` exposes a deliberately smaller command set. `Browser.cjs` operates
-one owned browser page and discovers main-frame controls. Frames, native app
-launch, browser chrome, popup/additional-tab management, downloads, file-dialog
-automation and desktop pointer input are not implemented by this bridge.
-Single-selection controls now support `select --path PATH --value VALUE`, with
-enabled-option validation before mutation and exact-value verification afterward.
-Discovery exposes a bounded list of exact option values and marks omissions.
-Chromium and Firefox tests cover Unicode options and unchanged values after
-rejected disabled/missing options. Multiple-selection controls remain unsupported.
-Browser profiles are temporary; authentication cookies do not survive restart.
-
-The owned Playwright page is also separate from Sapiens workspace tabs.
-`app/features/Workspace.purs` explicitly asks non-native clients to open the
-desktop to browse web tabs. HTTP workspace state persistence does not prove
-headless embedded-tab execution. Xvfb can run the native desktop as another
-explicit mode; it does not add these capabilities to the headless bridge.
 
 ### P2 — Native input has application and session restrictions
 

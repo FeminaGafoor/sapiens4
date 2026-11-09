@@ -314,7 +314,7 @@ type Snapshot =
   , routines :: Array Routine, events :: O.Object (Array Event), activity :: O.Object Activity
   , run_activity :: O.Object Activity, orchestration :: O.Object Orchestration
   , main_agent_id :: String, creation_template :: String, corpora :: Corpora, preferences :: Preferences
-  , attachment_drafts :: O.Object (Array Attachment), computer :: {owner :: String, built :: Boolean, backend :: String, platform :: String} }
+  , attachment_drafts :: O.Object (Array Attachment), computer :: {owner :: String, built :: Boolean, platform :: String} }
 
 snapshot :: Json -> Snapshot
 snapshot value =
@@ -330,7 +330,7 @@ snapshot value =
   , attachment_drafts: map (map attachment <<< D.arr) $ object "attachment_drafts" value
   , main_agent_id: D.s "main_agent_id" value, creation_template: D.s "creation_template" value
   , corpora: corpora $ D.get "corpora" value, preferences: preferences (A.any (\g -> D.s "id" g == D.str (D.at ["preferences","selected"] value)) $ D.rows "groups" value) $ D.get "preferences" value
-  , computer: {backend:D.str $ D.at ["computer","backend"] value,owner:D.str $ D.at ["computer","owner"] value,built:D.flag $ D.at ["computer","built"] value,platform:D.str $ D.at ["computer","platform"] value}
+  , computer: {owner:D.str $ D.at ["computer","owner"] value,built:D.flag $ D.at ["computer","built"] value,platform:D.str $ D.at ["computer","platform"] value}
   }
 
 object :: String -> Json -> O.Object Json

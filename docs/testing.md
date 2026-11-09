@@ -100,10 +100,7 @@ hardware, GDM login or physical-display coverage.
 
 To exercise a desktop package, extract it with `dpkg-deb --extract` and set
 `SAPIENS_TEST_LINUX_RUNTIME` to the extracted `opt/sapiens4` directory before
-running the same suite. Repeat in Ubuntu 22.04 and 24.04 userspaces. Check the
-headless package separately with `SAPIENS_TEST_HEADLESS_PACKAGE` and
-`spec/linux_headless_package_spec.rb`; enable `SAPIENS_TEST_HEADLESS_BROWSERS=1`
-for the existing bridge, external-browser and launcher scenarios.
+running the same suite. Repeat in Ubuntu 22.04 and 24.04 userspaces.
 
 Use mouse clicks to establish that controls are reachable; accessibility
 invocation alone can activate offscreen controls. Rediscover moving targets and

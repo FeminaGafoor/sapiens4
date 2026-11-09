@@ -38,11 +38,10 @@ blindlyBinary root = fromMaybe (root</>if os=="mingw32" then "submodules/blindly
 computerStatus :: FilePath -> IO Value
 computerStatus root = do
  require (os=="linux") 400 "Computer diagnostics are available on Linux"
- backend <- fromMaybe "native" <$> lookupEnv "SAPIENS_LINUX_BACKEND"
  session <- fromMaybe "" <$> lookupEnv "XDG_SESSION_TYPE"
- binary <- if backend=="headless" then pure (root</>"environments/linux/headless.sh") else blindlyBinary root
+ binary <- blindlyBinary root
  built <- doesFileExist binary
- let base=obj [("backend",str (T.pack backend)),("session",str (T.pack session)),("built",Bool built)]
+ let base=obj [("backend",str "native"),("session",str (T.pack session)),("built",Bool built)]
  if not built then pure (put "error" (str "Computer backend is not built") base) else do
   result <- try (invoke binary ["request-permission"] 5)
   pure $ case result of
@@ -143,13 +142,7 @@ computerMain root args = do
   require (code>=200 && code<300) code (at result "error")
  writeFile ".computer-used" ""
  binary <- blindlyBinary root
- linuxHeadless <- if os=="linux" then (==Just "headless") <$> lookupEnv "SAPIENS_LINUX_BACKEND" else pure False
  case args of
-  _ | linuxHeadless -> do
-   (code,out,err) <- invoke (root</>"environments/linux/headless.sh") args 30
-   putStr out
-   unless (null err) (hPutStrLn stderr (take 2000 err))
-   pure code
   "blindly":rest -> do
    (code,out,err) <- invoke binary rest 30
    putStrLn (T.unpack (bounded (T.pack out) 48000))

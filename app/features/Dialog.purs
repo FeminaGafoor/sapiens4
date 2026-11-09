@@ -131,20 +131,19 @@ body m d = case d.kind of
 
 linuxComputer :: M.Model -> M.Dialog -> V.Html
 linuxComputer m d = V.div ""
-  [V.p "" $ if headless then "Sapis use an owned headless browser. Ask a Sapi in chat to browse or work with a web page." else "Sapis use Blindly4 and Linux accessibility (AT-SPI) to work with applications on this desktop."
+  [V.p "" "Sapis use Blindly4 and Linux accessibility (AT-SPI) to work with applications on this desktop."
   ,V.p "" $ if owner == "" then "Computer ownership: available" else "In use · " <> (M.agent m owner).name
   ,case d.content of
     F.ComputerAccess access -> V.div ""
       [V.p "" $ if access.built then "Computer backend is installed" else "Build required: follow the Linux setup guide"
-      ,V.p "" $ if headless then (if access.trusted then "Owned browser session is connected" else "Owned browser session is unavailable") else (if access.trusted then "AT-SPI accessibility is available" else "AT-SPI accessibility is unavailable")
-      ,V.when (not headless) $ V.p "" $ if access.foregroundAvailable then "Foreground window verification is available" else "No foreground window can currently be verified"
-      ,V.when (not headless && access.session == "wayland") $ V.p "" $ if access.inputAvailable then "Consented input helper is connected" else "Keyboard and pointer input need a consented input helper"
+      ,V.p "" $ if access.trusted then "AT-SPI accessibility is available" else "AT-SPI accessibility is unavailable"
+      ,V.p "" $ if access.foregroundAvailable then "Foreground window verification is available" else "No foreground window can currently be verified"
+      ,V.when (access.session == "wayland") $ V.p "" $ if access.inputAvailable then "Consented input helper is connected" else "Keyboard and pointer input need a consented input helper"
       ,V.when (access.error /= "") $ V.p "" $ access.error]
     _ -> V.p "" "Checking computer access…"
-  ,V.p "" $ if headless then "This session controls its browser only. Browser profiles are temporary; native desktop applications are unavailable." else "Wayland requires the optional GNOME foreground extension. Keyboard and pointer input also require desktop portal consent. Xorg uses native window ownership checks."
+  ,V.p "" "Wayland requires the optional GNOME foreground extension. Keyboard and pointer input also require desktop portal consent. Xorg uses native window ownership checks."
   ,V.p "" "Sapis share one computer. Access is checked again for each action; these observations do not grant permission."]
   where
-  headless = m.snapshot.computer.backend == "headless"
   owner = m.snapshot.computer.owner
 
 relayList :: M.Dialog -> V.Html

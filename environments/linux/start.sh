@@ -7,8 +7,7 @@ case ${XDG_DATA_HOME:-} in
 esac
 data=${SAPIENS_DATA_DIR:-$data}
 export SAPIENS_REPOSITORY="$root"
-case ${SAPIENS_LINUX_BACKEND:-headless} in
-  headless) exec "$root/environments/linux/headless.sh" host "$@" --data-dir "$data" ;;
+case ${SAPIENS_LINUX_BACKEND:-native} in
   desktop)
     export SAPIENS_DATA_DIR="$data"
     if [ ! -x "$root/.build/bin/sapiens-linux" ]; then
@@ -16,5 +15,5 @@ case ${SAPIENS_LINUX_BACKEND:-headless} in
     fi
     exec "$root/.build/bin/sapiens-linux" "$@" ;;
   native) exec "$root/.build/bin/sapiens4" "$@" --data-dir "$data" ;;
-  *) echo 'SAPIENS_LINUX_BACKEND must be headless, desktop or native' >&2; exit 64 ;;
+  *) echo 'SAPIENS_LINUX_BACKEND must be desktop or native' >&2; exit 64 ;;
 esac

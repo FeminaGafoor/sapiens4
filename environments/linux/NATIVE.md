@@ -1,8 +1,7 @@
 # Ubuntu desktop adapter
 
 Targets: Ubuntu 22.04 / GNOME 42 and Ubuntu 24.04 / GNOME 46, amd64, on native
-Ubuntu installations and GNOME desktop sessions inside WSL2. Both desktop and
-[headless execution](README.md) are required. This is a development preview;
+Ubuntu installations and GNOME desktop sessions inside WSL2. The [Linux host](README.md) also runs without a graphical session. This is a development preview;
 full desktop and enterprise production qualification is incomplete.
 The [compatibility audit](AUDIT.md) records the repaired desktop command routing
 and the remaining application and release qualification gaps.
@@ -26,14 +25,13 @@ submodules/blindly4/linux/build.sh release
 SAPIENS_LINUX_BACKEND=desktop ./environments/linux/start.sh
 ```
 
-Without `--desktop`, the build produces headless targets. The desktop executable
+Without `--desktop`, the build builds the host without the GTK executable. The desktop executable
 requires a graphical session; `--help` works without one. The model CLI needs
 separate installation and authentication. Tests use local model fixtures.
 `SAPIENS_DATA_DIR` overrides the normal XDG data directory; an explicit
 `--data-dir DIRECTORY` wins. No corpora are migrated.
 
-WSLg alone supplies window transport, not a GNOME Shell session. Headless mode
-requires neither GNOME nor a GPU. `environments/linux/virtual.sh COMMAND...`
+WSLg alone supplies window transport, not a GNOME Shell session. The native host can run without GNOME or a GPU. `environments/linux/virtual.sh COMMAND...`
 provides a private software-rendered Xvfb/Openbox session for X11 applications.
 The test runner can provide isolated GNOME Wayland or Xorg sessions. These do
 not reproduce an actual desktop login, logind, screen lock or device hotplug.
@@ -77,7 +75,7 @@ the adapter does not bypass policy.
 
 | Capability | Implementation | Test evidence / remaining work |
 | --- | --- | --- |
-| Explicit headless/desktop selection | Implemented | Launcher and native lifecycle tests; desktop rejects absent display |
+| Native host and desktop launch | Implemented | Launcher and native lifecycle tests; desktop rejects absent display |
 | Embedded browser tabs | Implemented | Real WebKit navigation, reload, history, title/close, host-bridge isolation, owner cookie isolation and restart persistence |
 | Native file picker | Implemented | Opening, cancellation and Unicode path selection tested on both Ubuntu releases, Xorg and Wayland; enterprise file policies pending |
 | Native downloads | Implemented | Explicit Save/Cancel, existing-file rejection and cancellation on tab closure tested; one transfer at a time, no automatic destination |
@@ -86,7 +84,7 @@ the adapter does not bypass policy.
 | GNOME foreground verifier | Implemented | Actual GNOME 42/46 PID and disable tests; Shell overview rejection tested; real login/lock and other overlays pending |
 | Wayland keyboard and pointer | Implemented, explicit portal consent | Software-rendered virtual monitors at actual 1×/2× scale, input and revocation tests; hardware/fractional/layout matrix pending |
 | Xorg fallback | Implemented | XRes/XTest native fixtures; GTK/WebKit physical clicks at 1×/2× scale; fractional/mixed monitors pending |
-| External Chromium / Firefox | Observation and guarded ASCII keyboard editing implemented | Explicit transport, consent/layout preflight, password rejection, exact submission and ignored-input failure tested. Native Unicode keyboard transfer is unsupported; headless Playwright supports Unicode |
+| External Chromium / Firefox | Observation and guarded ASCII keyboard editing implemented | Explicit transport, consent/layout preflight, password rejection, exact submission and ignored-input failure tested. Native Unicode keyboard transfer is unsupported |
 | Desktop `.deb` | Implemented | Ubuntu 22.04 glibc baseline, GTK 3 / WebKitGTK 4.1 dependencies, no installation hooks; qualification results recorded below |
 | Native Ubuntu and WSL2 full desktops | Targeted, pending qualification | This machine supplies isolated userspaces/compositors, not physical desktops or enrolled WSL2 fleets |
 
@@ -104,7 +102,7 @@ current keymap without modifying it. Unsupported text/layout and absent consent
 are rejected before clearing the target. Replacement, insertion and typing
 verify the resulting draft; focus and foreground are checked during input.
 Password controls remain inaccessible. Unicode still works through editable
-AT-SPI controls and owned headless Chromium/Firefox sessions.
+AT-SPI controls.
 
 ### Chromium startup and diagnostics
 
@@ -135,8 +133,7 @@ Passing it is regression evidence, not proof that intermittent browser crashes
 have been eliminated.
 
 The external-browser fixtures launch browsers in headed mode, then exercise
-Blindly4 native accessibility and keyboard input. The pinned Playwright builds
-and the official Mozilla Firefox 153.6.0esr archive have separate evidence below.
+Blindly4 native accessibility and keyboard input. Set `SAPIENS_TEST_CHROMIUM_EXECUTABLE` or `SAPIENS_TEST_FIREFOX_EXECUTABLE` to select an installed browser. Each run uses a disposable profile.
 These runs do not qualify distro, Snap or corporate-managed browser builds.
 
 Wayland foreground identity requires the optional extension; the portal alone
@@ -172,8 +169,7 @@ SAPIENS_LINUX_DRIVER_DIR=/path/to/ubuntu22-checkout/submodules/blindly4/.build/r
   environments/linux/package.sh .build/packages/sapiens4-ubuntu-amd64.deb
 ```
 
-The package provides `sapiens4` and `/opt/sapiens4`, independently of the headless
-package. It includes binaries, UI, prompts, licenses and auditable optional
+The package provides `sapiens4` and `/opt/sapiens4`. It includes binaries, UI, prompts, licenses and auditable optional
 extension sources. GTK/WebKit remain distribution dependencies. Assembly uses
 Cargo metadata and Python 3 to collect locked Rust dependency notices. There
 are no credentials, corpora, maintainer hooks, extension installation or autostart
@@ -194,7 +190,6 @@ SAPIENS_TEST_HEADLESS=1 SAPIENS_TEST_GNOME_FOREGROUND=1 SAPIENS_TEST_LINUX_AUTOM
 SAPIENS_TEST_XORG=1 SAPIENS_TEST_GNOME_FOREGROUND=1 SAPIENS_TEST_LINUX_AUTOMATION=1 spec/support/gnome-session.sh ruby submodules/libs4/ruby/bundle.rb exec rspec spec/linux_desktop_spec.rb spec/linux_browser_spec.rb spec/linux_automation_spec.rb
 SAPIENS_TEST_VIRTUAL_DISPLAY=1 SAPIENS_TEST_GNOME_FOREGROUND=1 SAPIENS_TEST_LINUX_EXTERNAL_DESKTOP=1 spec/support/gnome-session.sh ruby submodules/libs4/ruby/bundle.rb exec rspec spec/linux_native_browser_spec.rb
 SAPIENS_TEST_HEADLESS=1 SAPIENS_TEST_SCALE=2 SAPIENS_TEST_GNOME_FOREGROUND=1 SAPIENS_TEST_LINUX_AUTOMATION=1 spec/support/gnome-session.sh ruby submodules/libs4/ruby/bundle.rb exec rspec spec/linux_automation_spec.rb -e 'requested display scale' -e 'clicks and scrolls only' -e 'injects a guarded key'
-SAPIENS_TEST_HEADLESS_BROWSERS=1 ruby submodules/libs4/ruby/bundle.rb exec rspec spec/linux_bridge_spec.rb spec/linux_external_browser_spec.rb spec/linux_launch_spec.rb
 SAPIENS_TEST_CABAL_CACHE="$PWD/submodules/libs4/haskell/.cabal" SAPIENS_TEST_UI_CACHE="$PWD/submodules/libs4/.cache" ruby submodules/libs4/ruby/bundle.rb exec rspec
 ```
 
@@ -224,9 +219,7 @@ replayed. This covers the tested development schemas, not unknown future migrati
 For repeatable local or CI evidence, use a new report directory:
 
 ```sh
-sh environments/linux/qualify.sh headless .build/qualification-headless
 SAPIENS_TEST_FIREFOX_EXECUTABLE=/absolute/path/to/firefox-153.6.0esr/firefox \
-SAPIENS_TEST_FIREFOX_CHANNEL=moz-firefox \
   sh environments/linux/qualify.sh wayland .build/qualification-wayland
 ```
 
@@ -253,13 +246,6 @@ Machine-readable reports and logs remain under `.build/qualification-*/` and
 The runs use isolated userspaces and software compositors on a stock WSL2 kernel,
 not native hardware or registered enterprise installations.
 
-Bundled Firefox encountered an intermittent launch SIGSEGV on Ubuntu 22.04.
-The 20-cycle startup test reproduced it; subsequent 100-cycle success after the
-separate headless service-leak fix does not establish a root cause or repair.
-Original logs remain in `.build/linux-completion-virtual-monitor22.log` and
-`.build/linux-browser-startup22.log`; the later run is
-`.build/linux-firefox-nightly-clean-stress22.log`. Official Firefox ESR passed
-separate startup and native input checks without changing the product browser pin.
 One combined run also exceeded the desktop readiness timeout during concurrent
 builds; its later success does not resolve that observation.
 
