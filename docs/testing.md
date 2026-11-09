@@ -82,6 +82,15 @@ invocation alone can activate offscreen controls. Rediscover moving targets and
 verify editor focus and exact values. Retry only observations or rejections known
 to occur before input; never replay an action after an uncertain outcome.
 
+For an archived remote client, set `SAPIENS_TEST_LEGACY_REMOTE` to a directory
+containing the relay's public shell (`index.html`, `sw.js`, and every asset listed
+by that worker), then run `spec/legacy_remote_spec.rb` in the Linux desktop session.
+The fixture serves those files locally, pairs through an isolated relay, and makes
+shell downloads unavailable before pairing and reloading. It verifies compatibility
+with a cached client without fetching production assets or using live credentials
+during the test. Record the archive's URL, date and hashes alongside test results.
+This is WebKit coverage of the `/ios` entrypoint, not a physical iOS installation.
+
 ## Coverage limits
 
 The macOS and Linux fixtures run WebKit with the production browser adapter;

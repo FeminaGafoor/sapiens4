@@ -59,6 +59,19 @@ RSpec.describe 'Encrypted remote service contracts' do
     expect(host.api('GET', '/api/remote')['invitation']).to be_nil
   end
 
+  it 'sends complete empty workspace arrays over the encrypted relay for older clients' do
+    pair
+    send_frame(pack(op: 'api', method: 'GET', path: '/api/state',
+      device_info: {name: 'iPhone', platform: 'iOS', client: 'Sapiens4 Home Screen app'}))
+    result = receive
+    expect(result['status']).to eq(200)
+    snapshot = result.fetch('body')
+    workspace = snapshot.fetch('preferences').fetch('workspaces').fetch(snapshot.fetch('main_agent_id'))
+    expect(workspace.fetch('tabs')).to eq([])
+    expect(workspace.fetch('bookmarks').map { |bookmark| bookmark['title'] }).to eq(['Notes.html'])
+    expect(host.state['turns']).to be_empty
+  end
+
   it 'keeps older pairings usable without inventing missing device details or dates' do
     pair
     host.stop

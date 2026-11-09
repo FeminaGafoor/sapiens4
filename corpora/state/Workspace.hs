@@ -26,6 +26,9 @@ import qualified Store as DB
 migrateWorkspaces :: Service -> IO ()
 migrateWorkspaces s = do
  prefs <- DB.singleton s DB.Preferences
+ let complete = obj [(owner,completeWorkspace workspace) | (owner,workspace) <- pairs (get prefs "workspaces")]
+     save workspaces = DB.saveSingleton s DB.Preferences (merge prefs (obj [("workspaces",workspaces),("browser_version",num 1),("workspace_revision",num (int (get prefs "workspace_revision")+1))]))
+ when (get prefs "browser_version"==num 1 && complete/=get prefs "workspaces") $ save complete
  unless (get prefs "browser_version"==num 1) $ do
   workspaces <- forM (pairs (get prefs "workspaces")) $ \(owner,workspace) -> do
    tabs <- forM (items workspace "tabs") $ \tab -> do
@@ -40,7 +43,7 @@ migrateWorkspaces s = do
     let url=if not (T.null (at converted "path")) then fileURL (T.unpack (at converted "path")) else if T.null (at converted "url") then "about:blank" else at converted "url"
     pure (merge (remove ["type","artifact","html"] converted) (obj [("url",str url),("zoom",num 1),("command",obj [("seq",str identity),("action",str "navigate")])]))
    pure (owner,merge workspace (obj [("tabs",arr tabs),("bookmarks",get workspace "bookmarks" `fallback` arr [])]))
-  DB.saveSingleton s DB.Preferences (merge prefs (obj [("workspaces",obj workspaces),("browser_version",num 1),("workspace_revision",num (int (get prefs "workspace_revision")+1))]))
+  save (obj workspaces)
 httpURL :: Text -> Bool
 httpURL s = case parseURI (T.unpack s) of
  Just u -> uriScheme u `elem` ["http:","https:"] && maybe False (\a -> not (null (uriRegName a)) && null (uriUserInfo a)) (uriAuthority u)
@@ -92,8 +95,11 @@ workspace s a = do
  p <- DB.singleton s DB.Preferences
  let w = get (get p "workspaces") a
  pure $ obj [("active_tab",get w "activeTab"),("tabs",get w "tabs" `fallback` arr []),("bookmarks",get w "bookmarks" `fallback` arr [])]
+-- Older remote clients require these arrays even for bookmark-only workspaces.
+completeWorkspace :: Value -> Value
+completeWorkspace w = merge w (obj [("tabs",get w "tabs" `fallback` arr []),("bookmarks",get w "bookmarks" `fallback` arr [])])
 persistWorkspace :: Service -> Text -> Value -> Value -> IO ()
-persistWorkspace s a w prefs = DB.saveSingleton s DB.Preferences $ merge prefs (obj [("workspaces",put a w (get prefs "workspaces")),("workspace_revision",num (int (get prefs "workspace_revision")+1)),("browser_version",num 1)])
+persistWorkspace s a w prefs = DB.saveSingleton s DB.Preferences $ merge prefs (obj [("workspaces",put a (completeWorkspace w) (get prefs "workspaces")),("workspace_revision",num (int (get prefs "workspace_revision")+1)),("browser_version",num 1)])
 -- A bookmark is cheap metadata. Seeding it never opens a browser tab.
 seedMemoBookmark :: Service -> Text -> IO ()
 seedMemoBookmark s owner = do
