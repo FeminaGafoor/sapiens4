@@ -25,12 +25,14 @@ nameHelp :: String
 nameHelp = "Start with A–Z. Letters, numbers, and - _ . : # + | ( ) & $ ^ are allowed. No spaces."
 
 make :: M.DialogKind -> F.Context -> M.Model -> M.Dialog
-make kind record m = {kind,title,record,fields,content:F.NoContent,status:M.Editing,identity:m.sequence+1}
+make kind record m = {kind,title,record,fields,content,status:M.Editing,identity:m.sequence+1}
   where
+  content = if kind == M.Models then F.ModelPreview $ F.modelDraft m.snapshot.main_agent_id else F.NoContent
   name = F.contextName record
   title = case kind of
     M.AppMenu -> D.fallback "CORPORA" $ m.snapshot.corpora.name
     M.WorkspaceSettings -> "Workspace & settings"
+    M.Models -> "Models"
     M.Computer -> "Shared computer"
     M.AgentSettings -> name <> " settings"
     M.GroupSettings -> name <> " settings"
@@ -64,14 +66,26 @@ make kind record m = {kind,title,record,fields,content:F.NoContent,status:M.Edit
 view :: M.Model -> V.Html
 view m = case m.dialog of
   Nothing -> V.node "dialog" [V.id "modal"] []
-  Just d -> V.node "dialog" [V.id $ if M.corporaDialog d.kind then "corpora-dialog" else "modal",V.cls $ if d.kind == M.AppMenu then "app-menu-sheet" else "",V.attr "aria-labelledby" "dialog-title",V.on "cancel" \e -> Link e CloseDialog]
+  Just d -> V.node "dialog" [V.id $ if M.corporaDialog d.kind then "corpora-dialog" else "modal",V.cls $ if d.kind == M.AppMenu then "app-menu-sheet" else if d.kind == M.Models then "model-settings-dialog" else "",V.attr "aria-labelledby" "dialog-title",V.on "cancel" \e -> Link e CloseDialog]
     [V.div (if M.corporaDialog d.kind then "corpora-menu-heading" else "modal-top") [V.span [V.cls "tiny-label"] "SAPIENS4",V.icon (if M.corporaDialog d.kind then "Close" else "Close dialog") "×" CloseDialog]
-    ,V.node "div" [V.id $ if M.corporaDialog d.kind then "corpora-dialog-body" else "modal-content"] [V.textNode "h2" [V.id "dialog-title"] (d.title),body m d,V.textNode "p" [V.cls "corpora-feedback",V.attr "role" "status"] ((M.dialogError d))]]
+    ,V.node "div" [V.id $ if M.corporaDialog d.kind then "corpora-dialog-body" else "modal-content"] [V.textNode "h2" [V.id "dialog-title"] (d.title),body m d,V.textNode "p" [V.cls "corpora-feedback",V.attr "role" "status"] ((M.dialogError d))]
+    ,V.when (d.kind == M.Models) $ V.div "model-save-row"
+      [V.button "button" "Close preview" CloseDialog,V.node "button" [V.attr "type" "button",V.cls "button primary",V.disabled true] [V.text "Save changes"]]]
 
 body :: M.Model -> M.Dialog -> V.Html
 body m d = case d.kind of
   M.AppMenu -> V.node "nav" [V.label "Corpora menu"] [V.button "app-menu-row" "Workspace & settings" $ OpenDialog M.WorkspaceSettings F.NoRecord,V.button "app-menu-row" "Shared computer" $ OpenDialog M.Computer F.NoRecord]
-  M.WorkspaceSettings -> V.div "" [V.p "" "Talk to your Sapis in chat, manage their notes, and save documents in their workspaces. Sapis can delegate requests through ChiefSapi.",V.p "" "Use the corpora menu to switch workspaces. Active and Paused describe execution on the host; Connecting means this device is restoring its connection.",V.button "button" "Edit decision prompts" $ OpenDialog M.DecisionPrompts F.NoRecord]
+  M.WorkspaceSettings -> V.div "workspace-settings"
+    [V.node "nav" [V.label "Workspace settings"]
+      [settingsLink "Models" "Provider, model and per-Sapi choices." M.Models
+      ,settingsLink "Decision prompts" "Instructions used at each decision step." M.DecisionPrompts]
+    ,V.node "details" [V.cls "workspace-settings-help"]
+      [V.textNode "summary" [] "About this workspace"
+      ,V.p "" "Talk to your Sapis in chat, manage their notes, and save documents in their workspaces. Sapis can delegate requests through ChiefSapi."
+      ,V.p "" "Use the corpora menu to switch workspaces. Active and Paused describe execution on the host; Connecting means this device is restoring its connection."]]
+  M.Models -> case d.content of
+    F.ModelPreview draft -> modelSettings m draft
+    _ -> V.p "" "Close and reopen Models to load the preview."
   M.Computer -> V.div "" [V.p "" "Blindly4 is the main computer-use tool. Ask a Sapi in chat to work on your computer.",V.div "settings-row" [V.span [] (if m.snapshot.computer.built then "Blindly4 is built" else "Build required: run " <> if windows then ".\\start.ps1" else "./start.sh"),V.span [V.cls "tag"] (if owner == "" then "Available" else "In use · " <> (M.agent m owner).name)],V.p "" $ "Sapis share one computer. " <> if windows then "Windows UI Automation works with accessible apps on your desktop. Elevated apps and secure system dialogs cannot be controlled." else "macOS Accessibility access is required for desktop interaction; permission failures appear in chat."]
   M.AgentSettings -> form "Save"
     [V.node "div" [V.cls "settings-tabs",V.attr "role" "tablist",V.label "Sapi settings"] $ map (\caption -> V.textNode "button" [V.attr "type" "button",V.attr "role" "tab",V.attr "aria-selected" $ show $ caption == "Profile",V.disabled $ caption /= "Profile"] (caption)) ["Profile","Context","Usage","Limits"]
@@ -114,6 +128,8 @@ body m d = case d.kind of
   M.Notice -> V.div "" [V.p "" $ field F.Message,V.button "" "OK" CloseDialog]
   where
   field key = F.fieldValue key d.fields
+  settingsLink caption description kind = V.controlWith [V.cls "workspace-settings-link",V.label caption]
+    [V.node "span" [] [V.textNode "strong" [] caption,V.textNode "small" [] description],V.chevron true] (OpenDialog kind F.NoRecord)
   input caption key props = V.field "input" caption key (field key) props []
   textarea caption key rows props = V.field "textarea" caption key (field key) ([V.attr "rows" $ show rows] <> props) []
   select caption key options = V.field "select" caption key (field key) [] $ map (\(Tuple value caption_) -> V.textNode "option" [V.value value,V.bool "selected" $ value == field key] caption_) options
@@ -127,6 +143,45 @@ body m d = case d.kind of
   pools = [["Armin","Howl","Seneca","Socrates","Aesop","Nikola","Walt","Akira","Milo"],["Kiki","Chihiro","Sophie","Alice","Hypatia","Simone","Ada","Oprah","Arianna"],["Sage","River","Rowan","Sky","Nova","Phoenix","Ash","Robin","Aster"]]
   suggestions = map (\pool -> let available = A.filter (\name -> not $ A.any (( _ == S.toLower name) <<< S.toLower <<< _.name) m.agents) pool in fromMaybe "Sage" $ A.index (if A.null available then map (_ <> "-" <> show d.identity) pool else available) (mod d.identity $ max 1 $ A.length available)) pools
   ios = N.ios m.env
+
+modelSettings :: M.Model -> F.ModelDraft -> V.Html
+modelSettings m draft = V.div "model-settings"
+  [V.p "model-intro" "Set the default provider and model for this corpora."
+  ,V.p "model-preview-note" "Preview only. Changes are not saved."
+  ,V.div "model-section-heading" [V.textNode "h3" [] "Default provider",V.span [] $ D.fallback "Current corpora" m.snapshot.corpora.name]
+  ,configFields F.CorporaDefault "Default" draft.defaults
+  ,V.node "details" [V.cls "model-sapi-details"]
+    [V.textNode "summary" [] "Customize a Sapi"
+    ,if A.null sapis then V.p "model-hint" "No active Sapis in this corpora." else V.div "model-sapi-fields"
+      [V.node "label" [] [V.text "Sapi",V.node "select" [V.label "Sapi",V.value draft.sapi,V.change $ act <<< F.SelectModelSapi] $ map (\a -> V.textNode "option" [V.value a.id,V.bool "selected" $ a.id == draft.sapi] a.name) sapis]
+      ,checkbox "Use corpora default" inherited $ F.InheritModel draft.sapi
+      ,if inherited then V.p "model-hint" $ "Inherits " <> F.modelProviderName draft.defaults.provider <> " and the corpora model settings." else configFields (F.SapiOverride draft.sapi) "Sapi" (F.previewConfig (F.SapiOverride draft.sapi) draft)]]
+  ]
+  where
+  sapis = A.filter (\a -> not (M.isGroup a || a.retired)) m.agents
+  inherited = not $ O.member draft.sapi draft.overrides
+  act = DialogCommand <<< Intent.PreviewModel
+  checkbox caption checked action = V.node "label" [V.cls "model-check"]
+    [V.node "input" [V.attr "type" "checkbox",V.label caption,V.bool "checked" checked,V.check $ act <<< action] [],V.text caption]
+  configFields target prefix config =
+    let edit = act <<< F.EditModel target
+        custom = case config.choice of
+          F.RecommendedModel -> false
+          _ -> true
+        providerName = F.modelProviderName config.provider
+        providerCard provider = V.node "label" [V.cls "model-provider"]
+          [V.node "input" [V.attr "type" "radio",V.attr "name" $ prefix <> "-provider",V.label $ prefix <> " provider " <> F.modelProviderName provider,V.bool "checked" $ config.provider == provider,V.check $ \checked -> if checked then edit (F.ChooseProvider provider) else edit (F.ChooseProvider config.provider)] []
+          ,V.node "span" [] [V.textNode "strong" [] (F.modelProviderName provider),V.textNode "small" [] $ "Use your " <> F.modelProviderName provider <> " account"]]
+    in V.div "model-config"
+      [V.node "fieldset" [V.cls "model-providers"] ([V.textNode "legend" [V.cls "model-visually-hidden"] (prefix <> " provider")] <> map providerCard [F.Codex,F.Claude])
+      ,V.div "model-section-heading" [V.textNode "h3" [] "Model & effort",checkbox ("Customize " <> S.toLower prefix <> " model") custom $ F.EditModel target <<< F.CustomizeModel]
+      ,case config.choice of
+        F.RecommendedModel -> V.div "model-recommended" [V.span [] $ "Recommended for " <> providerName]
+        F.CustomModel name effort -> V.div "model-custom-fields"
+          [V.node "label" [] [V.text "Model",V.node "input" [V.attr "type" "text",V.label $ prefix <> " model",V.value name,V.attr "placeholder" "Provider model name",V.attr "maxlength" "200",V.input $ edit <<< F.ModelName] []]
+          ,V.node "fieldset" [V.cls "model-efforts"] ([V.textNode "legend" [] (prefix <> " effort")] <> map (\value -> V.node "label" []
+            [V.node "input" [V.attr "type" "radio",V.attr "name" $ prefix <> "-effort",V.label $ prefix <> " effort " <> F.modelEffortName value,V.bool "checked" $ effort == value,V.check $ \checked -> if checked then edit (F.ChooseEffort value) else edit (F.ChooseEffort effort)] [],V.text $ F.modelEffortName value]) [F.RecommendedEffort,F.MediumEffort,F.HighEffort])
+          ,V.p "model-hint" "Example model and effort choices."]]
 
 relayList :: M.Dialog -> V.Html
 relayList d = if d.content == F.NoContent then V.p "" "Loading…" else V.div ""

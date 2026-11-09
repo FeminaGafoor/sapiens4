@@ -80,6 +80,7 @@ data Success = Refresh | CloseAndRefresh String | SavedPrompt String
 
 data DialogIntent
   = SuggestNames
+  | PreviewModel F.ModelPreviewAction
   | CreateAgent
   | MentionGroup X.Entity
   | ResetRelay

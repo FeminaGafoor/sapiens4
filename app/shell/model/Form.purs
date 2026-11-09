@@ -3,7 +3,7 @@ module Sapiens.Form where
 import Prelude
 import Data.Argonaut.Core (Json)
 import Data.Array as A
-import Data.Maybe (Maybe(..))
+import Data.Maybe (Maybe(..), fromMaybe)
 import Sapiens.Domain as X
 import Foreign.Object as O
 import Sapiens.Data as D
@@ -115,8 +115,64 @@ type Device = {name :: String, platform :: String, client :: String}
 type Confirmation = {confirmation_code :: String, peer :: String}
 type PairStatus = {available :: Boolean, paired :: Boolean, enabled :: Boolean, invitation :: X.Invitation, pending :: Maybe Confirmation, device :: Device, paired_at :: Number, last_connected_at :: Number, error :: String}
 
-data Content = NoContent | Prompts (Array Prompt) | RelayRegistry Relays | Pairing PairStatus
+data Content = NoContent | Prompts (Array Prompt) | RelayRegistry Relays | Pairing PairStatus | ModelPreview ModelDraft
 derive instance eqContent :: Eq Content
+
+-- Local preview state only; these choices are never serialized as execution settings.
+data ModelProvider = Codex | Claude
+derive instance eqModelProvider :: Eq ModelProvider
+data ModelEffort = RecommendedEffort | MediumEffort | HighEffort
+derive instance eqModelEffort :: Eq ModelEffort
+data ModelChoice = RecommendedModel | CustomModel String ModelEffort
+derive instance eqModelChoice :: Eq ModelChoice
+type ModelConfig = {provider :: ModelProvider, choice :: ModelChoice}
+type ModelDraft = {defaults :: ModelConfig, overrides :: O.Object ModelConfig, sapi :: String}
+data ModelTarget = CorporaDefault | SapiOverride String
+data ModelEdit = ChooseProvider ModelProvider | CustomizeModel Boolean | ModelName String | ChooseEffort ModelEffort
+data ModelPreviewAction = EditModel ModelTarget ModelEdit | SelectModelSapi String | InheritModel String Boolean
+
+modelProviderName :: ModelProvider -> String
+modelProviderName = case _ of
+  Codex -> "Codex"
+  Claude -> "Claude"
+
+modelEffortName :: ModelEffort -> String
+modelEffortName = case _ of
+  RecommendedEffort -> "Recommended"
+  MediumEffort -> "Medium"
+  HighEffort -> "High"
+
+modelDraft :: String -> ModelDraft
+modelDraft sapi = {defaults:{provider:Codex,choice:RecommendedModel},overrides:O.empty,sapi}
+
+previewConfig :: ModelTarget -> ModelDraft -> ModelConfig
+previewConfig target draft = case target of
+  CorporaDefault -> draft.defaults
+  SapiOverride id -> fromMaybe draft.defaults $ O.lookup id draft.overrides
+
+updateModelPreview :: ModelPreviewAction -> ModelDraft -> ModelDraft
+updateModelPreview action draft = case action of
+  SelectModelSapi sapi -> draft {sapi=sapi}
+  InheritModel id true -> draft {overrides=O.delete id draft.overrides}
+  InheritModel id false -> draft {overrides=O.insert id (previewConfig (SapiOverride id) draft) draft.overrides}
+  EditModel target edit ->
+    let config = previewConfig target draft
+        changed = case edit of
+          ChooseProvider provider | provider /= config.provider -> {provider,choice:RecommendedModel}
+          ChooseProvider _ -> config
+          CustomizeModel false -> config {choice=RecommendedModel}
+          CustomizeModel true -> case config.choice of
+            RecommendedModel -> config {choice=CustomModel "" RecommendedEffort}
+            _ -> config
+          ModelName modelName -> case config.choice of
+            CustomModel _ effort -> config {choice=CustomModel modelName effort}
+            _ -> config
+          ChooseEffort effort -> case config.choice of
+            CustomModel modelName _ -> config {choice=CustomModel modelName effort}
+            _ -> config
+    in case target of
+      CorporaDefault -> draft {defaults=changed}
+      SapiOverride id -> draft {overrides=O.insert id changed draft.overrides}
 
 prompt :: Json -> Prompt
 prompt row = {node:D.s "node" row,path:D.s "path" row,content:D.s "content" row}

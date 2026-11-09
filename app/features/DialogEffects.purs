@@ -196,6 +196,9 @@ handle runtime dispatch action = case action of
       Intent.InstallPrompt -> void $ H.fork $ void $ H.liftAff $ try $ toAffE B.installPrompt
       _ -> traverse_ (\d -> unless (M.dialogBusy d) $ dialogCommand m d command) m.dialog
   dialogCommand m d command = case command of
+    Intent.PreviewModel edit -> case d.kind, d.content of
+      M.Models, F.ModelPreview draft -> E.modifyDialog d.identity _ {content=F.ModelPreview $ F.updateModelPreview edit draft}
+      _, _ -> pure unit
     Intent.SuggestNames -> do
       E.modifyDialog d.identity (\s -> s {identity=s.identity+1})
       H.modify_ (\s -> s {sequence=s.sequence+1})

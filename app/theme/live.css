@@ -466,3 +466,48 @@ body.sapi-workspace .notes-wiki :is(h1,h2) { font-family:Georgia,"Times New Roma
 .connection-status { display:inline-flex;align-items:center;gap:6px;white-space:nowrap;font-size:11px;color:var(--muted); }
 .connection-dot { width:6px;height:6px;flex:none;border-radius:50%;background:#888; }
 .connection-status[data-online="true"] .connection-dot { background:#3b9b69; }
+/* Models settings preview: scoped to this dialog, using the existing theme. */
+:root body.sapi-workspace dialog.model-settings-dialog{width:min(640px,calc(100vw - 32px));max-height:calc(var(--mobile-viewport-height,100dvh) - 32px);overflow:hidden}
+:root body.sapi-workspace dialog.model-settings-dialog[open]{display:flex;flex-direction:column}
+:root body.sapi-workspace .model-settings-dialog>.modal-top{flex-shrink:0}
+:root body.sapi-workspace .model-settings-dialog>#modal-content{min-height:0;overflow:auto;overscroll-behavior:contain;padding-right:6px;scrollbar-gutter:stable}
+:root body.sapi-workspace .model-settings{padding:0 0 4px}
+:root body.sapi-workspace .model-settings .model-intro{font-size:14px;line-height:1.6;color:var(--muted);margin:0 0 10px}
+:root body.sapi-workspace .model-settings .model-preview-note{color:var(--muted);font-size:12px;line-height:1.5;margin:0 0 18px}
+:root body.sapi-workspace .model-settings .model-section-heading{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;margin:18px 0 10px}
+:root body.sapi-workspace .model-settings h3{font-size:14px;font-weight:600;letter-spacing:normal;line-height:1.5;margin:0}
+:root body.sapi-workspace .model-section-heading>span{font-size:12px;color:var(--muted);overflow-wrap:anywhere}
+:root body.sapi-workspace .model-settings fieldset{min-width:0;margin:0;padding:0;border:0}
+:root body.sapi-workspace .model-settings .model-providers{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+:root body.sapi-workspace .model-settings .model-provider{display:flex;align-items:flex-start;gap:10px;padding:15px 14px;border:1px solid var(--line);border-radius:10px;background:var(--sapi-white)}
+:root body.sapi-workspace .model-settings .model-provider:has(input:checked){border-color:var(--sapi-accent);background:var(--sapi-hover)}
+:root body.sapi-workspace .model-settings input[type=radio],:root body.sapi-workspace .model-settings input[type=checkbox]{accent-color:var(--sapi-accent);width:17px;height:17px;flex-shrink:0;margin:3px 0 0}
+:root body.sapi-workspace .model-provider strong{display:block;font-size:16px;font-weight:600}
+:root body.sapi-workspace .model-provider small{display:block;font-size:12px;color:var(--muted);margin-top:4px}
+:root body.sapi-workspace .model-settings .model-hint{font-size:12px;color:var(--muted);line-height:1.6;margin:10px 0 0}
+:root body.sapi-workspace .model-settings .model-check{display:flex;gap:8px;align-items:center;font-size:12px;min-height:36px}
+:root body.sapi-workspace .model-settings .model-recommended{padding:13px 14px;border:1px solid var(--line);border-radius:8px;font-size:13px}
+:root body.sapi-workspace .model-custom-fields>label,:root body.sapi-workspace .model-sapi-fields>label:not(.model-check){display:grid;gap:7px;font-size:13px}
+:root body.sapi-workspace .model-settings input[type=text],:root body.sapi-workspace .model-settings select{width:100%;min-width:0;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--sapi-surface);color:var(--ink);font-size:14px}
+:root body.sapi-workspace .model-settings .model-efforts{display:flex;flex-wrap:wrap;gap:4px 18px;margin-top:14px}
+:root body.sapi-workspace .model-efforts legend{font-size:13px;margin-bottom:5px}
+:root body.sapi-workspace .model-efforts label{display:flex;align-items:center;gap:7px;font-size:12px;min-height:36px}
+:root body.sapi-workspace .model-settings .model-sapi-details{border-top:1px solid var(--line);padding:12px 0 0;margin-top:18px}
+:root body.sapi-workspace .model-sapi-details summary{font-size:14px;padding:5px 0}
+:root body.sapi-workspace .model-sapi-fields{padding-top:12px;display:grid;gap:10px}
+:root body.sapi-workspace .model-settings-dialog>.model-save-row{display:flex;flex-wrap:wrap;flex-shrink:0;align-items:center;justify-content:flex-end;gap:10px;margin-top:14px;padding-top:14px;border-top:1px solid var(--line);background:var(--sapi-white)}
+:root body.sapi-workspace .model-save-row .button{min-height:40px}
+:root body.sapi-workspace .workspace-settings-link{display:flex;align-items:center;justify-content:space-between;gap:16px;width:100%;padding:16px 8px;text-align:left;border-bottom:1px solid var(--line);border-radius:5px}
+:root body.sapi-workspace .workspace-settings-link>span{min-width:0}
+:root body.sapi-workspace .workspace-settings-link strong{display:block;font-size:14px;font-weight:600}
+:root body.sapi-workspace .workspace-settings-link small{display:block;color:var(--muted);font-size:12px;margin-top:4px;line-height:1.5}
+:root body.sapi-workspace .workspace-settings-help{margin-top:18px;font-size:12px;color:var(--muted)}
+:root body.sapi-workspace .workspace-settings-help summary{padding:8px 0;color:var(--ink)}
+:root body.sapi-workspace .workspace-settings-help p{margin-top:10px;line-height:1.6}
+:root body.sapi-workspace .model-settings .model-visually-hidden{position:absolute;width:1px;height:1px;padding:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+@media(max-width:600px){
+ :root body.sapi-workspace .model-settings{padding:0}
+ :root body.sapi-workspace .model-settings .model-providers{grid-template-columns:1fr}
+ :root body.sapi-workspace .model-settings input[type=text],:root body.sapi-workspace .model-settings select{font-size:16px}
+ :root body.sapi-workspace .model-settings .model-check,:root body.sapi-workspace .model-efforts label{min-height:44px}
+}
