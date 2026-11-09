@@ -72,7 +72,7 @@ class Desktop
         transient = error.message.match?(/\ABlindly4 tree:.*"code":"accessibility_error".*0x(?:80040201|00000000)/m)
         starting = wait_for_window && error.message.include?("No visible windows for PID #{process.pid}")
         replaced = self.class.linux? && error.message.start_with?('Blindly4 tree: ') &&
-          error.message.match?(/Object does not exist at path|Accessible element is defunct|No such interface .org\.a11y\.atspi\.Accessible. on object/)
+          error.message.match?(/org\.freedesktop\.DBus\.Error\.UnknownObject|Object does not exist at path|Accessible element is defunct|No such interface .(?:org\.a11y\.atspi\.Accessible|org\.freedesktop\.DBus\.Properties). on object/)
         raise unless (Gem.win_platform? && (transient || starting)) || replaced
         false
       end
