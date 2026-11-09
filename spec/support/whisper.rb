@@ -1,9 +1,8 @@
 require 'socket'
 require 'json'
 
-# A stand-in for whisper-server on this computer. It answers every /inference request with the
-# same text, so voice specs do not need the real model, and notes whether audio arrived and how
-# many requests came. With status: 500 it plays a Whisper that fails to transcribe.
+# A controllable local whisper-server: replies can wait for assertions, fail, and then recover.
+# Tracks real audio uploads and request counts without loading a transcription model.
 class WhisperStub
   attr_reader :url, :requests
 
@@ -20,6 +19,10 @@ class WhisperStub
   end
 
   def audio_received; @audio; end
+
+  def respond_with(text, status: 200)
+    @text, @status = text, status
+  end
 
   def close
     @server.close
@@ -41,6 +44,9 @@ class WhisperStub
     @before_reply&.call
     reply = JSON.generate(@status == 200 ? {text: @text} : {error: 'stub failure'})
     client.write("HTTP/1.1 #{@status} #{@status == 200 ? 'OK' : 'Error'}\r\nContent-Type: application/json\r\nContent-Length: #{reply.bytesize}\r\nConnection: close\r\n\r\n#{reply}")
+  rescue Errno::EPIPE, Errno::ECONNRESET, Errno::ECONNABORTED
+    # The host may shut down while a controlled transcription response is waiting.
+    nil
   ensure
     client.close
   end

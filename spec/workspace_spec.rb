@@ -63,7 +63,7 @@ RSpec.describe 'Workspace and memory contracts' do
     File.binwrite(File.join(root, 'chart one.png'), "media stays in its file")
     expect(host.api('GET', preview)['content']).to eq(source)
     linked = host.control(chief, 'workspace_open', href: 'chart%20one.png')['workspace']
-    expect(linked['tabs'].last['path']).to eq(File.join(root, 'chart one.png'))
+    expect(File.identical?(linked['tabs'].last['path'], File.join(root, 'chart one.png'))).to be(true)
     expect(host.request('POST', "/api/agents/#{chief}/control", {op: 'workspace_open', href: '%2e%2e/secret'}).first).to eq(403)
     embedded_media = ['<img src="chart.png">', '<img src="data:image/png;base64,AAAA">',
       '<a href="data:image/png;base64,AAAA">Chart</a>', '<style>p {background: url(data:image/png;base64,AAAA)}</style>']
