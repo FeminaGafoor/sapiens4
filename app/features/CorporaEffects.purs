@@ -125,14 +125,15 @@ handle runtime dispatch action = case action of
     requested <- H.get
     E.inDialog id \dialog -> when (dialog.kind == M.HostPairing) $
         E.attempt (C.request runtime (M.remote requested) (F.contextCorpora dialog.record) "/api/remote" "GET" D.null) \result -> E.inDialog id \d -> do
-          m <- H.get
+          now <- liftEffect B.now
+          H.modify_ _ {now=now}
           case result of
             Left failure -> E.modifyDialog id (M.setDialogError $ message failure)
             Right value -> do
               if d.content == F.NoContent && not (D.b "paired" value || D.b "enabled" value || F.contextReady d.record) then dispatch $ OpenDialog M.RelayList d.record else do
                 let status = F.pairStatus value
                     invitation = status.invitation
-                    link = if invitation.expires > m.now/1000.0 && D.b "enabled" value then R.invitationLink invitation else ""
+                    link = if invitation.expires > now/1000.0 && D.b "enabled" value then R.invitationLink invitation else ""
                     dates = O.fromFoldable $ map (\key -> Tuple key $ if D.n key value <= 0.0 then "Not recorded" else B.formatDate "" (D.json {dateStyle: "medium", timeStyle: "long"}) (B.timestamp $ D.n key value * 1000.0)) ["paired_at","last_connected_at"]
                 E.modifyDialog id \current -> current {content=F.Pairing status,title=if D.b "paired" value then "Edit Pairing" else "New Pairing",fields=current.fields {dates=dates,expiration=B.timestamp $ invitation.expires*1000.0,link=link}}
                 H.modify_ \s -> s {records=map (\r -> if r.key == (F.contextCorpora d.record).key then r {paired=D.b "paired" value} else r) s.records}

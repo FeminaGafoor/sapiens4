@@ -8,7 +8,6 @@ import Control.Exception
 import Control.Monad
 import Data.Aeson hiding (pairs)
 import qualified Data.ByteString as BS
-import qualified Data.ByteString.Lazy as BL
 import Data.Char
 import Data.Maybe
 import qualified Data.Map.Strict as M
@@ -71,6 +70,15 @@ memoMetadata root = work `catch` (\(APIError _ e) -> pure (obj [("path",str (T.p
   digest <- if exists && has history "sha256" then T.pack . concatMap (\b -> let value=showHex b "" in if length value==1 then '0':value else value) . BS.unpack . hash <$> BS.readFile p else pure ""
   let historyText field=case get history field of String t->str t; _->Null
   pure $ obj [("path",str (T.pack p)),("workspace",str (T.pack root)),("revision",str (maybe "missing" (\t -> timestamp t <> ":" <> T.pack (show size)) modified)),("modified_at",maybe Null (str . timestamp) modified),("created_at",historyText "created_at"),("created_by",historyText "created_by"),("modified_by",if exists && has history "sha256" && at history "sha256"==digest then historyText "modified_by" else Null)]
+validateMemoMedia :: Text -> IO ()
+validateMemoMedia content = do
+ let embedded (TagOpen name attrs) = T.toLower name `elem` ["img","picture","svg","audio","video","source","object","embed","iframe"]
+        || any (T.isInfixOf "data:" . T.toLower . T.filter (not . isSpace) . snd) attrs
+     embedded (TagText value) = "url(" `T.isInfixOf` lower && "data:image/" `T.isInfixOf` lower
+      where lower = T.toLower value
+     embedded _ = False
+ require (not (any embedded (parseTags content))) 409 "Keep media in separate files and link to them from Notes.html."
+
 readMemo :: FilePath -> IO Value
 readMemo root = do
  let p = root </> "Notes.html"
@@ -79,6 +87,7 @@ readMemo root = do
  require exists 409 "Notes.html is missing; check the original Notes file before recreating it."
  raw <- BS.readFile p
  content <- either (const (failure 409 "Notes.html must contain UTF-8 text")) pure (TE.decodeUtf8' raw)
+ validateMemoMedia content
  metadata <- memoMetadata root
  pure $ obj [("path",str (T.pack p)),("content",str content),("metadata",metadata)]
 memoContext :: FilePath -> IO Value
@@ -104,15 +113,3 @@ projectMemo memo = do
      (sections,_,order)=foldl step (M.empty,Nothing,[]) (parseTags (at memo "content") :: [Tag Text])
  check (order==map Just ["about","map","content"]) 409 "Notes.html requires sections with ids about, map, and content."
  pure $ obj (("path",get memo "path"):[(key,if T.length value<=12000 then str value else Null) | (key,value)<-M.toList sections,key/="content"])
-memoImage :: FilePath -> Text -> IO (BL.ByteString,Text)
-memoImage root name = do
- p <- canonicalizePath (root </> T.unpack name)
- require (not (isAbsolute (T.unpack name)) && (addTrailingPathSeparator root) `isPrefix` p) 409 "Path escapes its store"
- let mime = lookup (map toLower (takeExtension p)) [(".png","image/png"),(".jpg","image/jpeg"),(".jpeg","image/jpeg"),(".gif","image/gif"),(".webp","image/webp")]
- exists <- doesFileExist p
- size <- if exists then getFileSize p else pure 0
- require (exists && size <= 10000000 && isJust mime) 404 "Notes image not found or too large"
- contentType <- maybe (failure 404 "Notes image not found or too large") pure mime
- bytes <- BL.readFile p
- pure (bytes,contentType)
- where isPrefix a b = take (length a) b == a

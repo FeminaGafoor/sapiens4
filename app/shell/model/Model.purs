@@ -27,9 +27,11 @@ previewError = case _ of
   PreviewUnavailable message -> message
   InvalidPreview -> "Invalid file preview response"
 
-decodePreview :: Json -> Either PreviewError String
-decodePreview value = case toString (D.get "content" value) of
-  Just content -> Right content
+data Preview = TextPreview String | MemoPreview (Array Json)
+
+decodePreview :: Boolean -> Json -> Either PreviewError Preview
+decodePreview memo value = case toString (D.get "content" value) of
+  Just content -> Right $ if memo then MemoPreview (D.arr $ B.parseMarkup content) else TextPreview content
   Nothing -> Left InvalidPreview
 
 type Request = { epoch :: Int, sequence :: Int, key :: String, revision :: String, path :: String }
@@ -97,12 +99,12 @@ type ContentState r =
   , drafts :: O.Object String, attachments :: O.Object (Array X.Attachment), sending :: Set.Set String
   , uploading :: Int, clarification :: Maybe X.Workload
   , workspaces :: O.Object X.Workspace, workspaceRevision :: Number, documents :: O.Object (RemoteData String X.Document)
-  , expanded :: Set.Set String, imageUrls :: O.Object String, preview :: RemoteData PreviewError String
+  , expanded :: Set.Set String, preview :: RemoteData PreviewError Preview
   , scrollPosition :: Maybe Browser.ScrollPosition, restoringScroll :: Boolean
   | r )
 
 type SessionState =
-  ( polling :: Boolean, pollGeneration :: Int, saving :: Boolean, lastPreview :: Number
+  ( snapshotContent :: Maybe X.SnapshotContent, polling :: Boolean, pollGeneration :: Int, fallbackDelay :: Number, saving :: Boolean, lastPreview :: Number
   , nativeReporting :: Boolean, nativeReports :: Array Browser.NativeReport
   , epoch :: Int, sequence :: Int, now :: Number, env :: Environment
   , records :: Array X.Corpora, active :: String, connection :: ConnectionState
@@ -110,16 +112,19 @@ type SessionState =
   , preferencesSaved :: String
   )
 
+fastPoll :: Number
+fastPoll = 750.0
+
 initial :: Environment -> Model
 initial env =
   { snapshot:X.emptySnapshot, agents:[], messages:O.empty, selected:"", activity:N.Chat N.Conversation, scope:N.All, groupView:Nothing
   , mention:Nothing, drafts:O.empty, attachments:O.empty, sending:Set.empty, uploading:0, clarification:Nothing
   , workspaces:O.empty, workspaceRevision:0.0, documents:O.empty, expanded:Set.empty
-  , polling:false,pollGeneration:0,saving:false,lastPreview:0.0,nativeReporting:false,nativeReports:[]
+  , snapshotContent:Nothing, polling:false,pollGeneration:0,fallbackDelay:fastPoll,saving:false,lastPreview:0.0,nativeReporting:false,nativeReports:[]
   , epoch:0, sequence:0, now:0.0, env, panes:[N.ChatPane,N.Sidebar,N.Workspace], search:"", searchOpen:false, menu:Nothing, dialog:Nothing
   , records:[], active:"", connection:Offline, localAvailable:false, showArchived:false
   , toast:"", feedback:"", theme:if env.dark then "dark" else "light", installRequired:false
-  , dialogStack:[], imageUrls:O.empty, preview:NotAsked, address:"", addressOpen:false, scrollPosition:Nothing, restoringScroll:false, preferencesSaved:""
+  , dialogStack:[], preview:NotAsked, address:"", addressOpen:false, scrollPosition:Nothing, restoringScroll:false, preferencesSaved:""
   }
 
 agent :: Model -> String -> X.Entity
@@ -218,7 +223,7 @@ reset raw old = case X.decodeSnapshot raw of
 resetSnapshot :: X.Snapshot -> Model -> Model
 resetSnapshot snapshot old = projectSnapshot snapshot old
   {selected=p.selected,activity=p.activity,scope=p.scope,groupView=p.groupView,drafts=p.drafts
-  ,attachments=snapshot.attachment_drafts,sending=Set.empty,uploading=0,clarification=Nothing,documents=O.empty,expanded=Set.empty,epoch=old.epoch+1
+  ,snapshotContent=Nothing,attachments=snapshot.attachment_drafts,sending=Set.empty,uploading=0,clarification=Nothing,documents=O.empty,expanded=Set.empty,epoch=old.epoch+1
   ,panes=p.panes,workspaces=p.workspaces,workspaceRevision=p.workspaceRevision,search="",searchOpen=false
   ,preview=NotAsked,address="",scrollPosition=p.scrollPosition,restoringScroll=p.scrollPosition /= Nothing}
   where
@@ -245,8 +250,9 @@ roster m = A.sortBy (\a b -> compare (pinned b) (pinned a) <> compare b.lastActi
 maybeGroup :: Model -> X.Entity
 maybeGroup m = fromMaybe X.emptyEntity $ m.groupView >>= flip X.findEntity m.agents
 
-notes :: Model -> X.Notes
-notes m = if isGroup (selected m) then (selected m).notes else fromMaybe (X.notes D.empty) $ _.notes <$> O.lookup m.selected m.snapshot.orchestration
+notes :: Model -> String -> X.Notes
+notes m owner = if isGroup entity then entity.notes else fromMaybe (X.notes D.empty) $ _.notes <$> O.lookup owner m.snapshot.orchestration
+  where entity = agent m owner
 
 preferences :: Model -> Json
 preferences m = D.merge (N.encodeActivity m.activity) $ D.json
@@ -258,22 +264,25 @@ preferences m = D.merge (N.encodeActivity m.activity) $ D.json
 
 currentDocument :: Model -> Maybe Request
 currentDocument m = case m.activity of
-  N.Work N.Memo _ | info.revision /= "missing" -> Just $ make "memo" (info.revision) "/notes"
   N.Work view _ | A.elem view [N.Tasks,N.Automated] && not (isGroup a) -> Just $ make "tasks" (D.encode $ D.json $ map _.revision $ A.filter (\w -> A.elem m.selected w.participants) m.snapshot.workloads) "/tasks?format=json"
   _ -> Nothing
   where
   a = selected m
-  info = notes m
   make kind revision suffix = {key:kind <> ":" <> m.selected,revision,path:ownerPath m <> suffix,epoch:m.epoch,sequence:m.sequence+1}
 
 nativeWorkspace :: Model -> Boolean
 nativeWorkspace m = m.env.native && (activeRecord m).location /= X.Remote
 
+isMemoTab :: X.Notes -> X.Tab -> Boolean
+isMemoTab memo tab = tab.path /= "" && tab.path == memo.path
+
 currentPreview :: Model -> Maybe Request
 currentPreview m =
   let tab = activeTab m
-  in if nativeWorkspace m || tab.path == "" || not (A.elem N.Workspace m.panes) then Nothing
-     else Just {epoch:m.epoch,sequence:m.sequence+1,key:tab.id,revision:D.encode $ D.json tab.command,path:ownerPath m <> "/browser/" <> B.encodeURI (tab.id) <> "/content"}
+      memo = notes m m.selected
+      isMemo = isMemoTab memo tab
+  in if (nativeWorkspace m && not isMemo) || tab.path == "" || not (A.elem N.Workspace m.panes) then Nothing
+     else Just {epoch:m.epoch,sequence:m.sequence+1,key:tab.id,revision:D.encode (D.json tab.command) <> (if isMemo then memo.revision else ""),path:ownerPath m <> "/browser/" <> B.encodeURI (tab.id) <> "/content"}
 
 requestOf :: forall error a. RemoteData error a -> Maybe Request
 requestOf = case _ of
@@ -287,6 +296,3 @@ valueOf = case _ of
   Loading _ value -> value
   Ready _ value -> Just value
   _ -> Nothing
-
-decodeDocument :: Request -> Json -> Either String X.Document
-decodeDocument r = X.decodeDocument (S.take 5 r.key == "tasks")

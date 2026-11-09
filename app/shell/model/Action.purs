@@ -74,7 +74,6 @@ data Action
   | Submit Event Action
   | Link Event Action
   | OpenLink String
-  | NoteAnchor String
 
 data Success = Refresh | CloseAndRefresh String | SavedPrompt String
 

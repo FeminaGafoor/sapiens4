@@ -9,7 +9,7 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Base64 as B64
 import qualified Data.ByteString.Lazy as BL
 import Data.Char
-import Data.List (find,nub)
+import Data.List (find,isPrefixOf,nub)
 import Data.Maybe
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -20,6 +20,7 @@ import System.FilePath
 import System.Info (os)
 import System.IO (IOMode(ReadMode), withBinaryFile)
 import Types
+import qualified Memo
 import qualified Store as DB
 
 migrateWorkspaces :: Service -> IO ()
@@ -73,6 +74,19 @@ destination s a d checkFile = validated (parseDestination d) >>= \location -> ca
   full <- canonicalizePath (if isAbsolute p then p else workspaceRoot s a </> p)
   when checkFile $ doesFileExist full >>= \ok -> require ok 404 "File not found"
   pure (obj [("url",str (fileURL full)),("path",str (T.pack full)),("title",str (T.pack (takeFileName full)))])
+-- Links authored inside Notes.html are relative to the owning workspace.
+memoLinkDestination :: Service -> Text -> Value -> IO Value
+memoLinkDestination s owner input = do
+ require (not (has input "url" || has input "path")) 400 "Supply one destination"
+ href <- textField input "href" 8192
+ uri <- maybe (failure 400 "Invalid workspace link") pure (parseRelativeReference (T.unpack href))
+ let path = unEscapeString (uriPath uri)
+ require (uriAuthority uri == Nothing && not (null path) && isRelative path) 400 "Use a relative workspace link"
+ root <- canonicalizePath (workspaceRoot s owner)
+ file <- canonicalizePath (root </> path)
+ require (addTrailingPathSeparator root `isPrefixOf` file) 403 "Link is outside this workspace"
+ destination s owner (obj [("path",str (T.pack file))]) True
+
 workspace :: Service -> Text -> IO Value
 workspace s a = do
  p <- DB.singleton s DB.Preferences
@@ -80,6 +94,48 @@ workspace s a = do
  pure $ obj [("active_tab",get w "activeTab"),("tabs",get w "tabs" `fallback` arr []),("bookmarks",get w "bookmarks" `fallback` arr [])]
 persistWorkspace :: Service -> Text -> Value -> Value -> IO ()
 persistWorkspace s a w prefs = DB.saveSingleton s DB.Preferences $ merge prefs (obj [("workspaces",put a w (get prefs "workspaces")),("workspace_revision",num (int (get prefs "workspace_revision")+1)),("browser_version",num 1)])
+-- A bookmark is cheap metadata. Seeding it never opens a browser tab.
+seedMemoBookmark :: Service -> Text -> IO ()
+seedMemoBookmark s owner = do
+ prefs <- DB.singleton s DB.Preferences
+ let w = get (get prefs "workspaces") owner
+ unless (boolean (get w "memo_bookmark_seeded")) $ do
+  bookmark <- memoBookmark s owner
+  persistWorkspace s owner (put "memo_bookmark_seeded" (Bool True) (withBookmark bookmark w)) prefs
+
+memoBookmark :: Service -> Text -> IO Value
+memoBookmark s owner = do
+ root <- canonicalizePath (workspaceRoot s owner)
+ let path = root </> "Notes.html"
+ pure $ obj [("id",str "memo"),("title",str "Notes.html"),("path",str (T.pack path)),("url",str (fileURL path))]
+
+withBookmark :: Value -> Value -> Value
+withBookmark bookmark w =
+ let saved = items w "bookmarks"
+ in if any ((==get bookmark "url") . (`get` "url")) saved then w
+    else put "bookmarks" (arr (saved ++ [bookmark])) w
+
+openMemo :: Service -> Text -> IO Value
+openMemo s owner = do
+ bookmark <- memoBookmark s owner
+ let path = T.unpack (at bookmark "path")
+ Memo.validate (takeDirectory path) path
+ exists <- doesFileExist path
+ require exists 404 "Notes.html is missing"
+ prefs <- DB.singleton s DB.Preferences
+ let w = get (get prefs "workspaces") owner
+     marked = withBookmark bookmark w
+ case find ((==get bookmark "url") . (`get` "url")) (items w "tabs") of
+  Just tab -> do
+   let focused = editWorkspace "" (at tab "id") FocusTab marked
+   when (focused /= w) $ persistWorkspace s owner focused prefs
+  Nothing -> do
+   identity <- ("tab-" <>) <$> newId
+   sequence <- newId
+   let dest = select ["url","path","title"] bookmark
+   persistWorkspace s owner (editWorkspace sequence identity (OpenTab dest identity Nothing) marked) prefs
+ workspace s owner
+
 data WorkspaceEdit
  = OpenTab Value Text (Maybe Value) | UnbookmarkTab | CloseTab | FocusTab | ZoomTab Value Value
  | BookmarkTab Text Value | ControlTab BrowserAction Value
@@ -116,6 +172,7 @@ editWorkspace sequence identity edit w = case edit of
  update value=put "tabs" (arr [if at t "id"==identity then value else t | t<-tabs]) w
 
 workspaceControl :: Service -> Text -> Text -> Value -> IO Value
+workspaceControl s a "memo" _ = openMemo s a
 workspaceControl s a action d = do
  prefs <- DB.singleton s DB.Preferences
  let w=get (get prefs "workspaces") a `fallback` obj [("tabs",arr []),("bookmarks",arr [])]
@@ -124,7 +181,7 @@ workspaceControl s a action d = do
  sequence <- newId
  edit <- case action of
   "open" -> do
-   dest <- destination s a d True
+   dest <- if has d "href" then memoLinkDestination s a d else destination s a d True
    when (has d "id") (require (isJust found) 404 "Unknown browser tab")
    identity <- maybe (("tab-" <>) <$> newId) (pure . (`at` "id")) found
    pure (OpenTab dest identity found)
@@ -164,10 +221,14 @@ workspaceText s a i = do
  w <- workspace s a
  tab <- maybe (failure 404 "Unknown local file tab") pure (findId i (items w "tabs"))
  require (has tab "path") 404 "Unknown local file tab"
- raw <- withBinaryFile (T.unpack (at tab "path")) ReadMode (`BS.hGet` 2000001) `catch` (\(_ :: IOException) -> failure 404 "File not found or unreadable")
+ let file = T.unpack (at tab "path")
+ let isMemo = file == workspaceRoot s a </> "Notes.html"
+ when isMemo $ Memo.validate (workspaceRoot s a) file
+ raw <- withBinaryFile file ReadMode (`BS.hGet` 2000001) `catch` (\(_ :: IOException) -> failure 404 "File not found or unreadable")
  require (BS.length raw <= 2000000) 413 "This file is too large for the text preview; open it in the desktop app"
  content <- either (const (failure 415 "This file is not UTF-8 text; open it in the desktop app")) pure (TE.decodeUtf8' raw)
  require (not (T.any (== '\0') content)) 415 "This file is not UTF-8 text; open it in the desktop app"
+ when isMemo $ Memo.validateMemoMedia content
  pure $ obj [("content",str (fromMaybe content (T.stripPrefix "\xfeff" content))),("path",get tab "path")]
 createAttachment :: Service -> Text -> Value -> IO Value
 createAttachment s a d = do

@@ -217,6 +217,7 @@ launch s a batch tick slot batching = do
    D.pendingWorks s
    G.reconcileGroups s
    G.dispatchGroups s
+   notifyChange s
 publish :: Service -> Text -> Pulse -> IO ()
 publish s a tick = forM_ [1,2] $ \slot -> do
  state <- agentState s a

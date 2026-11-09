@@ -86,7 +86,7 @@ RSpec.describe 'Navigating work', :desktop do
     proxy = HostProxy.new(host) do |request, response|
       if request.path.end_with?('/tasks')
         requested << true
-        Timeout.timeout(15) { release.pop }
+        Timeout.timeout(Desktop.linux? ? 60 : 15) { release.pop }
       end
       response
     end
@@ -111,7 +111,7 @@ RSpec.describe 'Navigating work', :desktop do
     proxy = HostProxy.new(host) do |request, response|
       if request.path.start_with?(old_route) && request.path.end_with?('/tasks')
         requested << true
-        Timeout.timeout(15) { release.pop }
+        Timeout.timeout(Desktop.linux? ? 60 : 15) { release.pop }
         returned << true
       end
       response
@@ -198,54 +198,40 @@ RSpec.describe 'Navigating work', :desktop do
     proxy&.close
   end
 
-  it 'keeps task history visible when a Memo finishes loading after navigation' do
-    completed_task
-    File.write(File.join(host.workspace(chief), 'Notes.html'),
-      '<section id="about">Notebook</section><section id="map"></section><section id="content"><p>Late Memo content.</p></section>')
-    requested, release, returned = Queue.new, Queue.new, Queue.new
-    proxy = HostProxy.new(host) do |request, response|
-      if request.path.end_with?('/notes')
-        requested << true
-        Timeout.timeout(15) { release.pop }
-        returned << true
-      end
-      response
-    end
-    start_desktop(proxy.url)
+  it 'reuses the selected Sapi’s Memo tab and can reopen it after the tab closes' do
+    @host = desktop_host
+    researcher = host.agent('Researcher')
+    root = host.workspace(researcher)
+    File.write(File.join(root, 'Notes.html'), '<p>Voca’s role is “Proofreader.”</p><a href="transcript.txt">Recording transcript</a>')
+    File.write(File.join(root, 'transcript.txt'), 'Audio transcript file')
+    start_desktop
+    desktop.press('Open Researcher')
     work_view('Memo')
-    Timeout.timeout(10) { requested.pop }
-    desktop.press('Work')
-    desktop.see('Compare the products.')
-    release << true
-    Timeout.timeout(10) { returned.pop }
-    expect(desktop.see('Compare the products.')).not_to include('Late Memo content.')
+    desktop.see('Voca’s role is “Proofreader.”')
+    tab = host.control(researcher, 'workspace')['tabs'].fetch(0)
     work_view('Memo')
-    expect(desktop.see('Late Memo content.')).to include('Notebook')
-  ensure
-    release << true if release
-    proxy&.close
+    desktop.see('Voca’s role is “Proofreader.”')
+    expect(host.control(researcher, 'workspace')['tabs'].map { |t| t['id'] }).to eq([tab['id']])
+    desktop.press('Close Notes.html')
+    Contract.wait { host.control(researcher, 'workspace')['tabs'].empty? }
+    work_view('Memo')
+    desktop.see('Voca’s role is “Proofreader.”')
+    desktop.press('Recording transcript')
+    desktop.see('Audio transcript file')
+    expect(host.control(chief, 'workspace')['tabs']).to be_empty
   end
 
-  it 'lets the person retry a Memo that was temporarily unavailable' do
-    completed_task
-    File.write(File.join(host.workspace(chief), 'Notes.html'),
-      '<section id="about">Notebook</section><section id="map"></section><section id="content"><p>Recovered Memo.</p></section>')
-    fail_next = true
-    proxy = HostProxy.new(host) do |request, response|
-      if request.path.end_with?('/notes') && fail_next
-        fail_next = false
-        [503, {error: 'Memo temporarily unavailable'}, {'Content-Type' => 'application/json'}]
-      else
-        response
-      end
-    end
-    start_desktop(proxy.url)
+  it 'keeps a missing Memo closed and opens it after the file is restored' do
+    @host = desktop_host
+    path = File.join(host.workspace(chief), 'Notes.html')
+    File.delete(path)
+    start_desktop
     work_view('Memo')
-    desktop.see('Memo temporarily unavailable')
-    desktop.press('Try again')
-    expect(desktop.see('Recovered Memo.')).to include('Notebook')
-  ensure
-    proxy&.close
+    desktop.see('Notes.html is missing')
+    expect(host.control(chief, 'workspace')['tabs']).to be_empty
+    File.write(path, '<p>Recovered notebook</p>')
+    work_view('Memo')
+    desktop.see('Recovered notebook')
   end
 
   it 'keeps a person’s workspace available after visiting somebody with no tabs' do

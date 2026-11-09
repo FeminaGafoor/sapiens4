@@ -4,7 +4,7 @@ RSpec.describe 'Managing relay connections', :desktop do
   def catalogue; host.api('GET', '/api/host/relays'); end
 
   it 'preserves connection text when import is cancelled and imports a selected JSON file' do
-    skip 'Native open panel contract is macOS-only' unless RUBY_PLATFORM.include?('darwin')
+    skip 'Native open panel requires macOS or Linux' unless RUBY_PLATFORM.include?('darwin') || Desktop.linux?
     start_desktop
     desktop.press('Local')
     desktop.press('Remote Control Relay Servers')

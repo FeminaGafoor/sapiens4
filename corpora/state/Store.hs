@@ -70,7 +70,9 @@ recentPulses s = queryRows s "SELECT value FROM pulse_calls ORDER BY sequence DE
 decodeStored :: FromJSON a => Text -> IO a
 decodeStored raw = either (failure 500 . T.pack) pure (eitherDecodeStrict (Data.Text.Encoding.encodeUtf8 raw))
 putValue :: Service -> Collection -> Text -> Value -> IO ()
-putValue s table i v = connection s $ \db -> putValueOn db table i v
+putValue s table i v = do
+ changed <- connection s $ \db -> putValueOn db table i v >> changes db
+ when (changed > 0) (notifyChange s)
 putValueOn :: Connection -> Collection -> Text -> Value -> IO ()
 putValueOn db table i v = executeOn db ("INSERT INTO " <> tableName table <> " VALUES (?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value WHERE value IS NOT excluded.value") [SQLText i,SQLText (jsonText v)]
 singleton :: Service -> Collection -> IO Value
@@ -123,7 +125,9 @@ saveAttachment s v = executeSQL s ("INSERT INTO " <> attachmentTable (at v "agen
 message :: Service -> Text -> Text -> [Value] -> IO ()
 message s i t as = executeSQL s "INSERT OR IGNORE INTO message_inputs VALUES (?,?,?)" [SQLText i,SQLText t,SQLText (jsonText (arr as))]
 record :: Service -> [Text] -> Text -> Text -> Value -> Text -> Maybe Text -> IO ()
-record s owners entity event details suppliedActor suppliedAgency = connection s $ \db -> SQLite.withTransaction db $ recordOn s db owners entity event details suppliedActor suppliedAgency
+record s owners entity event details suppliedActor suppliedAgency = do
+ connection s $ \db -> SQLite.withTransaction db $ recordOn s db owners entity event details suppliedActor suppliedAgency
+ notifyChange s
 recordOn :: Service -> Connection -> [Text] -> Text -> Text -> Value -> Text -> Maybe Text -> IO ()
 recordOn s db owners entity event details suppliedActor suppliedAgency = do
  (source,kind) <- currentActor s
@@ -151,23 +155,40 @@ projectTurn owner state turn = TurnProjection status origin owners actor output
  output=listToMaybe [get m "content" | m<-items (stateJSON state) "chat",get m "turn"==toJSON (turnId turn),at m "role"=="agent"]
 
 project :: Service -> Text -> IO ()
-project s a = do
- state <- agentState s a
- connection s $ \db -> SQLite.withTransaction db $ forM_ (agentTurns state) $ \typed -> do
-  let turn=toJSON typed
-  previous <- queryRowsOn db "SELECT status FROM turns WHERE id=?" ["status"] [sql (get turn "id")]
-  let projection=projectTurn a state typed
-      status=wireName (projectionStatus projection)
-      origin=projectionOrigin projection
-      owners=projectionOwners projection
-      actor=projectionActor projection
-      old=maybe Null (get `flip` "status") (listToMaybe previous)
-  when (old /= str status) $ recordOn s db owners (at turn "id") ("call." <> status) (obj [("previous",old),("origin",origin),("error",get turn "error"),("warning",get turn "warning")]) actor (Just (if has turn "output_order" then "chatOutput" else at turn "agency_kind"))
-  let details = selectPresent ["origin","batch_id","batch_members","agency_kind","slot","pulseId","output_at","output_order"] turn
-  putValueOn db TurnDetails (at turn "id") details
-  let output=projectionOutput projection
-  archived <- if isNothing output && status `elem` ["done","warning"] && batchLeader typed == turnId typed then readJSON (archivePath s a ("runs/" <> at turn "id")) empty else pure empty
-  executeOn db "INSERT INTO turns VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,output=COALESCE(excluded.output,turns.output),error=excluded.error WHERE turns.status IS NOT excluded.status OR turns.output IS NOT COALESCE(excluded.output,turns.output) OR turns.error IS NOT excluded.error" [sql (get turn "id"),SQLText a,sql (get turn "flow"),sql (get turn "input"),SQLText status,sql (fromMaybe (get archived "output") output),sql (get turn "error" `fallback` get turn "warning"),SQLInteger 0,sql (get turn "created")]
+project s a = void (projectArchives s a)
+
+-- The update subscription needs the archive inputs even if a large state cannot
+-- be retained in the bounded projection cache.
+projectArchives :: Service -> Text -> IO [Turn]
+projectArchives s a = do
+ input <- agentStateInput s a
+ case cachedProjection input of
+  ProjectionCommitted [] -> pure []
+  cached -> do
+   let state = cachedState input
+       pending = case cached of
+        ProjectionPending -> agentTurns state
+        ProjectionCommitted archived -> archived
+   archiveTurns <- catMaybes <$> connection s (\db -> SQLite.withTransaction db $ forM pending $ \typed -> do
+     let turn=toJSON typed
+     previous <- queryRowsOn db "SELECT status FROM turns WHERE id=?" ["status"] [sql (get turn "id")]
+     let projection=projectTurn a state typed
+         status=wireName (projectionStatus projection)
+         origin=projectionOrigin projection
+         owners=projectionOwners projection
+         actor=projectionActor projection
+         old=maybe Null (get `flip` "status") (listToMaybe previous)
+     when (old /= str status) $ recordOn s db owners (at turn "id") ("call." <> status) (obj [("previous",old),("origin",origin),("error",get turn "error"),("warning",get turn "warning")]) actor (Just (if has turn "output_order" then "chatOutput" else at turn "agency_kind"))
+     let details = selectPresent ["origin","batch_id","batch_members","agency_kind","slot","pulseId","output_at","output_order"] turn
+     putValueOn db TurnDetails (at turn "id") details
+     let output=projectionOutput projection
+         archiveNeeded = isNothing output && status `elem` ["done","warning"] && batchLeader typed == turnId typed
+     archived <- if archiveNeeded then readJSON (archivePath s a ("runs/" <> at turn "id")) empty else pure empty
+     executeOn db "INSERT INTO turns VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,output=COALESCE(excluded.output,turns.output),error=excluded.error WHERE turns.status IS NOT excluded.status OR turns.output IS NOT COALESCE(excluded.output,turns.output) OR turns.error IS NOT excluded.error" [sql (get turn "id"),SQLText a,sql (get turn "flow"),sql (get turn "input"),SQLText status,sql (fromMaybe (get archived "output") output),sql (get turn "error" `fallback` get turn "warning"),SQLInteger 0,sql (get turn "created")]
+     pure (if archiveNeeded then Just typed else Nothing))
+   -- Promote only after commit; archive files remain authoritative on cache hits.
+   modifyMVar_ (serviceStates s) $ pure . M.adjust (\entry -> if cachedBytes entry == cachedBytes input then entry {cachedProjection=ProjectionCommitted archiveTurns} else entry) a
+   pure archiveTurns
 turns :: Service -> IO [Value]
 turns s = do
  rows <- queryRows s "SELECT id,agent,flow,input,status,output,error,created FROM turns ORDER BY created,id" ["id","agent","flow","input","status","output","error","created"] []

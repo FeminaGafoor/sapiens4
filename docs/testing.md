@@ -54,7 +54,28 @@ Blindly4 build on macOS and Windows; `SAPIENS_TEST_BLINDLY4` optionally selects 
 different executable. A missing driver or a permission or interaction error fails
 the test instead of silently skipping it. Unsupported platforms and Windows-only
 contracts remain pending on macOS.
-Failed desktop scenarios write accessible content to `tmp/desktop-failure.txt`.
+Failed desktop scenarios write accessible content to `tmp/desktop-failure.txt`
+and a separate accessibility-tree JSON file under `.build/` for each failed example.
+
+On Linux, build with `runghc build/Build.hs --desktop` and build the Blindly4
+Linux driver. Desktop control requires X11; Wayland is unsupported. Run the
+Linux and shared desktop suites on an isolated software-rendered X11 display:
+
+```sh
+sh environments/linux/qualify.sh .build/qualification-x11
+```
+
+The runner uses Xvfb and Openbox, and preserves logs and revision details in a
+new report directory. Install the prerequisites in
+[the Linux guide](../environments/linux/README.md). External Chromium/Firefox
+checks are opt-in with `SAPIENS_TEST_LINUX_EXTERNAL_DESKTOP=1`. Tests exercise
+real GTK/WebKit controls and generated computer commands against local fixtures.
+Run desktop suites serially. Virtual displays do not establish physical-display
+or mixed-monitor coverage.
+
+To exercise a desktop package, extract it with `dpkg-deb --extract` and set
+`SAPIENS_TEST_LINUX_RUNTIME` to the extracted `opt/sapiens4` directory before
+running the same suite. Repeat in Ubuntu 22.04 and 24.04 userspaces.
 
 Use mouse clicks to establish that controls are reachable; accessibility
 invocation alone can activate offscreen controls. Rediscover moving targets and
@@ -63,9 +84,10 @@ to occur before input; never replay an action after an uncertain outcome.
 
 ## Coverage limits
 
-The macOS fixture runs WebKit with the production browser adapter; Windows runs
-MainWindow/WebView2. Remote-browser and HTTP-proxy window cases currently require
-macOS. Reload tests do not establish persistence across an actual app quit/upgrade.
+The macOS and Linux fixtures run WebKit with the production browser adapter;
+Windows runs MainWindow/WebView2. Remote-browser and HTTP-proxy window cases
+currently require macOS or Linux Xorg. Reload tests do not establish persistence
+across an actual app quit/upgrade.
 Validate mobile installation, camera pairing, background/resume, offline launch,
 updates, keyboard/rotation and touch behavior on real devices. Visually compare
 appearance changes; behavioral tests do not prove styling equivalence.

@@ -2,19 +2,38 @@ require_relative 'support/desktop'
 require_relative 'support/http_peer'
 
 RSpec.describe 'Working with browser tabs and documents', :desktop do
+  # WebKitGTK may append an editor's value to its native accessible name.
+  let(:first_input) { Desktop.linux? ? /\AFirst input(?: |$)/ : 'First input' }
   before do
     @pages = HTTPPeer.new do |request|
       name = request.path.include?('second') ? 'Second' : 'First'
       playing = request.path.end_with?('/playing')
-      [200, "<title>#{name} player</title><h1>#{name} player</h1><a href='/#{name.downcase}/#{playing ? 'stopped' : 'playing'}'>#{playing ? 'Pause' : 'Play'} #{name}</a><label>#{name} input<input></label>",
+      [200, "<title>#{name} player</title><h1>#{name} player</h1><a href='/#{name.downcase}/#{playing ? 'stopped' : 'playing'}'>#{playing ? 'Pause' : 'Play'} #{name}</a><label>#{name} input<input aria-label='#{name} input'></label>",
         {'Content-Type' => 'text/html', 'X-Frame-Options' => 'DENY', 'Content-Security-Policy' => "frame-ancestors 'none'"}]
     end
     @host = desktop_host
     host.control(chief, 'workspace_open', url: @pages.url + '/first')
+    # Restore two tabs, with the second one in the background.
+    if RSpec.current_example.metadata[:lazy_tabs]
+      first = host.state.dig('preferences', 'workspaces', chief, 'activeTab')
+      host.control(chief, 'workspace_open', url: @pages.url + '/second')
+      host.control(chief, 'workspace_focus', id: first)
+    end
     start_desktop
     desktop.see('Play First')
   end
   after { @pages&.close }
+
+  it 'loads restored background tabs only on selection and retains visited pages', :lazy_tabs do
+    expect(@pages.requests.map { |r| r[:path] }).not_to include('/second')
+    desktop.fill(first_input, 'Keep this page')
+    second = host.state.dig('preferences', 'workspaces', chief, 'tabs').find { |t| t['url'].end_with?('/second') }
+    host.control(chief, 'workspace_focus', id: second.fetch('id'))
+    desktop.see('Play Second')
+    desktop.press('First player')
+    expect(desktop.find(first_input, role: 'AXTextField')['value']).to eq('Keep this page')
+    expect(@pages.requests.count { |r| r[:path] == '/first' }).to eq(1)
+  end
 
   it 'opens a site that forbids framing and follows its links' do
     desktop.click('Play First')
@@ -23,10 +42,10 @@ RSpec.describe 'Working with browser tabs and documents', :desktop do
 
   it 'restores guest keyboard focus when returning from another Windows window' do
     skip 'Windows activation contract' unless Gem.win_platform?
-    desktop.fill('First input', 'Website draft')
+    desktop.fill(first_input, 'Website draft')
     other = desktop_host
     desktop.control('type', '--text', ' continues')
-    expect(desktop.value('First input', 'Website draft continues')).to eq('Website draft continues')
+    expect(desktop.value(first_input, 'Website draft continues')).to eq('Website draft continues')
   ensure
     other&.close
   end
@@ -41,13 +60,22 @@ RSpec.describe 'Working with browser tabs and documents', :desktop do
     expect(desktop.see('Play First')).not_to include('Play Second')
   end
 
-  it 'keeps the workspace menu usable above a guest and returns to the guest afterward' do
-    desktop.fill('First input', 'A draft on the website')
+  it 'restores the guest after workspace menus and history-filter selection' do
+    desktop.fill(first_input, 'A draft on the website')
     desktop.press('Workspace options')
     desktop.see('Open file…')
     expect(desktop.text).not_to include('Play First')
     desktop.press('Workspace options')
-    expect(desktop.find('First input', role: 'AXTextField')['value']).to eq('A draft on the website')
+    expect(desktop.find(first_input, role: 'AXTextField')['value']).to eq('A draft on the website')
+    identity = host.api('GET', '/api/corpora')
+    host.api('PUT', '/api/corpora/lifecycle', action: 'pause', operation: 'history-visibility', revision: identity['revision'])
+    desktop.see('Paused')
+    desktop.press('Work menu')
+    desktop.press('Tasks')
+    desktop.press('Task history')
+    expect(desktop.text).not_to include('Play First')
+    desktop.press('Executed')
+    expect(desktop.find(first_input, role: 'AXTextField')['value']).to eq('A draft on the website')
     desktop.click('Play First')
     desktop.see('Pause First')
   end
@@ -55,7 +83,7 @@ RSpec.describe 'Working with browser tabs and documents', :desktop do
   it 'opens a new address from the keyboard while the workspace menu is open' do
     desktop.click('Workspace options')
     desktop.see('Open file…')
-    desktop.key(Gem.win_platform? ? 'control+l' : 'command+l')
+    desktop.key(Gem.win_platform? || Desktop.linux? ? 'control+l' : 'command+l')
     desktop.fill('URL or file path', @pages.url + '/second')
     desktop.press('Open address')
     expect(desktop.see('Play Second')).not_to include('Play First')
@@ -78,7 +106,8 @@ RSpec.describe 'Working with browser tabs and documents', :desktop do
     file = File.join(host.workspace(chief), 'research.txt')
     File.write(file, 'A literal <b>research finding</b>')
     desktop.press('Add workspace tab')
-    desktop.fill('URL or file path', file)
+    address = Desktop.linux? ? 'file://' + URI::DEFAULT_PARSER.escape(file) : file
+    desktop.fill('URL or file path', address)
     desktop.press('Open address')
     desktop.see('A literal <b>research finding</b>')
     File.write(file, 'Revised research finding')

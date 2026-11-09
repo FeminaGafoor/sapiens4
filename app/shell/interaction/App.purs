@@ -29,6 +29,7 @@ import Sapiens.Model as M
 import Sapiens.Navigation as N
 import Sapiens.View as View
 import Sapiens.Work as Work
+import Sapiens.Updates as Updates
 import Sapiens.Update as U
 import Sapiens.Workspace as Workspace
 import Web.Event.Event as Event
@@ -47,6 +48,7 @@ handle runtime input = session input
   session action = case action of
     Initialize -> do
       H.modify_ _ {feedback="Connecting…"}
+      void $ H.subscribe $ const Poll <$> Updates.events runtime.updates
       traverse_ (\(Tuple target event) -> void $ H.subscribe $ (Global <<< Browser.globalEvent event) <$> HS.makeEmitter (B.subscribe target event))
         [Tuple "window" "error",Tuple "window" "unhandledrejection",Tuple "window" "resize",Tuple "viewport" "resize",Tuple "window" "online",Tuple "window" "storage",Tuple "window" "pagehide",Tuple "window" "pageshow",Tuple "window" "popstate",Tuple "window" "beforeinstallprompt",Tuple "document" "visibilitychange",Tuple "document" "click"]
       void $ H.subscribe $ GlobalEvent "keydown" <$> HS.makeEmitter (B.subscribeEvent "document" "keydown")
@@ -64,7 +66,7 @@ handle runtime input = session input
         liftEffect $ B.historyReplace $ m.env.path
         void $ H.fork $ void $ H.liftAff $ try $ toAffE $ B.registerWorker "/sw.js"
       unless required $ dispatch LoadRegistry
-      E.sync
+      E.sync runtime
     Finalize -> liftEffect $ C.dispose runtime
     Poll -> E.runUpdate runtime dispatch U.Poll
     Copy text caption -> do
@@ -74,18 +76,23 @@ handle runtime input = session input
         Left _ -> "Could not copy. You can select the task body to copy it."
     Resize -> do
       updateEnvironment
-      E.sync
+      E.sync runtime
     GlobalEvent name event -> do
       data_ <- liftEffect $ B.eventData event
       m <- H.get
       when (U.shortcut (Browser.key data_) m) $ liftEffect $ Event.preventDefault event
-      E.runUpdate runtime dispatch $ U.Global $ Browser.globalEvent name data_
-    Global event -> E.runUpdate runtime dispatch $ U.Global event
+      dispatch $ Global $ Browser.globalEvent name data_
+    Global event -> do
+      case event of
+        Browser.Click _ -> E.runUpdate runtime dispatch U.UserActivity
+        Browser.KeyDown _ -> E.runUpdate runtime dispatch U.UserActivity
+        _ -> pure unit
+      E.runUpdate runtime dispatch $ U.Global event
     RefreshTheme -> do
       saved <- liftEffect $ B.storageRead "sapi-color-theme"
       env <- liftEffect Platform.environment
       H.modify_ _ {theme=if A.elem saved ["dark","light"] then saved else if env.dark then "dark" else "light"}
-      E.sync
+      E.sync runtime
     Theme -> H.get >>= \m -> E.runUpdate runtime dispatch $ U.SetTheme $ if m.theme == "dark" then "light" else "dark"
     Persist -> E.runUpdate runtime dispatch U.Persist
     Mutate path method body success -> do
@@ -111,7 +118,6 @@ handle runtime input = session input
       when prevent $ liftEffect $ Event.preventDefault event
       liftEffect $ Event.stopPropagation event
       dispatch next
-    NoteAnchor id -> liftEffect $ B.scrollIntoView $ "#" <> id
     _ -> conversation action
   conversation action = case action of
     Draft value -> E.runUpdate runtime dispatch $ U.Draft value
@@ -145,6 +151,7 @@ handle runtime input = session input
       m <- H.get
       dispatch $ Select $ m.snapshot.main_agent_id
       E.runUpdate runtime dispatch $ U.SetScope scope
+    Navigate (N.Work N.Memo _) -> dispatch CloseMenu *> dispatch (Browser Browser.OpenMemo)
     Navigate activity -> E.captureScroll *> E.runUpdate runtime dispatch (U.Navigate activity)
     DefaultWork -> H.get >>= dispatch <<< Navigate <<< Work.defaultActivity
     SetPeriod period -> E.runUpdate runtime dispatch $ U.SetPeriod period
@@ -181,7 +188,7 @@ handle runtime input = session input
     EditAddress -> E.runUpdate runtime dispatch U.EditAddress
     OpenFile -> do
       m <- H.get
-      let directory = if M.isGroup $ M.selected m then (M.selected m).workspace else D.replace "[\\\\/][^\\\\/]+$" "" $ (M.notes m).path
+      let directory = if M.isGroup $ M.selected m then (M.selected m).workspace else D.replace "[\\\\/][^\\\\/]+$" "" $ (M.notes m m.selected).path
       dispatch CloseMenu
       if Workspace.native m then liftEffect $ B.nativeMessage $ D.json {pickFile: true, owner: m.selected, directory} else do
         H.modify_ _ {address=directory <> "/",addressOpen=true}

@@ -1,19 +1,17 @@
 module Sapiens.Effects where
 
 import Prelude
-import Control.Promise (toAffE)
 import Data.Argonaut.Core (Json)
 import Data.Array as A
-import Data.String as S
 import Data.Either (Either(..), either)
 import Data.Foldable (traverse_)
 import Data.Maybe (Maybe(..), maybe)
 import Data.Tuple (Tuple(..))
 import Effect.Aff (Aff, Milliseconds(..), delay, try, throwError)
 import Effect.Class (liftEffect)
+import Sapiens.Updates as Updates
 import Effect.Exception (Error, error, message)
 import Halogen as H
-import Foreign.Object as O
 import Sapiens.Browser as Browser
 import Sapiens.Platform as Platform
 import Libs4.Browser as B
@@ -21,10 +19,8 @@ import Sapiens.Action (Action(..))
 import Sapiens.Connections as C
 import Sapiens.Data as D
 import Sapiens.Domain as X
-import Sapiens.Memo as Memo
 import Sapiens.Model as M
 import Sapiens.Navigation as N
-import Sapiens.Remote as R
 import Sapiens.Workspace as W
 import Sapiens.Update as U
 
@@ -50,18 +46,20 @@ modifyDialog :: Int -> (M.Dialog -> M.Dialog) -> UI Unit
 modifyDialog id f = H.modify_ \m -> m {dialog=map (\d -> if d.identity == id then f d else d) m.dialog}
 
 refresh :: C.Runtime -> Dispatch -> M.Model -> Aff Json -> UI Unit
-refresh runtime dispatch requested operation = attempt operation \result -> inEpoch requested.epoch \m ->
-  when (requested.active == m.active) $ case result of
-    Left failure -> runUpdate runtime dispatch $ U.SnapshotReceived requested.epoch requested.active $ Left $ message failure
-    Right raw -> do
-      captureScroll
-      snapshot <- liftEffect $ if m.snapshot.corpora.id /= "" && m.snapshot.corpora.id == D.str (D.at ["corpora","id"] raw) then pure raw else C.decorate requested.active raw
-      now <- liftEffect B.now
-      case X.decodeSnapshot snapshot of
-        Left failure -> runUpdate runtime dispatch $ U.SnapshotReceived requested.epoch requested.active $ Left failure
-        Right decoded -> do
-          liftEffect $ C.cache requested.active raw
-          runUpdate runtime dispatch $ U.SnapshotReceived requested.epoch requested.active $ Right {snapshot:decoded,now}
+refresh runtime dispatch requested operation = do
+  source <- liftEffect $ Updates.generation runtime.updates
+  attempt operation \result -> inEpoch requested.epoch \m ->
+    when (requested.active == m.active) $ case result of
+      Left failure -> runUpdate runtime dispatch $ U.SnapshotReceived requested.epoch requested.active $ Left $ message failure
+      Right raw -> do
+        let content = X.snapshotContent raw
+        now <- liftEffect B.now
+        incoming <- if m.snapshotContent == Just content then pure $ Right U.KeepSnapshot else do
+          captureScroll
+          decorated <- liftEffect $ if m.snapshot.corpora.id /= "" && m.snapshot.corpora.id == D.str (D.at ["corpora","id"] raw) then pure raw else C.decorate requested.active raw
+          pure $ (\snapshot -> U.ReplaceSnapshot {snapshot,content}) <$> X.decodeSnapshot decorated
+        traverse_ (const $ liftEffect $ C.cacheSnapshot runtime requested.active content raw) incoming
+        runUpdate runtime dispatch $ U.SnapshotReceived requested.epoch requested.active $ (\change -> {change,now,source,revision:D.n "updates_revision" raw}) <$> incoming
 
 api :: C.Runtime -> M.Model -> String -> String -> Json -> Aff Json
 api runtime m path method body = do
@@ -87,23 +85,6 @@ save dispatch = persistLocal *> later 300.0 (dispatch Persist)
 requestDocument :: C.Runtime -> Dispatch -> UI Unit
 requestDocument runtime dispatch = runUpdate runtime dispatch U.RequestDocument
 
-memoImages :: C.Runtime -> M.Request -> X.MemoDocument -> UI Unit
-memoImages runtime request document = do
-  m <- H.get
-  traverse_ (\source -> do
-    let key = S.drop 5 request.key <> ":" <> source
-    unless (O.member key m.imageUrls) $ attempt (imageRequest m source) \result -> inEpoch m.epoch \_ ->
-      traverse_ (\uri -> H.modify_ \s -> s {imageUrls=O.insert key uri s.imageUrls}) result) $ Memo.imagePaths document
-  where
-  imageRequest m source = do
-    let path = request.path <> "?image=" <> B.encodeURI source
-    result <- if M.remote m then do
-      client <- C.client runtime (M.activeRecord m)
-      R.request client 15000 $ D.json {kind: "request", op: "api", method: "GET", path}
-      else toAffE $ B.requestBytes ("/api/host/corpora/" <> B.encodeURI ((M.activeRecord m).id) <> path) (D.json {"X-Sapiens-Local": "1"})
-    unless (D.n "status" result == 200.0 && D.matches "^image/(png|jpeg|gif|webp|svg\\+xml)(;|$)" (D.s "mime" result)) $ throwError $ error "Image unavailable"
-    pure $ "data:" <> D.s "mime" result <> ";base64," <> D.s "body" result
-
 preview :: C.Runtime -> Dispatch -> UI Unit
 preview runtime dispatch = runUpdate runtime dispatch U.RequestPreview
 
@@ -116,11 +97,14 @@ runUpdate runtime dispatch action = do
     U.Commands commands -> traverse_ (execute requested) commands
   where
   execute requested = case _ of
+    U.AcknowledgeSnapshot source revision -> liftEffect $ Updates.applied runtime.updates source revision
+    U.StopUpdates -> liftEffect $ Updates.stop runtime.updates
     U.SaveRegistry records -> void $ liftEffect $ C.write "s4.records" $ D.json records
     U.SaveActive key -> void $ liftEffect $ C.write "s4.active" $ D.text key
     U.ReplaceHistory path -> liftEffect $ B.historyReplace path
     U.ConnectRecord record -> do
       current <- H.get
+      liftEffect $ Updates.stop runtime.updates
       refresh runtime dispatch current $ C.authenticate runtime (M.remote current) record *> C.request runtime (M.remote current) record "/api/state" "GET" D.null
     U.ChangeLifecycle command -> attempt (C.reconcile runtime (M.remote requested) requested.records requested.active *> C.lifecycle runtime (M.remote requested) (M.activeRecord requested) (X.lifecycleName command)) $
       runUpdate runtime dispatch <<< U.LifecycleReceived requested.epoch <<< either (Left <<< message) (Right <<< X.corpora)
@@ -129,10 +113,12 @@ runUpdate runtime dispatch action = do
       env <- liftEffect Platform.environment
       execute requested $ if env.hidden then U.Suspend else U.Resume
     U.Suspend -> do
+      liftEffect $ Updates.stop runtime.updates
       captureScroll
       persistLocal
       env <- liftEffect Platform.environment
       H.modify_ _ {restoringScroll=true,env=env}
+      H.get >>= liftEffect <<< W.sync runtime.idleTabs
       dispatch StopScan
     U.Resume -> dispatch Resize *> restoreScroll *> later 32.0 restoreScroll *> dispatch Poll
     U.SendNative report ->
@@ -141,7 +127,29 @@ runUpdate runtime dispatch action = do
       in attempt (api runtime requested (path <> if report.op == "" then "/browser" else "/control") "POST" body *> api runtime requested "/api/state" "GET" D.null) $
         runUpdate runtime dispatch <<< U.NativeCompleted requested.epoch report <<< either (Left <<< message) Right
     U.FetchSnapshot generation -> refresh runtime dispatch (requested {polling=true,pollGeneration=generation}) $ api runtime requested "/api/state" "GET" D.null
-    U.SchedulePoll epoch active generation ms -> later ms $ inEpoch epoch \current -> when (current.active == active && current.pollGeneration == generation) $ dispatch Poll
+    U.SchedulePoll epoch active generation ms -> do
+      m <- H.get
+      when (M.online m && (M.activeRecord m).location == X.Local && A.any M.blocksChat m.snapshot.turns) tickProgress
+      if M.remote m || (M.activeRecord m).location /= X.Local then later ms fallback
+      else do
+        liftEffect $ Updates.connect runtime.updates (D.replace "^http" "ws" m.env.origin <> "/api/host/corpora/" <> B.encodeURI (M.activeRecord m).id <> "/api/updates")
+        state <- liftEffect $ Updates.freshness runtime.updates
+        case M.online m, state of
+          true, Just (Updates.Applied _) -> when (m.fallbackDelay /= M.fastPoll) $ H.modify_ _ {fallbackDelay=M.fastPoll}
+          true, Just (Updates.Pending _) -> dispatch Poll
+          _, _ -> later ms do
+            online <- H.gets M.online
+            latest <- liftEffect $ Updates.freshness runtime.updates
+            case online, latest of
+              true, Just (Updates.Applied _) -> pure unit
+              _, _ -> fallback
+      where
+      -- Elapsed time can change while a provider is silent; it needs no network request.
+      tickProgress = later 1000.0 $ inEpoch epoch \m -> when (m.active == active && m.pollGeneration == generation && not m.env.hidden) do
+        now <- liftEffect B.now
+        H.modify_ _ {now=now}
+        tickProgress
+      fallback = inEpoch epoch \current -> when (current.active == active && current.pollGeneration == generation) $ dispatch Poll
     U.SaveLocal -> persistLocal
     U.StorePreferences value payload -> attempt (api runtime requested "/api/preferences" "PUT" payload) $
       runUpdate runtime dispatch <<< U.Persisted requested.epoch value <<< either (Left <<< message) Right
@@ -149,11 +157,10 @@ runUpdate runtime dispatch action = do
     U.RestoreScroll -> restoreScroll
     U.Focus target -> liftEffect $ B.focus target
     U.SelectRange target start end -> liftEffect $ B.selectRange target start end
-    U.Sync -> sync
+    U.Sync -> sync runtime
     U.PersistTheme theme -> void $ liftEffect $ B.storageWrite "sapi-color-theme" theme
     U.FetchDocument request -> attempt (api runtime requested request.path "GET" D.null) $
-      runUpdate runtime dispatch <<< U.ReceiveDocument request <<< either (Left <<< message) (M.decodeDocument request)
-    U.LoadMemoImages request document -> memoImages runtime request document
+      runUpdate runtime dispatch <<< U.ReceiveDocument request <<< either (Left <<< message) X.decodeDocument
     U.SendMessage request ->
       let payload = D.obj $ [Tuple "text" (D.text request.text),Tuple "attachments" (D.array $ map D.text request.attachments)] <> maybe [] (\id -> [Tuple "workload" $ D.text id]) request.workload
       in attempt (api runtime requested request.path "POST" payload) $
@@ -162,7 +169,7 @@ runUpdate runtime dispatch action = do
     U.PollNow -> dispatch Poll
     U.ResizeComposer -> resizeComposer
     U.UpdateMention -> dispatch MentionCursor
-    U.SaveView -> save dispatch *> sync
+    U.SaveView -> save dispatch *> sync runtime
     U.SavePreferences -> save dispatch
     U.LoadDocument -> requestDocument runtime dispatch
     U.ScrollToStart -> liftEffect $ B.scroll "#conversation-body" 0.0
@@ -172,7 +179,7 @@ runUpdate runtime dispatch action = do
     U.LoadPreview -> preview runtime dispatch
     U.FetchPreview request ->
       attempt (api runtime requested request.path "GET" D.null) $ runUpdate runtime dispatch <<< U.ReceivePreview request <<<
-        either (Left <<< M.PreviewUnavailable <<< message) M.decodePreview
+        either (Left <<< M.PreviewUnavailable <<< message) (M.decodePreview $ M.isMemoTab (M.notes requested requested.selected) (M.activeTab requested))
 
 captureScroll :: UI Unit
 captureScroll = do
@@ -206,8 +213,8 @@ scrollBottom = do
   H.modify_ _ {scrollPosition=Just {selected:m.selected,bottom:true,key:"",offset:0.0,width:0.0,height:0.0},restoringScroll=true}
   restoreScroll
 
-sync :: UI Unit
-sync = do
+sync :: C.Runtime -> UI Unit
+sync runtime = do
   m <- H.get
   liftEffect do
     B.setAttribute "html" "data-theme" m.theme
@@ -217,7 +224,7 @@ sync = do
     if N.limit m.env < 3 then B.setAttribute "body" "data-mobile-ui" "" else B.removeAttribute "body" "data-mobile-ui"
     when (m.env.viewportScale == 1.0) $ B.setStyle "html" "--mobile-viewport-height" (show (m.env.viewportHeight) <> "px")
     B.showDialog (if maybe false (M.corporaDialog <<< _.kind) m.dialog then "#corpora-dialog" else "#modal") $ m.dialog /= Nothing
-    W.sync m
+    W.sync runtime.idleTabs m
   resizeComposer
 
 resizeComposer :: UI Unit
