@@ -47,6 +47,7 @@ handle runtime dispatch action = case action of
     case m.voice of
       Just v | v.owner /= m.selected -> E.notify "Finish or cancel the voice recording in the other chat first."
       Just _ -> pure unit
+      Nothing | M.ordinaryAttachmentCount m >= 8 -> E.notify "Remove an attachment to make room for a voice message."
       Nothing -> when (m.selected /= "") do
         startedAt <- liftEffect B.now
         { emitter, listener } <- liftEffect HS.create
@@ -55,7 +56,7 @@ handle runtime dispatch action = case action of
         H.modify_ _ { voice = Just { owner: m.selected, path: M.ownerPath m <> "/voice", epoch: m.epoch, phase: M.Starting, subscription
                                    , queue: [], sending: false, attempts: 0, pieces: 0
                                    , recording: "", startedAt, elapsed: 0.0 } }
-        E.later 1000.0 (dispatch VoiceTick)
+        E.later 1000.0 (dispatch (VoiceTick subscription))
         E.attempt (toAffE $ B.voiceStart "/voice-worklet.js" pieceSeconds (HS.notify listener)) case _ of
           -- Like the success branch: only the recording that asked may react. A late failure from a
           -- cancelled recording must not clear a newer one.
@@ -73,11 +74,11 @@ handle runtime dispatch action = case action of
               _ -> stopRecorder recorder
             _ -> stopRecorder recorder
     pure true
-  VoiceTick -> do
-    H.gets _.voice >>= traverse_ \v -> unless (M.isStopping v.phase) do
+  VoiceTick subscription -> do
+    H.gets _.voice >>= traverse_ \v -> when (v.subscription == subscription && not (M.isStopping v.phase)) do
       now <- liftEffect B.now
       H.modify_ \m -> m { voice = map (_ { elapsed = now - v.startedAt }) m.voice }
-      E.later 1000.0 (dispatch VoiceTick)
+      E.later 1000.0 (dispatch (VoiceTick subscription))
     pure true
   VoiceStop -> do
     stopWith M.Review

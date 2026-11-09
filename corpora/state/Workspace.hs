@@ -9,7 +9,9 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Base64 as B64
 import qualified Data.ByteString.Lazy as BL
 import Data.Char
-import Data.List (find,isPrefixOf,nub)
+import Data.List (find,isPrefixOf)
+import qualified Data.Map.Strict as Map
+import qualified Data.Set as Set
 import Data.Maybe
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -263,20 +265,27 @@ createAttachment s a d = do
    pure $ merge base (obj [("name",str (T.pack (takeFileName full))),("value",str (T.pack full))])
  DB.saveAttachment s row
  pure row
-attachmentIds :: Value -> Validation [Text]
-attachmentIds ids =
- check (case ids of Array _ -> length xs<=8 && all (\v -> case v of String _->True; _->False) xs && length (nub xs)==length xs; _->False) 400 "Attach up to 8 distinct items" *> Right (map text xs)
- where xs=list ids
+attachmentIndex :: Service -> Text -> IO (Map.Map Text Value)
+attachmentIndex s owner = Map.fromList . map (\row -> (at row "id",row)) <$> DB.attachments s owner
 
 resolveAttachments :: Service -> Text -> Value -> Bool -> IO [Value]
 resolveAttachments s a ids checkFiles = do
- identities <- validated (attachmentIds ids)
- rows <- DB.attachments s a
- result <- validated (traverse (\i -> maybe (Left (APIError 400 "Unknown attachment for this Sapi")) Right (findId i rows)) identities)
+ let xs = list ids
+     identities = map text xs
+ require (case ids of Array _ -> all (\v -> case v of String _ -> True; _ -> False) xs && Set.size (Set.fromList identities) == length xs; _ -> False) 400 "Expected distinct attachment IDs"
+ when checkFiles $ require (length xs <= 8) 400 "Attach up to 8 distinct items"
+ rows <- attachmentIndex s a
+ result <- traverse (\i -> maybe (failure 400 "Unknown attachment for this Sapi") pure (Map.lookup i rows)) identities
+ -- Each voice draft will be sent in its own message with at most seven other
+ -- attachments accompanying the first clip.
+ unless checkFiles $ do
+  let ordinary = length (filter ((/= "voice") . (`at` "kind")) result)
+  require (ordinary + fromEnum (ordinary < length result) <= 8) 400 "Attach up to 8 distinct items"
  -- Sending (checkFiles): a Sapi only ever gets a voice message's words, so it must be
  -- transcribed, and a cancelled recording can never be sent.
  when checkFiles $ forM_ result $ \row -> when (at row "kind" == "voice") $ do
   require (get row "cancelled" /= Bool True) 409 ("This voice message was cancelled: " <> at row "name")
+  require (get row "sent" /= Bool True) 409 ("This voice message was already sent: " <> at row "name")
   require (at row "transcript_status" == "done") 409 ("This voice message is not transcribed yet: " <> at row "name")
  when checkFiles $ forM_ result $ \row -> when (at row "kind" /= "link") $ doesFileExist (T.unpack (at row "value")) >>= \ok -> require ok 400 ("Attached file is no longer available: " <> at row "name")
  pure result

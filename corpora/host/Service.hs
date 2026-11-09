@@ -140,7 +140,9 @@ snapshotUnlocked s = do
  pulse <- readIORef (servicePulse s)
  chief <- DB.mainAgent s
  works <- D.readWorks s
- drafts <- forM (pairs (get prefs "attachment_drafts")) $ \(a,ids) -> (a,) . arr . filter (\x->get x "id" `elem` list ids) <$> DB.attachments s a
+ drafts <- forM (pairs (get prefs "attachment_drafts")) $ \(a,ids) -> do
+  indexed <- attachmentIndex s a
+  pure (a, arr [row | String i <- list ids, Just row <- [M.lookup i indexed], draftable row])
  dir <- directory s
  orchestration <- forM rows $ \row -> do
   let a=at row "id"

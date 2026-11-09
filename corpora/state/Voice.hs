@@ -316,7 +316,7 @@ transcribeNext s gate manager base = do
      -- "sent"). Save the transcript onto the attachment as it is now, not as it was read.
      -- A socket interrupted by shutdown is still pending, not a failed transcription.
      withMVar gate $ \active -> forM_ active $ \_ -> locked s $ do
-       current <- filter (\fresh -> get fresh "id" == get row "id") <$> DB.attachments s (at row "agent")
+       current <- filter (\fresh -> get fresh "id" == get row "id" && draftable fresh) <$> DB.attachments s (at row "agent")
        forM_ current $ \fresh -> DB.updateAttachment s (merge fresh outcome)
      pure True
  where
@@ -338,5 +338,5 @@ whisper manager base path = do
  when (status /= 200) $ failure 502 ("Whisper answered HTTP " <> T.pack (show status))
  case decode (H.responseBody response) of
   -- Whisper returns one line per segment with leading spaces; keep plain sentences.
-  Just value | has value "text" -> pure (T.unwords (T.words (at value "text")))
+  Just value | String raw <- get value "text", let wordsOnly = T.unwords (T.words raw), not (T.null wordsOnly) -> pure wordsOnly
   _ -> failure 502 "Whisper returned no text"

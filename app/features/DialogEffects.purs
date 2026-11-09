@@ -65,14 +65,14 @@ handle runtime dispatch action = case action of
   AttachmentKind kind -> do
     m <- H.get
     if A.elem kind [X.LinkAttachment,X.FileAttachment] then dispatch $ OpenDialog (M.Reference kind) F.NoRecord else do
-      unless (A.length (M.attachments m) >= 8) do
+      unless (M.firstMessageFull m) do
         H.modify_ _ {uploading=m.uploading+1,dialog=map (M.setDialogError "") m.dialog}
         attach m do
           selected <- B.chooseFile (if kind == X.ImageAttachment then "image/png,image/jpeg,image/gif,image/webp" else ".pdf,.txt,.md,.csv,.json,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.rtf,.odt") 10485760
           case selected of
             Nothing -> pure Nothing
             Just file -> Just <$> E.api runtime m (M.ownerPath m <> "/attachments") "POST" (D.json {kind, name: file.name, data: file.data})
-      when (A.length (M.attachments m) >= 8) $ E.notify "Attach up to 8 items per message."
+      when (M.firstMessageFull m) $ E.notify "Attach up to 8 items per message."
   DialogCommand command -> commandAction command
   _ -> pure unit
   where
@@ -104,7 +104,7 @@ handle runtime dispatch action = case action of
       Left failure -> E.modifyDialog d.identity $ M.setDialogError failure
       Right request -> runSave m d request
     M.GroupTask -> saveTask m d false
-    M.Reference kind -> if A.length (M.attachments m) >= 8 then E.modifyDialog d.identity (M.setDialogError $ "Attach up to 8 items per message.") else do
+    M.Reference kind -> if M.firstMessageFull m then E.modifyDialog d.identity (M.setDialogError $ "Attach up to 8 items per message.") else do
       H.modify_ _ {uploading=m.uploading+1}
       E.modifyDialog d.identity (M.setDialogBusy true)
       attach m $ Just <$> E.api runtime m (M.ownerPath m <> "/attachments") "POST" (D.json {kind, value: D.json d.fields.value})

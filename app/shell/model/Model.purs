@@ -190,6 +190,13 @@ draft m = fromMaybe "" $ O.lookup m.selected m.drafts
 attachments :: Model -> Array X.Attachment
 attachments m = fromMaybe [] $ O.lookup m.selected m.attachments
 
+-- A message carries all ordinary attachments and at most one voice clip.
+ordinaryAttachmentCount :: Model -> Int
+ordinaryAttachmentCount = A.length <<< A.filter (not <<< X.isVoice) <<< attachments
+
+firstMessageFull :: Model -> Boolean
+firstMessageFull m = ordinaryAttachmentCount m + (if A.any X.isVoice (attachments m) then 1 else 0) >= 8
+
 workspace :: Model -> X.Workspace
 workspace m = fromMaybe (X.workspace D.empty) $ O.lookup m.selected m.workspaces
 

@@ -345,7 +345,8 @@ RSpec.describe 'Local service contracts' do
       host.stop
       hold_response = -> { ready << true; release.pop }
       in_body = -> { interrupt_transcription && whisper.requests == 2 }
-      whisper = WhisperStub.new('', status: 500,
+      # Both an HTTP error and a successful response without speech must be retryable.
+      whisper = WhisperStub.new('  ', status: interrupt_transcription ? 500 : 200,
         before_reply: -> { hold_response.call unless in_body.call },
         before_body: -> { hold_response.call if in_body.call })
       host.environment['SAPIENS_WHISPER_URL'] = whisper.url
@@ -386,6 +387,7 @@ RSpec.describe 'Local service contracts' do
       expect(whisper.audio_received).to be(true)
       expect(whisper.requests).to eq(interrupt_transcription ? 4 : 2)
       host.turn(host.submit(owner, '', attachments: [voice['id']]))
+      expect(host.request('POST', "/api/agents/#{owner}/messages", {text: '', attachments: [voice['id']]}).first).to eq(409)
       expect(host.calls.map { |call| call['prompt'] }.join("\n")).to include('Please compare the two offers.')
       expect(Array(host.state.dig('attachment_drafts', owner))).to be_empty
       host.restart
@@ -395,6 +397,18 @@ RSpec.describe 'Local service contracts' do
       release << true if release
       whisper&.close
     end
+  end
+
+  it 'restores a long voice draft in composer order and keeps the per-message attachment limit' do
+    owner = chief
+    ids = Array.new(9) do
+      piece = {recording: SecureRandom.uuid, index: 0, final: true, data: voice_piece(1)}
+      host.api('POST', "/api/agents/#{owner}/voice", piece).fetch('messages').first.fetch('id')
+    end.reverse
+    host.api('PUT', '/api/preferences', attachment_drafts: {owner => ids})
+    host.restart
+    expect(host.state.fetch('attachment_drafts').fetch(owner).map { |row| row.fetch('id') }).to eq(ids)
+    expect(host.request('POST', "/api/agents/#{owner}/messages", {text: '', attachments: ids}).first).to eq(400)
   end
 
   it 'saves each voice message once when the host stops halfway through a piece' do
