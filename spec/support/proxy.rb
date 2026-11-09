@@ -1,6 +1,6 @@
 require_relative 'http_peer'
 
-# A real HTTP boundary around the real host. A scenario can delay/fail a response
+# A real HTTP boundary around the real host or relay. A scenario can delay/fail a response
 # without importing UI code, replacing fetch, or exposing a test endpoint.
 class HostProxy
   attr_reader :url
@@ -13,7 +13,8 @@ class HostProxy
       end
     end if updates
     @server = HTTPPeer.new(upgrade: upgrade) do |request|
-      status, body, headers = host.request(request.request_method, request.unparsed_uri, request.body)
+      authorization = {'Authorization' => request['authorization']}.compact
+      status, body, headers = Contract.http(host.url + request.unparsed_uri, request.request_method, request.body, authorization)
       response = [status, body, headers.transform_values { |values| values.join(', ') }.reject { |key, _| %w[content-length transfer-encoding connection].include?(key) }]
       filter.call(request, response) || response
     end

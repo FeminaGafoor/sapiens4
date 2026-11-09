@@ -33,6 +33,7 @@ RSpec.describe 'Workspace and memory contracts' do
     [chief, researcher].each do |owner|
       workspace = host.control(owner, 'workspace')
       expect(workspace['tabs']).to be_empty
+      expect(host.state.fetch('preferences').fetch('workspaces').fetch(owner).fetch('tabs')).to eq([])
       expect(workspace['bookmarks'].length).to eq(1)
       expect(File.identical?(workspace['bookmarks'].first['path'], File.join(host.workspace(owner), 'Notes.html'))).to be(true)
     end
@@ -50,6 +51,26 @@ RSpec.describe 'Workspace and memory contracts' do
     expect(reopened['active_tab']).not_to eq(tab['id'])
     expect(reopened['bookmarks'].length).to eq(1)
     expect(host.control(chief, 'workspace')['tabs']).to be_empty
+  end
+
+  it 'repairs bookmark-only saved workspaces without reopening tabs or changing bookmarks' do
+    owner = chief
+    researcher = host.agent('Researcher')
+    host.control(researcher, 'workspace_open', url: 'https://example.com')
+    prefs = host.state.fetch('preferences')
+    original = prefs.fetch('workspaces')
+    prefs['workspaces'][owner].delete('tabs')
+    host.stop
+    SQLite3::Database.open(File.join(host.root, 'corpora.sqlite3')) do |db|
+      db.execute('UPDATE preferences SET value=? WHERE id=1', [JSON.generate(prefs)])
+    end
+    host.start
+    repaired = host.state.fetch('preferences')
+    expect(repaired.fetch('workspaces').fetch(owner)).to eq(original.fetch(owner).merge('tabs' => []))
+    expect(repaired.fetch('workspaces').fetch(researcher)).to eq(original.fetch(researcher))
+    expect(repaired.fetch('workspace_revision')).to be > prefs.fetch('workspace_revision')
+    host.restart
+    expect(host.state.fetch('preferences')).to eq(repaired)
   end
 
   it 'accepts media links and rejects embedded media in Notes' do
