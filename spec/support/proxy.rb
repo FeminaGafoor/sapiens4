@@ -5,7 +5,13 @@ require_relative 'http_peer'
 class HostProxy
   attr_reader :url
   def initialize(host, updates: false, &filter)
-    upgrade = ->(req, res) { forward_socket(host, req, res) } if updates
+    upgrade = lambda do |req, res|
+      if updates.respond_to?(:call) && !updates.call
+        res.status = 404
+      else
+        forward_socket(host, req, res)
+      end
+    end if updates
     @server = HTTPPeer.new(upgrade: upgrade) do |request|
       status, body, headers = host.request(request.request_method, request.unparsed_uri, request.body)
       response = [status, body, headers.transform_values { |values| values.join(', ') }.reject { |key, _| %w[content-length transfer-encoding connection].include?(key) }]

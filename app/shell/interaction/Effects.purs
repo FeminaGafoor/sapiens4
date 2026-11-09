@@ -5,11 +5,10 @@ import Data.Argonaut.Core (Json)
 import Data.Array as A
 import Data.Either (Either(..), either)
 import Data.Foldable (traverse_)
-import Data.Maybe (Maybe(..), maybe, isJust)
+import Data.Maybe (Maybe(..), maybe)
 import Data.Tuple (Tuple(..))
 import Effect.Aff (Aff, Milliseconds(..), delay, try, throwError)
 import Effect.Class (liftEffect)
-import Effect.Ref as Ref
 import Sapiens.Updates as Updates
 import Effect.Exception (Error, error, message)
 import Halogen as H
@@ -48,12 +47,11 @@ modifyDialog id f = H.modify_ \m -> m {dialog=map (\d -> if d.identity == id the
 
 refresh :: C.Runtime -> Dispatch -> M.Model -> Aff Json -> UI Unit
 refresh runtime dispatch requested operation = do
-  source <- liftEffect $ Updates.beginRefresh runtime.updates
+  source <- liftEffect $ Updates.generation runtime.updates
   attempt operation \result -> inEpoch requested.epoch \m ->
     when (requested.active == m.active) $ case result of
       Left failure -> runUpdate runtime dispatch $ U.SnapshotReceived requested.epoch requested.active $ Left $ message failure
       Right raw -> do
-        liftEffect $ Updates.acceptRevision runtime.updates source (D.n "updates_revision" raw)
         let content = X.snapshotContent raw
         now <- liftEffect B.now
         incoming <- if m.snapshotContent == Just content then pure $ Right U.KeepSnapshot else do
@@ -61,7 +59,7 @@ refresh runtime dispatch requested operation = do
           decorated <- liftEffect $ if m.snapshot.corpora.id /= "" && m.snapshot.corpora.id == D.str (D.at ["corpora","id"] raw) then pure raw else C.decorate requested.active raw
           pure $ (\snapshot -> U.ReplaceSnapshot {snapshot,content}) <$> X.decodeSnapshot decorated
         traverse_ (const $ liftEffect $ C.cacheSnapshot runtime requested.active content raw) incoming
-        runUpdate runtime dispatch $ U.SnapshotReceived requested.epoch requested.active $ (\change -> {change,now}) <$> incoming
+        runUpdate runtime dispatch $ U.SnapshotReceived requested.epoch requested.active $ (\change -> {change,now,source,revision:D.n "updates_revision" raw}) <$> incoming
 
 api :: C.Runtime -> M.Model -> String -> String -> Json -> Aff Json
 api runtime m path method body = do
@@ -99,6 +97,7 @@ runUpdate runtime dispatch action = do
     U.Commands commands -> traverse_ (execute requested) commands
   where
   execute requested = case _ of
+    U.AcknowledgeSnapshot source revision -> liftEffect $ Updates.applied runtime.updates source revision
     U.StopUpdates -> liftEffect $ Updates.stop runtime.updates
     U.SaveRegistry records -> void $ liftEffect $ C.write "s4.records" $ D.json records
     U.SaveActive key -> void $ liftEffect $ C.write "s4.active" $ D.text key
@@ -133,13 +132,16 @@ runUpdate runtime dispatch action = do
       if M.remote m || (M.activeRecord m).location /= X.Local then later ms fallback
       else do
         liftEffect $ Updates.connect runtime.updates (D.replace "^http" "ws" m.env.origin <> "/api/host/corpora/" <> B.encodeURI (M.activeRecord m).id <> "/api/updates")
-        feed <- liftEffect $ Ref.read runtime.updates.feed
-        now <- liftEffect B.now
-        if M.online m && isJust feed.revision then when feed.dirty (dispatch Poll)
-        else later (max 2000.0 (feed.retryAt-now)) do
-          latest <- liftEffect $ Ref.read runtime.updates.feed
-          online <- H.gets M.online
-          unless (online && isJust latest.revision) fallback
+        state <- liftEffect $ Updates.freshness runtime.updates
+        case M.online m, state of
+          true, Just (Updates.Applied _) -> when (m.fallbackDelay /= M.fastPoll) $ H.modify_ _ {fallbackDelay=M.fastPoll}
+          true, Just (Updates.Pending _) -> dispatch Poll
+          _, _ -> later ms do
+            online <- H.gets M.online
+            latest <- liftEffect $ Updates.freshness runtime.updates
+            case online, latest of
+              true, Just (Updates.Applied _) -> pure unit
+              _, _ -> fallback
       where
       -- Elapsed time can change while a provider is silent; it needs no network request.
       tickProgress = later 1000.0 $ inEpoch epoch \m -> when (m.active == active && m.pollGeneration == generation && not m.env.hidden) do

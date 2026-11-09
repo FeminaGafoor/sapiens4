@@ -69,4 +69,53 @@ RSpec.describe 'Workspace update subscription', :desktop do
     @desktop = nil
     proxy&.close
   end
+
+  it 'backs off idle HTTP polls, resets on activity, and stops polling after reconnect' do
+    skip 'Network proxy window requires macOS WebKit' unless RUBY_PLATFORM.include?('darwin')
+    @host = desktop_host
+    identity = host.api('GET', '/api/corpora')
+    host.api('PUT', '/api/corpora/lifecycle', action: 'pause', operation: 'idle-polling', revision: identity.fetch('revision'))
+    snapshots, upgrades = Queue.new, Queue.new
+    available = false
+    proxy = HostProxy.new(host, updates: -> { upgrades << available; available }) do |request, response|
+      snapshots << Process.clock_gettime(Process::CLOCK_MONOTONIC) if request.path.end_with?('/api/state')
+      response
+    end
+    sample = ->(timeout = 12) { Timeout.timeout(timeout) { snapshots.pop } }
+    start_desktop(proxy.url)
+    desktop.see('Message ChiefSapi')
+    expect(Timeout.timeout(5) { upgrades.pop }).to be(false)
+    # Look at the steady run after startup, which may also fetch preferences.
+    previous = sample.call
+    Timeout.timeout(30) do
+      loop do
+        current = sample.call
+        break if current - previous >= 5.5
+        previous = current
+      end
+    end
+    last = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    expect(sample.call - last).to be_between(9.5, 12.0)
+    host.agent('HTTPUpdate')
+    sample.call
+    desktop.see('HTTPUpdate')
+    sample.call(2.5)  # Changed content resets the delay.
+    sample.call       # The next unchanged interval is 1.5 s, then 3 s.
+    desktop.click('Message ChiefSapi')
+    sample.call(2.5)  # A click shortens the already scheduled 3 s wait.
+
+    available = true
+    Timeout.timeout(32) { loop { break if upgrades.pop } }
+    # The initial revision and the file watcher's first scan both wake the client.
+    sleep 3
+    count = snapshots.size
+    sleep 11
+    expect(snapshots.size).to eq(count)
+    host.agent('SocketUpdate')
+    desktop.see('SocketUpdate')
+  ensure
+    @desktop&.close
+    @desktop = nil
+    proxy&.close
+  end
 end

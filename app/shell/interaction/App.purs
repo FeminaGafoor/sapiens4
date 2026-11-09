@@ -29,6 +29,7 @@ import Sapiens.Model as M
 import Sapiens.Navigation as N
 import Sapiens.View as View
 import Sapiens.Work as Work
+import Sapiens.Updates as Updates
 import Sapiens.Update as U
 import Sapiens.Workspace as Workspace
 import Web.Event.Event as Event
@@ -47,7 +48,7 @@ handle runtime input = session input
   session action = case action of
     Initialize -> do
       H.modify_ _ {feedback="Connecting…"}
-      void $ H.subscribe $ const Poll <$> runtime.updates.events
+      void $ H.subscribe $ const Poll <$> Updates.events runtime.updates
       traverse_ (\(Tuple target event) -> void $ H.subscribe $ (Global <<< Browser.globalEvent event) <$> HS.makeEmitter (B.subscribe target event))
         [Tuple "window" "error",Tuple "window" "unhandledrejection",Tuple "window" "resize",Tuple "viewport" "resize",Tuple "window" "online",Tuple "window" "storage",Tuple "window" "pagehide",Tuple "window" "pageshow",Tuple "window" "popstate",Tuple "window" "beforeinstallprompt",Tuple "document" "visibilitychange",Tuple "document" "click"]
       void $ H.subscribe $ GlobalEvent "keydown" <$> HS.makeEmitter (B.subscribeEvent "document" "keydown")
@@ -80,8 +81,13 @@ handle runtime input = session input
       data_ <- liftEffect $ B.eventData event
       m <- H.get
       when (U.shortcut (Browser.key data_) m) $ liftEffect $ Event.preventDefault event
-      E.runUpdate runtime dispatch $ U.Global $ Browser.globalEvent name data_
-    Global event -> E.runUpdate runtime dispatch $ U.Global event
+      dispatch $ Global $ Browser.globalEvent name data_
+    Global event -> do
+      case event of
+        Browser.Click _ -> E.runUpdate runtime dispatch U.UserActivity
+        Browser.KeyDown _ -> E.runUpdate runtime dispatch U.UserActivity
+        _ -> pure unit
+      E.runUpdate runtime dispatch $ U.Global event
     RefreshTheme -> do
       saved <- liftEffect $ B.storageRead "sapi-color-theme"
       env <- liftEffect Platform.environment

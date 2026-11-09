@@ -38,7 +38,7 @@ render literally; HTML, PDF and media use the native browser. Closing a tab does
 not delete its file. Remote clients can preview text files and control the host's
 tabs, but do not stream native browser views.
 
-Local Workspace windows receive change notifications over a same-origin WebSocket and fetch a snapshot when needed. A hidden window disconnects and catches up when shown. Hosts without the updates endpoint fall back to periodic HTTP requests. Remote relay connections keep their existing refresh behavior.
+Local Workspace windows receive change notifications over a same-origin WebSocket and fetch a snapshot when needed. A hidden window disconnects and catches up when shown. While the socket is unavailable, unchanged snapshots double the HTTP polling interval up to 10 seconds. Changed content, clicks and keystrokes reset it to 750 ms. Socket retries start at 2 seconds and double up to 30 seconds. Remote relay connections keep their existing refresh behavior.
 
 ## Configuration
 
