@@ -119,8 +119,28 @@ the incremented revision. A stale revision returns 409 without overwriting the
 saved draft. Invalid models/efforts or unsupported providers return 400; discovery
 failures leave the previous draft intact. Claude configuration cannot be saved yet.
 
-The Models screen labels this action **Save draft**. These drafts are not consumed
-by execution: existing environment overrides and Normal/Deep behavior remain in
-force. Activation, Claude integration, and AgencyKind overrides are subsequent work.
-Catalog entries advertise choices; they do not guarantee account authorization for
-an eventual model call.
+The draft endpoint remains inactive and is not consumed by execution.
+
+### Applied model settings
+
+The Models screen now uses `GET /api/model-settings` and `PUT /api/model-settings`
+with the same object shape and validation rules. **Save and apply** atomically
+writes `model-settings.json`, using an independent revision counter. Until this
+file exists, GET offers any previous draft for review at revision 0, and execution
+continues using the existing environment defaults and Normal/Deep mode. Opening
+the dialog never activates a draft.
+
+After applying, each new run uses its Sapi override, or the corpora default when
+no override exists. The selected effort is explicit and supersedes Normal/Deep;
+Deep does not silently change it to an unsupported effort. Configuration is
+resolved once under the service lock when a run starts. Every provider invocation
+and decision audit record in that run uses the captured model and effort, even
+if settings are saved between decision steps. Queued work, retries and delegated
+runs resolve the current settings when their new run starts. This does not pin a
+whole Routine or workload across multiple runs or restarts.
+
+Saving validates the catalog outside the service lock. Execution does not launch
+catalog discovery or silently fall back to a different model on provider failure.
+Existing Codex command permissions are unchanged. Claude integration and
+AgencyKind overrides remain subsequent work. Catalog entries advertise choices;
+they do not guarantee account authorization for an eventual model call.

@@ -35,7 +35,7 @@ import Text.Regex.TDFA ((=~))
 import System.Posix.Signals
 #endif
 import Types
-import Population (executionSettings, ModelSelection(..), ModelSettingsDraft(..))
+import Population (executionSettings, activeModelSettings, ModelSelection(..), ModelSettingsDraft(..))
 import qualified Computer as Computer
 
 data ProviderEvent
@@ -80,10 +80,6 @@ providerStep time event state activity = case event of
   ToolCompleted _ label -> put "last_action" (str label) activity
   _ -> activity
 
-data CodexConfig = CodexConfig
- { codexModel :: Text, codexEffort :: Text }
- deriving (Eq, Show)
-
 modelDefaults :: IO CodexConfig
 modelDefaults = CodexConfig <$> (maybe "gpt-6-sol" T.pack <$> lookupEnv "SAPIENS_CODEX_MODEL") <*> (maybe "high" T.pack <$> lookupEnv "SAPIENS_CODEX_REASONING_EFFORT")
 
@@ -91,6 +87,20 @@ resolveCodexConfig :: ExecutionSettings -> CodexConfig -> CodexConfig
 resolveCodexConfig settings defaults = case executionMode settings of
  Normal -> defaults
  Deep -> defaults { codexEffort = "xhigh" }
+
+-- Resolve once under the service lock when a run starts. Active selections are
+-- explicit: the legacy Normal/Deep mode must not overwrite their validated effort.
+runModelSettings :: Service -> Text -> IO CodexConfig
+runModelSettings s owner = do
+ active <- activeModelSettings s
+ case active of
+  Just configured -> do
+   let choice = M.findWithDefault (modelSettingsDefault configured) owner (modelSettingsOverrides configured)
+   pure (CodexConfig (selectionModel choice) (selectionEffort choice))
+  Nothing -> do
+   defaults <- modelDefaults
+   policy <- executionSettings s owner
+   pure (resolveCodexConfig policy defaults)
 
 codexArguments :: FilePath -> CodexConfig -> [String]
 codexArguments workdir config =
@@ -256,9 +266,7 @@ invokeModel s run input = do
  before <- getMonotonicTimeNSec
  require (before < runDeadline run) 504 "Call time limit exhausted between decision nodes"
  binary <- codexBinary >>= maybe (failure 503 "Codex CLI was not found. Install Codex and run codex login.") pure
- defaults <- modelDefaults
- settings <- executionSettings s (agentIdText (runOwner run))
- let config = resolveCodexConfig settings defaults
+ let config = runCodexConfig run
      workdir = workspaceRoot s (agentIdText (runOwner run))
      args = codexArguments workdir config
  environment <- getEnvironment

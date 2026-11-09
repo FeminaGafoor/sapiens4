@@ -98,7 +98,7 @@ handle runtime dispatch action = case action of
   runDialog d done operation = do
     E.modifyDialog d.identity _ {status=M.Submitting ""}
     receive d.identity done operation
-  loadModelSettings m d = runDialog d (acceptModelSettings d.identity) $ E.api runtime m "/api/model-settings-draft" "GET" D.null
+  loadModelSettings m d = runDialog d (acceptModelSettings d.identity) $ E.api runtime m "/api/model-settings" "GET" D.null
   acceptModelSettings identity value = E.modifyDialog identity \current -> case current.content of
     F.ModelPreview draft -> current {content=F.ModelPreview $ F.savedModelDraft value draft,status=M.Editing}
     _ -> current
@@ -213,7 +213,7 @@ handle runtime dispatch action = case action of
     Intent.ReloadModelSettings -> when (d.kind == M.Models) $ loadModelSettings m d
     Intent.SaveModelSettings -> case d.kind, d.content of
       M.Models, F.ModelPreview draft | F.modelDraftValid draft && F.modelDraftChanged draft ->
-        runDialog d (\value -> acceptModelSettings d.identity value *> E.notify "Configuration draft saved. Execution settings are unchanged.") $ E.api runtime m "/api/model-settings-draft" "PUT" (F.modelDraftPayload draft)
+        runDialog d (\value -> acceptModelSettings d.identity value *> E.notify "Model settings applied to new runs.") $ E.api runtime m "/api/model-settings" "PUT" (F.modelDraftPayload draft)
       _, _ -> pure unit
     Intent.ReloadModels -> case d.kind, d.content of
       M.Models, F.ModelPreview draft | draft.catalog /= F.CatalogLoading -> loadModels m d

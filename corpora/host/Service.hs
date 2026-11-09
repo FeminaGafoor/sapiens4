@@ -174,6 +174,11 @@ dispatch :: Service -> Text -> Text -> Maybe Value -> IO (Int,BL.ByteString,Text
 dispatch _ "GET" "/api/providers/codex/models" _ = do
  value <- Provider.codexModels
  pure (200,encode value,"application/json; charset=utf-8")
+dispatch s "PUT" "/api/model-settings" body = do
+ requested <- decodeValue 400 (fromMaybe Null body)
+ Provider.validateModelSettingsDraft requested
+ saved <- locked s (saveModelSettings s requested)
+ pure (200,encode saved,"application/json; charset=utf-8")
 dispatch s "PUT" "/api/model-settings-draft" body = do
  requested <- decodeValue 400 (fromMaybe Null body)
  -- Provider discovery must not hold the service state lock.
@@ -188,6 +193,7 @@ dispatch s method target body = locked s $ do
  let json code action = do value<-action; pure (code,encode value,"application/json; charset=utf-8")
      owner kind a=if kind=="groups" then void (G.getGroup s a False) else void (DB.agent s a)
  case (method,parts) of
+  ("GET",["api","model-settings"]) -> json 200 (toJSON <$> readModelSettings s)
   ("GET",["api","model-settings-draft"]) -> json 200 (toJSON <$> readModelSettingsDraft s)
   ("GET",["api","health"]) -> json 200 (pure (obj [("status",str "ok"),("provider",str "codex")]))
   ("GET",["api","state"]) -> json 200 (snapshotUnlocked s)

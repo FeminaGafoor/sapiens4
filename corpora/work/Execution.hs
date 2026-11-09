@@ -196,6 +196,7 @@ reserveBatch batch tick slot batching state = (marked,snapshot,execution)
 
 launch :: Service -> Text -> NonEmpty Turn -> Pulse -> Int -> Bool -> IO ()
 launch s a batch tick slot batching = do
+ config <- runModelSettings s a
  state <- agentState s a
  let (marked,snapshot,execution) = reserveBatch batch tick slot batching state
      i=turnId (NE.head batch)
@@ -204,7 +205,7 @@ launch s a batch tick slot batching = do
  process <- newMVar Nothing
  activity <- newIORef empty
  deadline <- (+1800000000000) <$> getMonotonicTimeNSec
- let run=Run (AgentId a) i slot cancel process activity deadline
+ let run=Run (AgentId a) i slot cancel process activity deadline config
  modifyMVar_ (serviceRuns s) (pure . M.insert i run)
  DB.pulseCall s tick a "chatInput" slot (nub [at (turnField t "origin") "group" | t <- NE.toList batch,has (turnField t "origin") "group"])
  DB.project s a

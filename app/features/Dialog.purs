@@ -72,7 +72,7 @@ view m = case m.dialog of
     ,V.when (d.kind == M.Models) $ V.div "model-save-row"
       [V.button "button" "Close" CloseDialog,V.control [V.cls "button primary",V.disabled $ M.dialogBusy d || case d.content of
         F.ModelPreview draft -> not (F.modelDraftValid draft && F.modelDraftChanged draft)
-        _ -> true] "Save draft" (DialogCommand Intent.SaveModelSettings)]]
+        _ -> true] "Save and apply" (DialogCommand Intent.SaveModelSettings)]]
 
 body :: M.Model -> M.Dialog -> V.Html
 body m d = case d.kind of
@@ -150,7 +150,7 @@ body m d = case d.kind of
 modelSettings :: M.Model -> F.ModelDraft -> V.Html
 modelSettings m draft = V.div "model-settings"
   [V.p "model-intro" "Choose a default model and customize individual Sapis."
-  ,V.p "model-preview-note" "Saved drafts do not affect work yet. Execution still uses the existing settings."
+  ,V.p "model-preview-note" "Applies to new runs. Running work keeps its settings. Model and effort selections replace Normal/Deep mode."
   ,V.textNode "p" [V.cls "model-hint",V.attr "role" "status",V.attr "aria-live" "polite"] m.toast
   ,V.div "model-section-heading" [V.textNode "h3" [] "Default provider",V.span [] $ D.fallback "Current corpora" m.snapshot.corpora.name]
   ,configFields F.CorporaDefault "Default" draft.defaults
