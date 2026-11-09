@@ -135,7 +135,7 @@ RSpec.describe 'Encrypted remote service contracts' do
     expect(state['turns'].first).to include('input' => 'Encrypted phone message', 'output' => 'Contract test reply')
     expect(state['corpora']).to eq(host.state['corpora'])
   end
-  
+
   it 'uploads a large attachment through the encrypted channel without stalling the host' do
     pair
     bytes = 'x' * 1_048_576
@@ -147,7 +147,7 @@ RSpec.describe 'Encrypted remote service contracts' do
     send_frame(pack(op: 'api', method: 'GET', path: '/api/state'))
     expect(receive['body']).to have_key('turns')
   end
-  
+
   it 'rejects a large changed command reusing a request ID without stalling the host' do
     pair
     upload = lambda do |content|

@@ -425,6 +425,27 @@ RSpec.describe 'Local service contracts' do
     expect(host.request('POST', "/api/agents/#{chief}/messages", {text: '', attachments: [voice['id']]}).first).to eq(409)
   end
 
+  it 'advances the update revision when background transcription completes' do
+    ready, release = Queue.new, Queue.new
+    whisper = WhisperStub.new('Release candidate voice', before_reply: -> { ready << true; release.pop })
+    @host.close
+    @host = Host.new(environment: {'SAPIENS_WHISPER_URL' => whisper.url})
+    voice = host.api('POST', "/api/agents/#{chief}/voice", {recording: SecureRandom.uuid, index: 0, final: true, data: voice_piece(2)})['messages'].first
+    host.api('PUT', '/api/preferences', attachment_drafts: {chief => [voice['id']]})
+    Contract.wait(description: 'Whisper request') { !ready.empty? }
+    pending = host.state
+    expect(pending.dig('attachment_drafts', chief).first['transcript_status']).to eq('pending')
+    release << true
+    completed = Contract.wait(description: 'completed voice transcript') do
+      state = host.state
+      state if state.dig('attachment_drafts', chief).first['transcript_status'] == 'done'
+    end
+    expect(completed['updates_revision']).to be > pending['updates_revision']
+  ensure
+    release << true if release
+    whisper&.close
+  end
+
   it 'retries a failed transcription when asked' do
     whisper = WhisperStub.new('', status: 500)
     @host.close

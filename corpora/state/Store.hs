@@ -133,7 +133,9 @@ pendingVoices s = map (parseJSONText . (`at` "value")) <$> queryRows s (T.unline
  , "AND json_extract(value,'$.cancelled') IS NOT 1 LIMIT 1" ]) ["value"] []
 -- | Replace a saved attachment's JSON (used to store a voice transcript).
 updateAttachment :: Service -> Value -> IO ()
-updateAttachment s v = executeSQL s ("UPDATE " <> attachmentTable (at v "agent") <> " SET value=? WHERE id=?") [SQLText (jsonText v), sql (get v "id")]
+updateAttachment s v = do
+ executeSQL s ("UPDATE " <> attachmentTable (at v "agent") <> " SET value=? WHERE id=?") [SQLText (jsonText v), sql (get v "id")]
+ notifyChange s
 message :: Service -> Text -> Text -> [Value] -> IO ()
 message s i t as = executeSQL s "INSERT OR IGNORE INTO message_inputs VALUES (?,?,?)" [SQLText i,SQLText t,SQLText (jsonText (arr as))]
 record :: Service -> [Text] -> Text -> Text -> Value -> Text -> Maybe Text -> IO ()
