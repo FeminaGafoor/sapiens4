@@ -13,8 +13,8 @@ import Text.Read (readMaybe)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC
 import Data.IORef
-import Data.Char (toLower)
-import Data.List (nub,sortOn)
+import Data.Char (toUpper, toLower)
+import Data.List (nub, sortOn)
 import qualified Data.Map.Strict as M
 import Data.Maybe
 import Data.Text (Text)
@@ -25,14 +25,15 @@ import GHC.Clock (getMonotonicTimeNSec)
 import System.Directory
 import System.Environment
 import System.Exit
+import System.FileLock
 import System.FilePath
 import System.Info
 import System.IO
 import System.Process hiding (runProcess)
 import System.Timeout
-import Text.Regex.TDFA ((=~))
 #ifndef mingw32_HOST_OS
 import System.Posix.Signals
+import System.Posix.Files (setFileMode)
 #endif
 import Types
 import Population (executionSettings, activeModelSettings, ModelSelection(..), ModelSettingsDraft(..))
@@ -104,19 +105,22 @@ runModelSettings s owner = do
 
 codexArguments :: FilePath -> ModelConfig -> [String]
 codexArguments workdir config =
- ["exec","-c","model_reasoning_effort=" ++ T.unpack (jsonText (str (configuredEffort config))),"-c","model=" ++ T.unpack (jsonText (str (configuredModel config))),"--skip-git-repo-check","--json","--dangerously-bypass-approvals-and-sandbox","--cd",workdir,"--color","never","-"]
+ codexConfig ++ ["exec","-c","model_reasoning_effort=" ++ T.unpack (jsonText (str (configuredEffort config))),"-c","model=" ++ T.unpack (jsonText (str (configuredModel config))),"--skip-git-repo-check","--json","--dangerously-bypass-approvals-and-sandbox","--cd",workdir,"--color","never","-"]
 
 -- Discovery is an on-demand catalog read, never an agent turn. Keep it outside
 -- the service state lock; the process and every page share one deadline.
 codexModels :: IO Value
 codexModels = do
- result <- timeout 30000000 discover
+ result <- timeout 30000000 $ bracket
+  (profileLock Shared >>= maybe (failure 409 "Codex sign-in is changing. Finish or cancel sign-in, then retry model discovery.") pure)
+  unlockFile (const discover)
  maybe (failure 504 "Codex model discovery timed out. Try again.") pure result
  where
  discover = do
   binary <- codexBinary >>= maybe (failure 503 "Codex CLI was not found on this host.") pure
   workdir <- getTemporaryDirectory
-  bracket (createProcess (proc binary ["app-server","--stdio"]) {cwd=Just workdir,std_in=CreatePipe,std_out=CreatePipe,std_err=CreatePipe,create_group=True,use_process_jobs=True,detach_console=os=="mingw32"}) cleanup $ \handles -> do
+  environment <- codexEnvironment
+  bracket (createProcess (proc binary (codexConfig ++ ["app-server","--stdio"])) {env=Just environment,cwd=Just workdir,std_in=CreatePipe,std_out=CreatePipe,std_err=CreatePipe,create_group=True,use_process_jobs=True,detach_console=os=="mingw32"}) cleanup $ \handles -> do
    (hin,hout,herr) <- case handles of
     (Just i,Just o,Just e,_) -> pure (i,o,e)
     _ -> failure 502 "Codex discovery could not open its pipes."
@@ -289,54 +293,89 @@ claudeBinary = do
        native=filter (\file -> os/="mingw32" || map toLower (takeExtension file)==".exe") candidates
    files <- filterM doesFileExist (nub native)
    listToMaybe <$> filterM (fmap executable . getPermissions) files
+-- Login and execution deliberately share an app-owned credential/config root.
+-- Never inherit a shell's Codex home, API key or workload identity credentials.
+codexEnvironment :: IO [(String,String)]
+codexEnvironment = do
+ home <- codexHome
+ environment <- getEnvironment
+ binary <- codexBinary
+ let name=if os=="mingw32" then map toUpper else id
+     tools=maybe "" (\p -> takeDirectory (takeDirectory p)</>"codex-path") binary
+     path=fromMaybe "" (listToMaybe [value | (key,value)<-environment,name key=="PATH"])
+ pure (("CODEX_HOME",home):("PATH",tools<>[searchPathSeparator]<>path):filter (\(key,_) -> name key/="PATH" && not ("CODEX_" `T.isPrefixOf` T.pack (name key) || "OPENAI_" `T.isPrefixOf` T.pack (name key))) environment)
+codexHome :: IO FilePath
+codexHome = do
+ config <- lookupEnv "SAPIENS_CONFIG_DIR" >>= maybe (do
+  home <- getHomeDirectory
+  base <- if os=="mingw32" then fromMaybe (home</>"AppData/Local") <$> lookupEnv "LOCALAPPDATA" else pure (home</>"Library/Application Support")
+  pure (base</>"Sapiens4 Development/config")) pure
+ home <- makeAbsolute (config</>"codex")
+ createDirectoryIfMissing True home
+#ifndef mingw32_HOST_OS
+ setFileMode home 0o700
+#endif
+ pure home
+codexConfig :: [String]
+codexConfig = ["-c","cli_auth_credentials_store=\"file\"","-c","forced_login_method=\"chatgpt\""]
+
+-- A profile-wide OS lock covers whole runs, including gaps between model calls.
+-- Credential changes take the exclusive side, across corpora and host processes.
+profileFile :: FilePath -> IO FilePath
+profileFile name = (</>name) . takeDirectory <$> codexHome
+
+profileHold :: IO Text
+profileHold = do
+ path <- profileFile "account-state.json"
+ (do
+  value <- readJSON path empty
+  pure (at value "hold")) `catch` (\(_::IOException) -> pure "uncertain")
+
+holdProfile :: Text -> IO ()
+holdProfile hold = profileFile "account-state.json" >>= \path -> writeJSON path (obj [("hold",str hold)])
+
+profileLock :: SharedExclusive -> IO (Maybe FileLock)
+profileLock mode = profileFile "account.lock" >>= flip tryLockFile mode
+
+runLease :: IO (Maybe FileLock)
+runLease = mask_ $ do
+ lease <- profileLock Shared
+ case lease of
+  Nothing -> pure Nothing
+  Just lock -> do
+   hold <- profileHold `onException` unlockFile lock
+   if T.null hold then pure lease else unlockFile lock >> pure Nothing
+
+withReadyProfile :: IO a -> IO a
+withReadyProfile action = bracket
+ (runLease >>= maybe (failure 409 "Connect ChatGPT in Settings and resume AI work before starting a task.") pure)
+ unlockFile (const action)
 
 codexBinary :: IO (Maybe FilePath)
 codexBinary = do
  override <- lookupEnv "SAPIENS_CODEX_BINARY"
+ root <- fromMaybe "" <$> lookupEnv "SAPIENS_REPOSITORY"
+ packaged <- doesFileExist (root</>"package-manifest.json")
+ let payload=root</>if packaged then "codex" else ".build/codex"
+     candidate=payload</>"bin"</>if os=="mingw32" then "codex.exe" else "codex"
  case override of
-  Just p | not (null p) -> findExecutable p
+  Just path | not (null path) -> findExecutable path
   _ -> do
-   path <- findExecutable "codex"
-   home <- getHomeDirectory
-   local <- fromMaybe (home </> "AppData/Local") <$> lookupEnv "LOCALAPPDATA"
-   roaming <- fromMaybe (home </> "AppData/Roaming") <$> lookupEnv "APPDATA"
-   let children folder = do
-        present <- doesDirectoryExist folder
-        if present then map (folder </>) <$> listDirectory folder else pure []
-       vendors scope = do
-        packages <- filter (T.isPrefixOf "codex" . T.pack . takeFileName) <$> children scope
-        concat <$> forM packages (\package -> map (</> "codex/codex.exe") <$> children (package </> "vendor"))
-   installed <- if os /= "mingw32" then pure [] else do
-    app <- map (</> "codex.exe") <$> children (local </> "OpenAI/Codex/bin")
-    npm <- vendors (roaming </> "npm/node_modules/@openai")
-    bundled <- vendors (roaming </> "npm/node_modules/@openai/codex/node_modules/@openai")
-    pure (app ++ npm ++ bundled)
-   let candidates = maybeToList path ++ installed ++ ["/Applications/" ++ app ++ ".app/Contents/Resources/" ++ binary | os == "darwin", app <- ["Codex","ChatGPT"],binary <- ["codex","codex-cli/bin/codex"]]
-       native = filter (\p -> os /= "mingw32" || map toLower (takeExtension p) == ".exe") candidates
-   existing <- filterM doesFileExist (nub native)
-   runnable <- filterM (fmap executable . getPermissions) existing
-   versions <- forM runnable $ \p -> do
-    result <- try (timeout 10000000 (readProcessWithExitCode p ["--version"] "")) :: IO (Either SomeException (Maybe (ExitCode,String,String)))
-    case result of
-     Left errorValue | Just (_ :: SomeAsyncException) <- fromException errorValue -> throwIO errorValue
-     Left errorValue | Just (_ :: AsyncCancelled) <- fromException errorValue -> throwIO errorValue
-     _ -> pure ()
-    let version = case result of
-         Right (Just (ExitSuccess,out,_)) -> let (_,_,_,numbers) = out =~ ("codex-cli[[:space:]]+([0-9]+)\\.([0-9]+)\\.([0-9]+)" :: String) :: (String,String,String,[String]) in mapMaybe readMaybe numbers
-         _ -> [] :: [Int]
-    pure (version,p)
-   pure (snd <$> listToMaybe (reverse (sortOn id (filter (not . null . fst) versions))))
+   exists <- doesFileExist candidate
+   pure (if exists then Just candidate else Nothing)
 killTree :: ProcessHandle -> IO ()
 killTree ph = do
+#ifdef mingw32_HOST_OS
+ -- Retain the job handle until termination, even if its root already exited.
+ -- getProcessExitCode can otherwise close the root and lose the job handle.
+ terminateProcess ph
+#else
  result <- getProcessExitCode ph
  when (isNothing result) $ do
   pid <- getPid ph
   case pid of
    Nothing -> terminateProcess ph
    Just root -> do
-#ifdef mingw32_HOST_OS
-    terminateProcess ph
-#else
     let send sig p = signalProcess sig p `catch` (\(_::IOException) -> pure ())
         collect stopped pending = do
          mapM_ (send sigSTOP) pending
@@ -346,8 +385,8 @@ killTree ph = do
          if null children then pure known else collect known children
     stopped <- collect [] [root] `catch` (\(_::SomeException) -> pure [root])
     mapM_ (send sigKILL) (reverse stopped)
-#endif
   pure ()
+#endif
 invoke :: Service -> Run -> Text -> IO Text
 invoke s run input = do
  foreground <- Computer.captureForeground (repositoryRoot s) (workspaceRoot s (agentIdText (runOwner run)))
@@ -370,7 +409,7 @@ invokeModel s run input = do
      workdir = workspaceRoot s (agentIdText (runOwner run))
      args = case provider of CodexProvider -> codexArguments workdir config; ClaudeProvider -> claudeArguments config
  binary <- (case provider of CodexProvider -> codexBinary; ClaudeProvider -> claudeBinary) >>= maybe (failure 503 (providerName provider <> " CLI was not found on this host.")) pure
- environment <- getEnvironment
+ environment <- case provider of CodexProvider -> codexEnvironment; ClaudeProvider -> getEnvironment
  started <- realToFrac . (*1000) <$> getPOSIXTime :: IO Double
  writeIORef (runActivity run) (obj [("started",toJSON started),("updated",toJSON started),("phase",str "Waiting for model"),("last_action",str "")])
  bracket (createProcess (proc binary args) { cwd=Just workdir,env=Just (("SAPIENS_AGENCY_RUN",T.unpack (runIdText (runId run))):filter ((/="SAPIENS_AGENCY_RUN") . fst) environment),std_in=CreatePipe,std_out=CreatePipe,std_err=CreatePipe,create_group=True,use_process_jobs=True,detach_console=os=="mingw32" }) cleanup $ \handles -> do
@@ -425,3 +464,17 @@ invokeModel s run input = do
         void (waitForProcess ph)
         forM_ (catMaybes [hin,hout,herr]) $ \h -> hClose h `catch` (\(_::IOException) -> pure ())
         modifyMVar_ (runProcess run) (const (pure Nothing))
+
+-- Claude's existing CLI session is independent of the app-owned Codex profile.
+-- A no-op release admits Claude; Nothing leaves Codex work queued.
+modelRunLease :: ModelConfig -> IO (Maybe (IO ()))
+modelRunLease config = case configuredProvider config of
+ ClaudeProvider -> pure (Just (pure ()))
+ CodexProvider -> fmap unlockFile <$> runLease
+
+withModelProfile :: Service -> Text -> IO a -> IO a
+withModelProfile s owner action = do
+ config <- runModelSettings s owner
+ case configuredProvider config of
+  ClaudeProvider -> action
+  CodexProvider -> withReadyProfile action

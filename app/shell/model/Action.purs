@@ -1,5 +1,6 @@
 module Sapiens.Action where
 
+import Sapiens.Model as M
 import Prelude (class Eq)
 
 import Sapiens.Form as F
@@ -12,6 +13,7 @@ import Web.Event.Event (Event)
 
 data Action
   = Initialize
+  | CheckSetup
   | LoadRegistry
   | Finalize
   | Poll
@@ -70,6 +72,8 @@ data Action
   | ScanFrame Int
   | UploadQR
   | StopScan
+  | ProviderNavigate M.ProviderPage
+  | OnboardingPoll Int
   | HostPairPoll Int
   | Install
   | Submit Event Action
@@ -80,7 +84,9 @@ data Action
 data Success = Refresh | CloseAndRefresh String | SavedPrompt String
 
 data DialogIntent
-  = SuggestNames
+  = ManageModelConnections
+  | Setup String
+  | SuggestNames
   | ToggleModelPicker String Int
   | PickModelOption String F.ModelPreviewAction
   | PreviewModel F.ModelPreviewAction

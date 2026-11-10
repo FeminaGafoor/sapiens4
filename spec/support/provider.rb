@@ -10,8 +10,10 @@ if ARGV.include?('--version')
   exit
 end
 
+exit 0 if ARGV.include?('login') && ARGV.include?('status')
+
 # Model discovery uses the real provider process boundary, without a model turn.
-if ARGV.first == 'app-server'
+if ARGV.include?('app-server')
   STDOUT.sync = true
   initialized = false
   default_model = {'model' => 'fixture-general', 'displayName' => 'Fixture General',
