@@ -4,7 +4,7 @@ module FilePickerExamples
   def choose_file(path)
     desktop.find('Open', role: 'AXButton')
     desktop.control('activate')
-    desktop.key('command+shift+g')
+    desktop.key(Desktop.linux? ? 'control+l' : 'command+shift+g')
     Contract.wait(description: 'Go to Folder field focus') do
       %w[AXTextField AXComboBox].include?(desktop.control('focused')['role'])
     rescue RuntimeError => error
@@ -12,7 +12,7 @@ module FilePickerExamples
       false
     end
     desktop.control('paste', '--text', path)
-    desktop.key('return')
+    desktop.key('return') unless Desktop.linux?
     desktop.press('Open')
   end
 end

@@ -21,6 +21,7 @@ import System.Info
 import Types
 import qualified Store as DB
 import Memo
+import Workspace (seedMemoBookmark)
 
 settings :: Service -> Text -> IO Value
 settings s a = readJSON (agentRoot s a </> "host.json") empty
@@ -81,6 +82,7 @@ ensureAgent s row = do
  createDirectoryIfMissing True root
  createDirectoryIfMissing True work
  ensureMemo work (at row "name") (at row "role") `catch` (\(_::APIError) -> pure ())
+ seedMemoBookmark s a
  exists <- doesFileExist p
  unless exists $ writeJSON p (obj [("schema_version",num 3),("agid",str a),("revision",num 1),("turns",arr []),("chat",arr []),("events",arr []),("event_sequence",num 0),("last_output",Null)])
  v <- readJSON p empty

@@ -478,6 +478,18 @@ pendingWorks s = do
       message=obj [("role",str "user"),("content",str (callRequest c)),("turn",toJSON (callIdentity c)),("time",str time),("origin",origin)]
   modifyState s a $ \state -> if isJust (findId (runIdText (callIdentity c)) (items state "turns")) then state else appendItems "chat" [message] (appendItems "turns" [turn] state)
   DB.project s a
+-- Called under the service lock, so matching and resuming are one operation.
+-- An ordinary Chief reply is unambiguous only when one of its tasks is waiting.
+waitingClarification :: Service -> Text -> IO (Maybe Text)
+waitingClarification s a = do
+ chief <- DB.mainAgent s
+ if a /= chief then pure Nothing else do
+  works <- readWorks s
+  case [workloadId w | w <- works, let c = NE.last (workCalls w), callOwner c == AgentId chief, callState c == CallWaiting] of
+   [] -> pure Nothing
+   [wid] -> pure (Just wid)
+   _ -> failure 409 "Chief has several tasks waiting for an answer; this reply could not be matched."
+
 clarify :: Service -> Text -> Text -> Text -> IO Text
 clarify s a wid message = do
  works <- readWorks s

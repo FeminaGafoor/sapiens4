@@ -226,6 +226,17 @@ execute arena view script done = do
   withWide script $ \source -> call2 (core view) 29 source handler
   release handler
 
+-- Ask the engine for the committed frame's URL and MIME type. Guest script
+-- cannot override this result. An unsupported or failed query leaves the tab live.
+frameTree :: Arena -> View -> (String -> IO ()) -> IO ()
+frameTree arena view done =
+  bracket (completion arena "{5C4889F0-5EF6-4C5A-952C-D8F1B92D0574}" receive) release $ \handler ->
+    withWide "Page.getFrameTree" $ \name -> withWide "{}" $ \params -> do
+      f <- method (core view) 36
+      void $ invoke3 f (core view) name params handler
+  where
+    receive result output = when (result >= 0) $ readWide (castPtr output) >>= done
+
 navigate :: View -> String -> IO ()
 navigate view = putString (core view) 5
 

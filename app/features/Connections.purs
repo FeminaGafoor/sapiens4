@@ -12,25 +12,31 @@ import Effect (Effect)
 import Effect.Aff (Aff, Milliseconds(..), delay, throwError, try)
 import Effect.Class (liftEffect)
 import Effect.Exception (error)
+import Effect.Exception as Exception
 import Effect.Ref as Ref
 import Foreign.Object as O
 import Libs4.Browser as B
 import Sapiens.Data as D
 import Sapiens.Domain as X
 import Sapiens.Remote as R
+import Sapiens.Updates as Updates
+import Sapiens.IdleTabs as IdleTabs
 
 data Pairing = NoPairing | LocalPairing String | RemotePairing R.Transport
 
-type Runtime = { clients :: Ref.Ref (O.Object R.Transport), credentials :: Ref.Ref (O.Object Json), camera :: Ref.Ref (Maybe B.Camera), pairing :: Ref.Ref Pairing }
+type Runtime = { idleTabs :: IdleTabs.Timers, updates :: Updates.Updates, clients :: Ref.Ref (O.Object R.Transport), credentials :: Ref.Ref (O.Object Json), camera :: Ref.Ref (Maybe B.Camera), pairing :: Ref.Ref Pairing, persistedSnapshot :: Ref.Ref (Maybe {key :: String, content :: X.SnapshotContent}) }
 type Registry = { records :: Array X.Corpora, localAvailable :: Boolean }
 
 create :: Effect Runtime
 create = ado
+  idleTabs <- IdleTabs.create
+  updates <- Updates.create
   clients <- Ref.new O.empty
   credentials <- Ref.new O.empty
   camera <- Ref.new Nothing
   pairing <- Ref.new NoPairing
-  in {clients,credentials,camera,pairing}
+  persistedSnapshot <- Ref.new Nothing
+  in {idleTabs,updates,clients,credentials,camera,pairing,persistedSnapshot}
 
 read :: String -> Effect Json
 read key = D.parse <$> B.storageRead key
@@ -90,13 +96,17 @@ decorate key snapshot = do
       merged = D.put "workspaces" (if D.valid $ D.get "workspaces" prefs then D.get "workspaces" prefs else D.get "workspaces" local) $ D.merge prefs local
   pure $ if D.valid local then D.put "preferences" merged snapshot else snapshot
 
-cache :: String -> Json -> Effect Unit
-cache key snapshot = do
-  let recent = D.put "turns" (D.array $ A.takeEnd 100 $ D.rows "turns" snapshot) snapshot
-      reduced = if S.length (D.encode recent) > 750000 then D.put "turns" (D.array $ map (\t -> D.put "input" (D.text $ D.cut 12000 $ D.s "input" t) $ D.put "output" (D.text $ D.cut 12000 $ D.s "output" t) t) $ D.rows "turns" recent) recent else recent
+-- Accepted content and successful persistence have independent lifetimes.
+cacheSnapshot :: Runtime -> String -> X.SnapshotContent -> Json -> Effect Unit
+cacheSnapshot runtime key content snapshot = Exception.catchException (const $ Ref.write Nothing runtime.persistedSnapshot) do
+  previous <- Ref.read runtime.persistedSnapshot
   keys <- B.storageKeys
-  traverse_ B.storageRemove $ A.dropEnd 2 $ A.filter (\k -> S.take 12 k == "s4.snapshot." && k /= "s4.snapshot." <> key) keys
-  void $ write ("s4.snapshot." <> key) reduced
+  unless (previous == Just {key,content} && A.elem ("s4.snapshot." <> key) keys) do
+    let recent = D.put "turns" (D.array $ A.takeEnd 100 $ D.rows "turns" snapshot) snapshot
+        reduced = if S.length (D.encode recent) > 750000 then D.put "turns" (D.array $ map (\t -> D.put "input" (D.text $ D.cut 12000 $ D.s "input" t) $ D.put "output" (D.text $ D.cut 12000 $ D.s "output" t) t) $ D.rows "turns" recent) recent else recent
+    traverse_ B.storageRemove $ A.dropEnd 2 $ A.filter (\k -> S.take 12 k == "s4.snapshot." && k /= "s4.snapshot." <> key) keys
+    ok <- write ("s4.snapshot." <> key) reduced
+    Ref.write (if ok then Just {key,content} else Nothing) runtime.persistedSnapshot
 
 lifecycle :: Runtime -> Boolean -> X.Corpora -> String -> Aff Json
 lifecycle runtime remote record action = do
@@ -163,6 +173,9 @@ register runtime transport = do
 
 dispose :: Runtime -> Effect Unit
 dispose runtime = do
+  IdleTabs.stop runtime.idleTabs
+  Updates.stop runtime.updates
+  Ref.write Nothing runtime.persistedSnapshot
   Ref.read runtime.clients >>= traverse_ R.close <<< O.values
   Ref.read runtime.camera >>= traverse_ B.cameraStop
   Ref.read runtime.pairing >>= case _ of

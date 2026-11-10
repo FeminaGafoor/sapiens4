@@ -9,7 +9,7 @@ RSpec.describe 'Attaching files from the desktop picker', :desktop do
   end
 
   before do
-    skip 'Native open panel contract is macOS-only' unless RUBY_PLATFORM.include?('darwin')
+    skip 'Native open panel requires macOS or Linux' unless RUBY_PLATFORM.include?('darwin') || Desktop.linux?
     @host = desktop_host
     start_desktop
   end

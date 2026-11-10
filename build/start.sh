@@ -2,9 +2,10 @@
 set -eu
 cd "$(dirname "$0")/.."
 git submodule update --init --recursive
-if [ "$(uname -s)" = Darwin ]; then
+platform=$(uname -s)
+if [ "$platform" = Darwin ]; then
   ./submodules/blindly4/macos/build.sh
-else
+elif [ "$platform" != Linux ]; then
   echo "Blindly4 computer tasks require macOS. Chat is available on this platform."
 fi
 runghc build/Build.hs
@@ -14,4 +15,5 @@ case "$(uname -s):$(uname -m)" in
   *) echo 'Bundled Codex supports macOS arm64 and Windows x64; set SAPIENS_CODEX_BINARY for other source targets.' >&2 ;;
 esac
 fi
+if [ "$platform" = Linux ]; then exec ./environments/linux/start.sh "$@"; fi
 exec .build/bin/sapiens4 "$@"

@@ -136,11 +136,12 @@ readActivity group prefs =
         "paused" -> Paused
         "deleted" | group -> Deleted
         _ -> Planned
-      w = fromMaybe Memo $ A.find ((_ == D.s "view" prefs) <<< workId) [Memo,Tasks,TaskCall,Backlog,Automated,Automation,Scheduled,Callbacks,Jobs,Agentic,Pipelines,Composers,ComposeWorkflow,ComposeRoutine,ComposeCall]
+      w = fromMaybe Tasks $ A.find ((_ == D.s "view" prefs) <<< workId) [Memo,Tasks,TaskCall,Backlog,Automated,Automation,Scheduled,Callbacks,Jobs,Agentic,Pipelines,Composers,ComposeWorkflow,ComposeRoutine,ComposeCall]
       work v = Work v (if v == Scheduled && p == Paused || A.elem v [Tasks,Automated] && A.elem p [Executed,Deleted] then p else Planned)
   in case D.s "panel" prefs of
-    "notes" -> work Memo
+    "notes" -> Chat Conversation
     "tasks" -> work Tasks
+    "work" | w == Memo -> Chat Conversation
     "work" -> work w
     "updates" -> Updates
     _ -> Chat $ fromMaybe Conversation $ A.find ((_ == D.s "view" prefs) <<< chatId) [Conversation,Pins,Threads,Comments]

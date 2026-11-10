@@ -13,7 +13,6 @@ import Sapiens.Data as D
 import Sapiens.Domain as X
 import Sapiens.Dialog as Dialog
 import Sapiens.Html as V
-import Sapiens.Memo as Memo
 import Sapiens.Model as M
 import Sapiens.Navigation as N
 import Sapiens.Text as T
@@ -111,10 +110,9 @@ conversation :: M.Model -> V.Html
 conversation m = V.node "section" [V.cls "conversation",V.id "chat-panel",V.label "Agent conversation",V.hidden $ not $ A.elem N.ChatPane panes]
   [V.node "div" [V.cls "agent-heading",V.id "agent-heading"] [T.avatar a (if m.selected == m.snapshot.main_agent_id then "large main-sapi-avatar" else "large") true,V.div "" [V.div "agent-title" [V.textNode "h2" [] (a.name),V.when (not $ M.isGroup a) $ T.groupLabels m a false],V.p "agent-role" $ (if M.isGroup a then a.description else a.role)],V.icon "Sapi settings" "···" $ OpenDialog (if M.isGroup a then M.GroupSettings else M.AgentSettings) (F.EntityRecord a)]
   ,activityNav m,viewbar m
-  ,V.keyed "div" [V.cls $ "conversation-body " <> if m.activity == N.Work N.Memo N.Planned then "notes-view" else "",V.id "conversation-body",V.on "scroll" $ const Scroll,V.on "pointerdown" $ const UserScroll,V.on "touchstart" $ const UserScroll,V.on "wheel" $ const UserScroll,V.on "keydown" $ const UserScroll] $ case m.activity of
+  ,V.keyed "div" [V.cls "conversation-body",V.id "conversation-body",V.on "scroll" $ const Scroll,V.on "pointerdown" $ const UserScroll,V.on "touchstart" $ const UserScroll,V.on "wheel" $ const UserScroll,V.on "keydown" $ const UserScroll] $ case m.activity of
     N.Chat N.Conversation -> Chat.rows m
     N.Chat view -> [Tuple "unavailable" $ V.p "empty" $ N.chatLabel view <> " are not available yet."]
-    N.Work N.Memo _ -> [Tuple ("memo:" <> m.selected) $ Memo.view m]
     N.Work N.Scheduled period -> [Tuple "routines" $ Work.routines m period]
     N.Work view period | A.elem view [N.Tasks,N.Automated] -> [Tuple "tasks" $ Work.tasks m view period]
     N.Work view _ -> [Tuple "unavailable" $ V.p "empty" $ N.workLabel view <> " is not available yet."]
@@ -144,7 +142,7 @@ viewbar m = V.node "div" [V.id "activity-viewbar",V.hidden hidden] $ [V.span [V.
   N.Work view period | A.elem view [N.Tasks,N.Automated,N.Scheduled] -> [V.div "work-nav-tools" [V.div "activity-view-menu" [V.controlWith [V.label $ if view == N.Scheduled then "Routine history" else if M.isGroup (M.selected m) then "Task status" else "Task history",V.attr "aria-expanded" $ show $ m.menu == Just "activity-filter"] [V.text $ N.periodLabel period,V.chevron false] (Menu "activity-filter"),V.node "div" [V.cls "activity-menu",V.hidden $ m.menu /= Just "activity-filter"] $ map (\p -> V.choice (p == period) (N.periodLabel p) (SetPeriod p)) (if view == N.Scheduled then [N.Planned,N.Paused] else [N.Planned,N.Executed] <> if M.isGroup (M.selected m) then [N.Deleted] else [])],V.when (not $ (M.selected m).archived) $ V.button "" "+ New" $ if view == N.Scheduled then PrepareDraft "Add New Scheduled Routine:\nFrequency: every XXX minutes\nExecute: PROMPT" "XXX" else PrepareDraft "Add New Task: TODO" "TODO"]]
   _ -> []
   where
-  hidden = m.activity == N.Updates || m.activity == N.Work N.Memo N.Planned || m.activity == N.Chat N.Conversation
+  hidden = m.activity == N.Updates || m.activity == N.Chat N.Conversation
   label = case m.activity of
     N.Chat view -> N.chatLabel view
     N.Work view _ -> N.workLabel view

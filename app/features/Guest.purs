@@ -4,6 +4,7 @@ import Prelude
 import Sapiens.Platform as Platform
 import Data.Argonaut.Core (Json)
 import Data.Array as A
+import Data.String as S
 import Effect (Effect)
 import Libs4.Browser as B
 import Sapiens.Data as D
@@ -19,7 +20,10 @@ applyTheme settings = do
   pure $ D.bool managed
 
 managedDocument :: Environment -> Boolean
-managedDocument env = env.href == "about:blank" || A.elem env.contentType ["text/plain","application/json","application/xml","text/xml"]
+managedDocument env = env.href == "about:blank" || S.take 13 env.href == "sapiens-file:"
+  || (S.take 5 mime == "text/" && mime /= "text/html")
+  || A.elem mime ["application/json","application/xml","application/javascript","application/yaml"]
+  where mime = S.toLower env.contentType
 
 style :: Browser.ThemeSettings -> String
 style theme = "html,body{background:" <> theme.background <> ";color:" <> theme.foreground <> ";color-scheme:" <> (if theme.dark then "dark" else "light") <> "}pre{white-space:pre-wrap;overflow-wrap:anywhere}"

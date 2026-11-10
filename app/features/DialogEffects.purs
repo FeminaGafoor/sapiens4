@@ -51,9 +51,10 @@ handle runtime dispatch action = case action of
       let d = Dialog.make kind record m
       H.modify_ $ Dialog.open d
       when (kind == M.ConnectRemote && M.remote m) $ liftEffect $ B.historyPush $ D.json {dialog: true}
-      E.sync
+      E.sync runtime
       case kind of
         M.Models -> loadModels F.Codex m d *> loadModels F.Claude m d *> loadModelSettings m d
+        M.Computer | m.snapshot.computer.platform == "linux" -> receive d.identity (\value -> E.modifyDialog d.identity _ {content=F.computerAccess value,status=M.Editing}) $ E.api runtime m "/api/computer" "GET" D.null
         M.DecisionPrompts -> receive d.identity (\value -> E.modifyDialog d.identity _ {content=F.Prompts $ map F.prompt $ D.rows "prompts" value,fields=F.decode $ D.first $ D.rows "prompts" value,status=M.Editing}) $ E.api runtime m "/api/decision-prompts" "GET" D.null
         M.RelayList -> receive d.identity (\value -> E.modifyDialog d.identity _ {content=F.relayRegistry value,status=M.Editing}) $ C.json "/api/host/relays" "GET" D.null
         M.Onboarding -> dispatch $ OnboardingPoll d.identity
@@ -113,13 +114,13 @@ handle runtime dispatch action = case action of
       Just d | not (Dialog.dismissible d) -> E.modifyDialog d.identity $ M.setDialogError "Finish or cancel sign-in before leaving. Signing out cannot be cancelled. You can quit the app and recover later."
       Just d | d.kind == M.AIProviders && maybe false (\previous -> previous.kind == M.Models) (A.last m.dialogStack) -> do
         H.modify_ Dialog.back
-        E.sync
+        E.sync runtime
         current <- H.get
         traverse_ (\previous -> loadModels F.Codex current previous *> loadModels F.Claude current previous) current.dialog
       _ -> do
         void $ H.fork $ H.liftAff $ C.cancelPairing runtime
         H.modify_ Dialog.close
-        E.sync
+        E.sync runtime
   ProviderNavigate page -> do
     m <- H.get
     traverse_ (\d -> when (d.kind == M.AIProviders && not (M.dialogBusy d) && (not (Dialog.authenticating d) || page == M.CodexAuth)) do
@@ -138,14 +139,14 @@ handle runtime dispatch action = case action of
   AttachmentKind kind -> do
     m <- H.get
     if A.elem kind [X.LinkAttachment,X.FileAttachment] then dispatch $ OpenDialog (M.Reference kind) F.NoRecord else do
-      unless (A.length (M.attachments m) >= 8) do
+      unless (M.firstMessageFull m) do
         H.modify_ _ {uploading=m.uploading+1,dialog=map (M.setDialogError "") m.dialog}
         attach m do
           selected <- B.chooseFile (if kind == X.ImageAttachment then "image/png,image/jpeg,image/gif,image/webp" else ".pdf,.txt,.md,.csv,.json,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.rtf,.odt") 10485760
           case selected of
             Nothing -> pure Nothing
             Just file -> Just <$> E.api runtime m (M.ownerPath m <> "/attachments") "POST" (D.json {kind, name: file.name, data: file.data})
-      when (A.length (M.attachments m) >= 8) $ E.notify "Attach up to 8 items per message."
+      when (M.firstMessageFull m) $ E.notify "Attach up to 8 items per message."
   DialogCommand command -> commandAction command
   _ -> pure unit
   where
@@ -194,7 +195,7 @@ handle runtime dispatch action = case action of
       Left failure -> E.modifyDialog d.identity $ M.setDialogError failure
       Right request -> runSave m d request
     M.GroupTask -> saveTask m d false
-    M.Reference kind -> if A.length (M.attachments m) >= 8 then E.modifyDialog d.identity (M.setDialogError $ "Attach up to 8 items per message.") else do
+    M.Reference kind -> if M.firstMessageFull m then E.modifyDialog d.identity (M.setDialogError $ "Attach up to 8 items per message.") else do
       H.modify_ _ {uploading=m.uploading+1}
       E.modifyDialog d.identity (M.setDialogBusy true)
       attach m $ Just <$> E.api runtime m (M.ownerPath m <> "/attachments") "POST" (D.json {kind, value: D.json d.fields.value})
@@ -230,14 +231,14 @@ handle runtime dispatch action = case action of
     m <- H.get
     let next = Dialog.make kind record m
     H.modify_ $ Dialog.push next
-    E.sync
+    E.sync runtime
   relayList content = do
     m <- H.get
     let previous = A.find (( _ == M.RelayList) <<< _.kind) m.dialogStack
         record = maybe F.NoRecord _.record previous
         next = Dialog.make M.RelayList record m
     H.modify_ _ {dialog=Just $ next {content=F.relayRegistry content},dialogStack=[],sequence=next.identity}
-    E.sync
+    E.sync runtime
   changeRelay d data_ = runDialog d (\value -> when (D.b "reset" value) (resetRelay true) *> relayList value) $ C.json "/api/host/relays" "POST" $ D.put "revision" (D.json (F.relays d.content).revision) data_
   confirmRelay d change to = do
     let current = fromMaybe (F.relay D.empty) $ A.find ((_ == (F.relays d.content).selected) <<< _.id) (F.relays d.content).servers
@@ -249,10 +250,11 @@ handle runtime dispatch action = case action of
       traverse_ R.close $ O.values clients
       Ref.write O.empty runtime.clients
       Ref.write O.empty runtime.credentials
+      Ref.write Nothing runtime.persistedSnapshot
       traverse_ (\r -> B.storageRemove $ "s4.snapshot." <> r.key) $ A.filter (( _ == X.Remote) <<< _.location) m.records
     let locals = map (_ {paired=false}) $ A.filter (( _ == X.Local) <<< _.location) m.records
         active = if (M.activeRecord m).location == X.Remote then fromMaybe "" $ _.key <$> A.head locals else m.active
-    H.modify_ _ {records=locals,active=active,connection=M.Offline,epoch=m.epoch+1,polling=false,saving=false,nativeReporting=false,nativeReports=[]}
+    H.modify_ _ {records=locals,active=active,connection=M.Offline,epoch=m.epoch+1,polling=false,saving=false,nativeReporting=false,nativeReports=[],snapshotContent=Nothing,documents=O.empty}
     void $ liftEffect $ C.write "s4.records" $ D.json locals
     void $ liftEffect $ C.write "s4.active" $ D.text active
     void $ liftEffect $ C.write "s4.lifecycle.pending" D.null
@@ -290,7 +292,7 @@ handle runtime dispatch action = case action of
     Intent.ManageModelConnections -> when (d.kind == M.Models && not (M.dialogBusy d) && not (M.remote m) && (M.activeRecord m).location == X.Local) do
       let next = Dialog.make M.AIProviders F.NoRecord m
       H.modify_ \current -> (Dialog.push next current) {dialog=Just next}
-      E.sync
+      E.sync runtime
       dispatch $ OnboardingPoll next.identity
     Intent.ToggleModelPicker picker index -> case d.content of
       F.ModelPreview draft -> do
@@ -337,7 +339,7 @@ handle runtime dispatch action = case action of
       H.modify_ (\s -> s {sequence=s.sequence+1})
     Intent.DeleteTask -> saveTask m d true
     Intent.AddRelay -> push M.RelayAdd F.NoRecord
-    Intent.BackRelay -> if A.null m.dialogStack then dispatch CloseDialog else H.modify_ Dialog.back *> E.sync
+    Intent.BackRelay -> if A.null m.dialogStack then dispatch CloseDialog else H.modify_ Dialog.back *> E.sync runtime
     Intent.SelectRelay relay -> when (relay.id /= (F.relays d.content).selected) $ confirmRelay d (D.json {action: "switch", id: relay.id}) relay.name
     Intent.ConfirmRelay -> changeRelay d $ D.put "confirm_revoke" (D.bool true) $ (F.contextChange d.record).change
     Intent.EditRelay id -> runDialog d (push M.RelayAdd <<< F.relayContext) $ C.json ("/api/host/relays/" <> B.encodeURI id) "GET" D.null
