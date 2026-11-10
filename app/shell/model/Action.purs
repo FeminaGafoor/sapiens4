@@ -5,6 +5,7 @@ import Prelude (class Eq)
 import Sapiens.Form as F
 import Sapiens.Browser as Browser
 import Data.Argonaut.Core (Json)
+import Halogen (SubscriptionId)
 import Sapiens.Domain as X
 import Sapiens.Model (DialogKind)
 import Sapiens.Navigation (Activity, Scope, Pane, Period)
@@ -29,7 +30,6 @@ data Action
   | Send
   | RetryDocument String
   | ToggleExpanded String
-  | Clarify X.Workload
   | Menu String
   | CloseMenu
   | OpenDialog DialogKind F.Context
@@ -58,6 +58,16 @@ data Action
   | AttachmentKind X.AttachmentKind
   | RemoveAttachment String
   | Browser Browser.Command
+  | VoiceStart
+  | VoiceStop
+  | VoiceStopSend
+  | VoicePiece X.VoicePiece
+  | VoicePieceRejected String
+  | VoiceCancel
+  | VoiceTick SubscriptionId
+  | VoiceSend
+  | VoiceFlush String
+  | VoiceRetry String
   | Address String
   | OpenAddress
   | EditAddress
@@ -74,7 +84,6 @@ data Action
   | Submit Event Action
   | Link Event Action
   | OpenLink String
-  | NoteAnchor String
 
 data Success = Refresh | CloseAndRefresh String | SavedPrompt String
 

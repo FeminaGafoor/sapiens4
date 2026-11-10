@@ -12,6 +12,8 @@ import Data.Set as Set
 import Data.String as S
 import Data.Tuple (Tuple(..))
 import Foreign.Object as O
+import Halogen (SubscriptionId)
+import Libs4.Browser (Voice)
 import Libs4.Browser as B
 import Sapiens.Data as D
 import Sapiens.Browser as Browser
@@ -27,9 +29,11 @@ previewError = case _ of
   PreviewUnavailable message -> message
   InvalidPreview -> "Invalid file preview response"
 
-decodePreview :: Json -> Either PreviewError String
-decodePreview value = case toString (D.get "content" value) of
-  Just content -> Right content
+data Preview = TextPreview String | MemoPreview (Array Json)
+
+decodePreview :: Boolean -> Json -> Either PreviewError Preview
+decodePreview memo value = case toString (D.get "content" value) of
+  Just content -> Right $ if memo then MemoPreview (D.arr $ B.parseMarkup content) else TextPreview content
   Nothing -> Left InvalidPreview
 
 type Request = { epoch :: Int, sequence :: Int, key :: String, revision :: String, path :: String }
@@ -82,6 +86,43 @@ connectionResult reachable = case _ of
   ChangingLifecycle _ -> ChangingLifecycle reachable
   _ -> if reachable then Online else Offline
 
+-- | Where a recording is in its life. The recorder exists only while recording, and how it
+-- | ends is decided once, when Stop or Send is pressed.
+data RecordingPhase = Starting | Recording Voice | Stopping StopAction
+
+-- | What happens when recording stops: keep the voice messages for review, or send them.
+data StopAction = Review | SendAfter
+derive instance eqStopAction :: Eq StopAction
+
+isStopping :: RecordingPhase -> Boolean
+isStopping = case _ of
+  Stopping _ -> true
+  _ -> false
+
+phaseRecorder :: RecordingPhase -> Maybe Voice
+phaseRecorder = case _ of
+  Recording recorder -> Just recorder
+  _ -> Nothing
+
+-- | One voice recording in progress. Pieces wait in 'queue' and are uploaded one at a time,
+-- | in order, to 'path' (captured when recording started, so switching chats cannot redirect them).
+-- | Uploading runs alongside recording, so its state stays separate from 'phase'.
+type VoiceSession =
+  { owner :: String, path :: String, epoch :: Int, phase :: RecordingPhase, subscription :: SubscriptionId
+  , queue :: Array X.VoicePiece, sending :: Boolean, attempts :: Int, pieces :: Int
+  , recording :: String, startedAt :: Number, elapsed :: Number }
+
+-- | One chat's voice messages being sent one by one, in order, each as soon as its own
+-- | transcript is ready. Kept per chat ('outboxes'), so one chat never blocks another.
+-- | 'epoch' ties it to the corpora it was started in: after a switch it is dropped, never sent elsewhere.
+type Outbox = { epoch :: Int, path :: String, text :: String, others :: Array String, voices :: Array String, sending :: Boolean }
+
+-- | The selected chat is recording or sending voice messages, so it must not send anything else yet.
+voiceBusy :: Model -> Boolean
+voiceBusy m = O.member m.selected m.outboxes || case m.voice of
+  Just v -> v.owner == m.selected
+  Nothing -> false
+
 type Model = Record (InterfaceState (ContentState SessionState))
 
 type InterfaceState r =
@@ -95,31 +136,34 @@ type ContentState r =
   ( snapshot :: X.Snapshot, agents :: Array X.Entity, messages :: O.Object (Array X.Message)
   , mention :: Maybe { start :: Int, end :: Int, choices :: Array X.Entity, index :: Int }
   , drafts :: O.Object String, attachments :: O.Object (Array X.Attachment), sending :: Set.Set String
-  , uploading :: Int, clarification :: Maybe X.Workload
+  , uploading :: Int
   , workspaces :: O.Object X.Workspace, workspaceRevision :: Number, documents :: O.Object (RemoteData String X.Document)
-  , expanded :: Set.Set String, imageUrls :: O.Object String, preview :: RemoteData PreviewError String
+  , expanded :: Set.Set String, preview :: RemoteData PreviewError Preview
   , scrollPosition :: Maybe Browser.ScrollPosition, restoringScroll :: Boolean
   | r )
 
 type SessionState =
-  ( polling :: Boolean, pollGeneration :: Int, saving :: Boolean, lastPreview :: Number
+  ( snapshotContent :: Maybe X.SnapshotContent, polling :: Boolean, pollGeneration :: Int, fallbackDelay :: Number, saving :: Boolean, lastPreview :: Number
   , nativeReporting :: Boolean, nativeReports :: Array Browser.NativeReport
   , epoch :: Int, sequence :: Int, now :: Number, env :: Environment
   , records :: Array X.Corpora, active :: String, connection :: ConnectionState
   , localAvailable :: Boolean, showArchived :: Boolean, installRequired :: Boolean
-  , preferencesSaved :: String
+  , preferencesSaved :: String, voice :: Maybe VoiceSession, outboxes :: O.Object Outbox
   )
+
+fastPoll :: Number
+fastPoll = 750.0
 
 initial :: Environment -> Model
 initial env =
   { snapshot:X.emptySnapshot, agents:[], messages:O.empty, selected:"", activity:N.Chat N.Conversation, scope:N.All, groupView:Nothing
-  , mention:Nothing, drafts:O.empty, attachments:O.empty, sending:Set.empty, uploading:0, clarification:Nothing
+  , mention:Nothing, drafts:O.empty, attachments:O.empty, sending:Set.empty, uploading:0, voice:Nothing, outboxes:O.empty
   , workspaces:O.empty, workspaceRevision:0.0, documents:O.empty, expanded:Set.empty
-  , polling:false,pollGeneration:0,saving:false,lastPreview:0.0,nativeReporting:false,nativeReports:[]
+  , snapshotContent:Nothing, polling:false,pollGeneration:0,fallbackDelay:fastPoll,saving:false,lastPreview:0.0,nativeReporting:false,nativeReports:[]
   , epoch:0, sequence:0, now:0.0, env, panes:[N.ChatPane,N.Sidebar,N.Workspace], search:"", searchOpen:false, menu:Nothing, dialog:Nothing
   , records:[], active:"", connection:Offline, localAvailable:false, showArchived:false
   , toast:"", feedback:"", theme:if env.dark then "dark" else "light", installRequired:false
-  , dialogStack:[], imageUrls:O.empty, preview:NotAsked, address:"", addressOpen:false, scrollPosition:Nothing, restoringScroll:false, preferencesSaved:""
+  , dialogStack:[], preview:NotAsked, address:"", addressOpen:false, scrollPosition:Nothing, restoringScroll:false, preferencesSaved:""
   }
 
 agent :: Model -> String -> X.Entity
@@ -145,6 +189,13 @@ draft m = fromMaybe "" $ O.lookup m.selected m.drafts
 
 attachments :: Model -> Array X.Attachment
 attachments m = fromMaybe [] $ O.lookup m.selected m.attachments
+
+-- A message carries all ordinary attachments and at most one voice clip.
+ordinaryAttachmentCount :: Model -> Int
+ordinaryAttachmentCount = A.length <<< A.filter (not <<< X.isVoice) <<< attachments
+
+firstMessageFull :: Model -> Boolean
+firstMessageFull m = ordinaryAttachmentCount m + (if A.any X.isVoice (attachments m) then 1 else 0) >= 8
 
 workspace :: Model -> X.Workspace
 workspace m = fromMaybe (X.workspace D.empty) $ O.lookup m.selected m.workspaces
@@ -182,8 +233,20 @@ project :: Json -> Model -> Model
 project raw m = projectSnapshot (X.snapshot raw) m
 
 projectSnapshot :: X.Snapshot -> Model -> Model
-projectSnapshot snapshot m = withWorkspaces snapshot.preferences m { snapshot=snapshot, agents=agents, messages=messages, selected=id, groupView=groupView, scope=scope }
+projectSnapshot snapshot m = withWorkspaces snapshot.preferences m { snapshot=snapshot, agents=agents, messages=messages, selected=id, groupView=groupView, scope=scope, attachments=refreshed }
   where
+  -- Voice chips waiting in the composer pick up their transcript as the host finishes it. A chip the
+  -- host had before but no longer has was sent or removed on another device and leaves; a chip the host
+  -- has not seen yet was just added here and stays; a new chip on the host was added elsewhere and appears.
+  refreshed = O.mapWithKey syncDrafts (O.union m.attachments (map (const []) snapshot.attachment_drafts))
+  syncDrafts owner items =
+    let latest = fromMaybe [] (O.lookup owner snapshot.attachment_drafts)
+        before = map _.id (fromMaybe [] (O.lookup owner m.snapshot.attachment_drafts))
+        kept = A.mapMaybe (\item -> case A.find (\row -> row.id == item.id) latest of
+          Just row -> Just row
+          Nothing -> if A.elem item.id before then Nothing else Just item) items
+        added = A.filter (\row -> not (A.any (\item -> item.id == row.id) items) && not (A.elem row.id before)) latest
+    in kept <> added
   personal = map (\a -> a {busy=A.any (\t -> t.agent == a.id && t.status == X.Running) turns
     , lastActivity=B.parseTime $ D.fallback a.created $ fromMaybe "" $ _.created <$> A.last (A.filter (\t -> t.agent == a.id) turns)
     , preview=D.cut 150 $ D.replace "\\s+" " " $ D.fallback "Ready for your message." $ fromMaybe "" $ _.text <$> (O.lookup a.id personalMessages >>= A.last)}) snapshot.agents
@@ -218,7 +281,7 @@ reset raw old = case X.decodeSnapshot raw of
 resetSnapshot :: X.Snapshot -> Model -> Model
 resetSnapshot snapshot old = projectSnapshot snapshot old
   {selected=p.selected,activity=p.activity,scope=p.scope,groupView=p.groupView,drafts=p.drafts
-  ,attachments=snapshot.attachment_drafts,sending=Set.empty,uploading=0,clarification=Nothing,documents=O.empty,expanded=Set.empty,epoch=old.epoch+1
+  ,snapshotContent=Nothing,attachments=snapshot.attachment_drafts,sending=Set.empty,uploading=0,outboxes=O.empty,documents=O.empty,expanded=Set.empty,epoch=old.epoch+1
   ,panes=p.panes,workspaces=p.workspaces,workspaceRevision=p.workspaceRevision,search="",searchOpen=false
   ,preview=NotAsked,address="",scrollPosition=p.scrollPosition,restoringScroll=p.scrollPosition /= Nothing}
   where
@@ -245,8 +308,9 @@ roster m = A.sortBy (\a b -> compare (pinned b) (pinned a) <> compare b.lastActi
 maybeGroup :: Model -> X.Entity
 maybeGroup m = fromMaybe X.emptyEntity $ m.groupView >>= flip X.findEntity m.agents
 
-notes :: Model -> X.Notes
-notes m = if isGroup (selected m) then (selected m).notes else fromMaybe (X.notes D.empty) $ _.notes <$> O.lookup m.selected m.snapshot.orchestration
+notes :: Model -> String -> X.Notes
+notes m owner = if isGroup entity then entity.notes else fromMaybe (X.notes D.empty) $ _.notes <$> O.lookup owner m.snapshot.orchestration
+  where entity = agent m owner
 
 preferences :: Model -> Json
 preferences m = D.merge (N.encodeActivity m.activity) $ D.json
@@ -258,22 +322,25 @@ preferences m = D.merge (N.encodeActivity m.activity) $ D.json
 
 currentDocument :: Model -> Maybe Request
 currentDocument m = case m.activity of
-  N.Work N.Memo _ | info.revision /= "missing" -> Just $ make "memo" (info.revision) "/notes"
   N.Work view _ | A.elem view [N.Tasks,N.Automated] && not (isGroup a) -> Just $ make "tasks" (D.encode $ D.json $ map _.revision $ A.filter (\w -> A.elem m.selected w.participants) m.snapshot.workloads) "/tasks?format=json"
   _ -> Nothing
   where
   a = selected m
-  info = notes m
   make kind revision suffix = {key:kind <> ":" <> m.selected,revision,path:ownerPath m <> suffix,epoch:m.epoch,sequence:m.sequence+1}
 
 nativeWorkspace :: Model -> Boolean
 nativeWorkspace m = m.env.native && (activeRecord m).location /= X.Remote
 
+isMemoTab :: X.Notes -> X.Tab -> Boolean
+isMemoTab memo tab = tab.path /= "" && tab.path == memo.path
+
 currentPreview :: Model -> Maybe Request
 currentPreview m =
   let tab = activeTab m
-  in if nativeWorkspace m || tab.path == "" || not (A.elem N.Workspace m.panes) then Nothing
-     else Just {epoch:m.epoch,sequence:m.sequence+1,key:tab.id,revision:D.encode $ D.json tab.command,path:ownerPath m <> "/browser/" <> B.encodeURI (tab.id) <> "/content"}
+      memo = notes m m.selected
+      isMemo = isMemoTab memo tab
+  in if (nativeWorkspace m && not isMemo) || tab.path == "" || not (A.elem N.Workspace m.panes) then Nothing
+     else Just {epoch:m.epoch,sequence:m.sequence+1,key:tab.id,revision:D.encode (D.json tab.command) <> (if isMemo then memo.revision else ""),path:ownerPath m <> "/browser/" <> B.encodeURI (tab.id) <> "/content"}
 
 requestOf :: forall error a. RemoteData error a -> Maybe Request
 requestOf = case _ of
@@ -288,5 +355,8 @@ valueOf = case _ of
   Ready _ value -> Just value
   _ -> Nothing
 
-decodeDocument :: Request -> Json -> Either String X.Document
-decodeDocument r = X.decodeDocument (S.take 5 r.key == "tasks")
+-- | Chips this device saved but the host refused (already sent from another device) leave the composer.
+dropRejected :: Json -> Json -> O.Object (Array X.Attachment) -> O.Object (Array X.Attachment)
+dropRejected sent kept = O.mapWithKey (\owner items -> A.filter (\item -> not (A.elem item.id (ids owner sent)) || A.elem item.id (ids owner kept)) items)
+  where
+  ids owner value = map D.str (D.arr (D.get owner value))

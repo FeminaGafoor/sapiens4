@@ -115,8 +115,16 @@ type Device = {name :: String, platform :: String, client :: String}
 type Confirmation = {confirmation_code :: String, peer :: String}
 type PairStatus = {available :: Boolean, paired :: Boolean, enabled :: Boolean, invitation :: X.Invitation, pending :: Maybe Confirmation, device :: Device, paired_at :: Number, last_connected_at :: Number, error :: String}
 
-data Content = NoContent | Prompts (Array Prompt) | RelayRegistry Relays | Pairing PairStatus
+type Access = {built :: Boolean, trusted :: Boolean, foregroundAvailable :: Boolean, error :: String}
+
+data Content = NoContent | ComputerAccess Access | Prompts (Array Prompt) | RelayRegistry Relays | Pairing PairStatus
 derive instance eqContent :: Eq Content
+
+computerAccess :: Json -> Content
+computerAccess value = ComputerAccess
+  { built: D.b "built" value, trusted: D.b "trusted" value
+  , foregroundAvailable: D.b "foregroundAvailable" value
+  , error: D.s "error" value }
 
 prompt :: Json -> Prompt
 prompt row = {node:D.s "node" row,path:D.s "path" row,content:D.s "content" row}

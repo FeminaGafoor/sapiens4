@@ -78,12 +78,17 @@ submitTurn s a d = do
   Nothing -> do
    suffix <- attachmentPrompt s attachments
    let message=input<>suffix
-   i <- if has d "workload" then D.clarify s a (at d "workload") message else do
-    i <- newId
-    time <- now
-    agentState s a >>= saveState s a . enqueueTurn (RunId i) flow message time
-    pure i
+   workload <- if has d "workload" then pure (Just (at d "workload"))
+    else if flow == Chat then D.waitingClarification s a else pure Nothing
+   i <- case workload of
+    Just wid -> D.clarify s a wid message
+    Nothing -> do
+     i <- newId
+     time <- now
+     agentState s a >>= saveState s a . enqueueTurn (RunId i) flow message time
+     pure i
    DB.message s i input attachments
+   DB.forgetDrafts s a attachments
    DB.project s a
    trimConversation s a
    pure (obj [("id",str i),("agent",str a),("status",str "queued"),("flow",toJSON flow)])
@@ -217,6 +222,7 @@ launch s a batch tick slot batching = do
    D.pendingWorks s
    G.reconcileGroups s
    G.dispatchGroups s
+   notifyChange s
 publish :: Service -> Text -> Pulse -> IO ()
 publish s a tick = forM_ [1,2] $ \slot -> do
  state <- agentState s a

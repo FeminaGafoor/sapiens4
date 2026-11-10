@@ -80,8 +80,22 @@ providerStep time event state activity = case event of
   ToolCompleted _ label -> put "last_action" (str label) activity
   _ -> activity
 
-modelDefaults :: IO (Text,Text)
-modelDefaults = (,) <$> (maybe "gpt-6-sol" T.pack <$> lookupEnv "SAPIENS_CODEX_MODEL") <*> (maybe "high" T.pack <$> lookupEnv "SAPIENS_CODEX_REASONING_EFFORT")
+data CodexConfig = CodexConfig
+ { codexModel :: Text, codexEffort :: Text }
+ deriving (Eq, Show)
+
+modelDefaults :: IO CodexConfig
+modelDefaults = CodexConfig <$> (maybe "gpt-6-sol" T.pack <$> lookupEnv "SAPIENS_CODEX_MODEL") <*> (maybe "high" T.pack <$> lookupEnv "SAPIENS_CODEX_REASONING_EFFORT")
+
+resolveCodexConfig :: ExecutionSettings -> CodexConfig -> CodexConfig
+resolveCodexConfig settings defaults = case executionMode settings of
+ Normal -> defaults
+ Deep -> defaults { codexEffort = "xhigh" }
+
+codexArguments :: FilePath -> CodexConfig -> [String]
+codexArguments workdir config =
+ ["exec","-c","model_reasoning_effort=" ++ T.unpack (jsonText (str (codexEffort config))),"-c","model=" ++ T.unpack (jsonText (str (codexModel config))),"--skip-git-repo-check","--json","--dangerously-bypass-approvals-and-sandbox","--cd",workdir,"--color","never","-"]
+
 codexBinary :: IO (Maybe FilePath)
 codexBinary = do
  override <- lookupEnv "SAPIENS_CODEX_BINARY"
@@ -158,14 +172,15 @@ invokeModel s run input = do
  before <- getMonotonicTimeNSec
  require (before < runDeadline run) 504 "Call time limit exhausted between decision nodes"
  binary <- codexBinary >>= maybe (failure 503 "Codex CLI was not found. Install Codex and run codex login.") pure
- (model,defaultEffort) <- modelDefaults
+ defaults <- modelDefaults
  settings <- executionSettings s (agentIdText (runOwner run))
- let effort = if executionMode settings == Deep then "xhigh" else defaultEffort
+ let config = resolveCodexConfig settings defaults
      workdir = workspaceRoot s (agentIdText (runOwner run))
-     args = ["exec","-c","model_reasoning_effort=" ++ T.unpack (jsonText (str effort)),"-c","model=" ++ T.unpack (jsonText (str model)),"--skip-git-repo-check","--json","--dangerously-bypass-approvals-and-sandbox","--cd",workdir,"--color","never","-"]
+     args = codexArguments workdir config
  environment <- getEnvironment
  started <- realToFrac . (*1000) <$> getPOSIXTime :: IO Double
  writeIORef (runActivity run) (obj [("started",toJSON started),("updated",toJSON started),("phase",str "Waiting for model"),("last_action",str "")])
+ notifyChange s
  bracket (createProcess (proc binary args) { cwd=Just workdir,env=Just (("SAPIENS_AGENCY_RUN",T.unpack (runIdText (runId run))):filter ((/="SAPIENS_AGENCY_RUN") . fst) environment),std_in=CreatePipe,std_out=CreatePipe,std_err=CreatePipe,create_group=True,use_process_jobs=True,detach_console=os=="mingw32" }) cleanup $ \handles -> do
   (hin,hout,herr,ph) <- case handles of
    (Just inputHandle,Just outputHandle,Just errorHandle,process) -> pure (inputHandle,outputHandle,errorHandle,process)
@@ -189,6 +204,7 @@ invokeModel s run input = do
          (updated,reported) <- validated (providerStep time event state activity)
          writeIORef stream updated
          writeIORef (runActivity run) reported
+         when (reported /= activity) (notifyChange s)
       drain h f = let loop = do eof <- hIsEOF h; unless eof (BC.hGetLine h >>= f . TE.decodeUtf8With (\_ _ -> Just '\xfffd') >> loop) in loop
   withAsync ((BS.hPut hin (TE.encodeUtf8 input) `catch` (\(_::IOException) -> pure ())) `finally` hClose hin) $ \writer ->
    withAsync (drain herr (append errors)) $ \stderrReader ->

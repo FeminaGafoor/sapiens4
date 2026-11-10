@@ -57,7 +57,7 @@ groupCalls m group = map row $ A.reverse $ A.filter (not <<< _.hasTask) group.re
     in {id:r.id,title,state,owner:r.target,sender:r.target,body:"objective: " <> D.encode (D.text title) <> "\nassignee: " <> D.encode (D.text (M.agent m r.target).name) <> "\n",result:fromMaybe "" $ _.text <$> result,error:r.error,taskType:"",routine:false,minutes:"",prompt:"",meta:"",runCount:0}
 
 defaultActivity :: M.Model -> N.Activity
-defaultActivity m = if A.any (not <<< M.past) states then N.Work N.Tasks N.Planned else if A.any (\r -> r.owner == m.selected && not (r.paused)) (m.snapshot.routines) then N.Work N.Scheduled N.Planned else if A.null states then N.Work N.Memo N.Planned else N.Work N.Tasks N.Executed
+defaultActivity m = if A.any (not <<< M.past) states then N.Work N.Tasks N.Planned else if A.any (\r -> r.owner == m.selected && not (r.paused)) (m.snapshot.routines) then N.Work N.Scheduled N.Planned else if A.null states then N.Work N.Tasks N.Planned else N.Work N.Tasks N.Executed
   where
   group = M.selected m
   states = if M.isGroup group then map _.state (groupCalls m group) <> map (\t -> if t.state == X.GroupDone then X.WorkCompleted else X.WorkQueued) (A.filter (not <<< _.deleted) $ group.tasks) else map _.state $ A.filter (\w -> w.origin.group == "" && A.elem m.selected w.participants) $ m.snapshot.workloads
@@ -89,7 +89,7 @@ tasks m view period = V.node "section" [V.cls "task-browser"] [V.node "div" [V.i
     M.Loading _ _ -> true
     _ -> false
   rows = A.filter (\t -> M.past (t.state) == past && (view /= N.Automated || t.taskType == "automated")) $ case M.valueOf document of
-    Just (X.TaskDocument items) -> items
+    Just items -> items
     _ -> []
   content = if M.isGroup (M.selected m) then groupContent else case document of
     M.Failed _ _ -> [V.div "task-empty" [V.p "" "Could not load tasks.",V.button "task-copy" "Try again" $ RetryDocument key]]

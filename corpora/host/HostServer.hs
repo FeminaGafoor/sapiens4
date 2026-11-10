@@ -6,12 +6,20 @@ import Assets
 import HTTP
 import Bridge
 import Registry
+import Voice (startTranscriber)
 import Control.Concurrent
+import Control.Concurrent.STM hiding (check)
+import qualified Control.Concurrent.STM as STM
 import Control.Concurrent.Async
 import Control.Exception
 import Control.Monad
 import qualified Data.ByteString as B
 import Data.IORef
+import qualified Data.Map.Strict as M
+import Data.Aeson (encode)
+import System.Directory (getModificationTime)
+import Network.Wai.Handler.WebSockets (websocketsOr)
+import qualified Network.WebSockets as WS
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Network.HTTP.Types
@@ -46,14 +54,17 @@ startHost root requested managed = do
    shutdown <- newEmptyMVar
    ready <- newEmptyMVar
    let settings = setServerName "Sapiens4" $ setPort port $ setHost "127.0.0.1" $ setGracefulCloseTimeout1 1000 $ setGracefulShutdownTimeout (Just 5) $ setInstallShutdownHandler (putMVar shutdown) $ setBeforeMainLoop (putMVar ready ()) defaultSettings
-   worker <- async (runSettingsSocket settings socket (application service bridge registry port))
+   worker <- async $ withAsync (watchSnapshotFiles service) $ \watcher -> link watcher >> runSettingsSocket settings socket (application service bridge registry port)
    void (race (wait worker) (takeMVar ready))
    Service.startService service
+   -- Stop transcription and its network request before closing the database it uses.
+   stopTranscriber <- startTranscriber service
    stopped <- newMVar False
    let stop = modifyMVar_ stopped $ \done -> if done then pure True else do
         mapM_ closeRegistry registry
         closeBridge bridge
         readMVar shutdown >>= id
+        stopTranscriber
         -- Children can retain Windows socket handles until their work is stopped.
         Service.closeService service
         void (waitCatch worker)
@@ -70,7 +81,50 @@ localRequest port write headers = do
  when write (check (lookup "X-Sapiens-Local" headers==Just "1" && fmap (B.takeWhile (/=59)) (lookup hContentType headers)==Just "application/json") 403 "Local JSON request required")
 
 application :: Service -> Bridge -> Maybe Registry -> Int -> Application
-application service bridge registry port req respond = respond =<< respondError (do
+application service bridge registry port req respond
+ | ["api","host","corpora",owner,"api","updates"] <- pathInfo req = do
+    let headers = requestHeaders req
+    result <- try $ do
+     validated (localRequest port False headers)
+     require (lookup hOrigin headers /= Nothing && B.null (rawQueryString req)) 403 "Same-origin updates required"
+     r <- maybe (failure 404 "Host registry unavailable") pure registry
+     require localAvailable 404 "Local corpora are unavailable"
+     (s,_,_) <- registryLock r (local r owner)
+     pure s
+    case result of
+     Left (APIError code message) -> respond (jsonResponse code (obj [("error",str message)]))
+     Right s -> websocketsOr WS.defaultConnectionOptions {WS.connectionMessageDataSizeLimit=WS.SizeLimit 1024}
+      (updatesSocket s) (\_ send -> send (jsonResponse 400 (obj [("error",str "WebSocket upgrade required")]))) req respond
+ | otherwise = httpApplication service bridge registry port req respond
+
+-- One metadata sampler per service, asleep when no window is subscribed.
+watchSnapshotFiles :: Service -> IO ()
+watchSnapshotFiles s = loop M.empty
+ where
+ loop previous = do
+  atomically $ readTVar (updateSubscribers s) >>= STM.check . (>0)
+  files <- readIORef (snapshotFiles s)
+  current <- M.traverseWithKey (\path _ -> (Just <$> getModificationTime path) `catch` (\(_::IOException) -> pure Nothing)) (M.fromSet (const ()) files)
+  when (previous /= current) (notifyChange s)
+  threadDelay 1000000
+  loop current
+
+updatesSocket :: Service -> WS.ServerApp
+updatesSocket s pending = do
+ conn <- WS.acceptRequest pending
+ let count f = atomically (modifyTVar' (updateSubscribers s) f)
+     send previous = do
+      atomically $ readTVar (serviceRevision s) >>= STM.check . (/= previous)
+      -- Provider events can arrive in bursts. Send one revision for the batch.
+      when (previous >= 0) $ threadDelay 250000
+      revision <- readTVarIO (serviceRevision s)
+      WS.sendTextData conn (encode revision)
+      send revision
+ bracket_ (count (+1)) (count (subtract 1)) $ WS.withPingThread conn 25 (pure ()) $
+  race_ (send (-1)) (void (WS.receiveDataMessage conn))
+
+httpApplication :: Service -> Bridge -> Maybe Registry -> Int -> Application
+httpApplication service bridge registry port req respond = respond =<< respondError (do
  let method = TE.decodeUtf8 (requestMethod req)
      path = TE.decodeUtf8 (rawPathInfo req)
      target = requestTarget req

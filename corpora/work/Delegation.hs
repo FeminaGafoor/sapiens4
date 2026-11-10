@@ -265,12 +265,13 @@ decide s run turn state node logs = do
   let instruction = at source "content" <> extra <> scheduled
       context = obj [("originalIntent",workField w "originalIntent"),("task",workField w "task"),("tracked",Bool (workTracked w)),("currentCall",toJSON c),("selfId",str (agentIdText (runOwner run))),("chiefId",str chief),("team",arr members),("routingHistory",arr [select ["callId","addressedTo","node"] (toJSON call) | call <- NE.toList (workCalls w)]),("conversation",conv),("observation",callField c "observation")]
       rendered = render envelope [("node",wireName node),("instruction",instruction),("notes_wiki",render wiki [("notes_example",T.pack (repositoryRoot s </> "corpora/prompts/examples/jarvis-notes.html"))]),("context",jsonText context),("events",T.intercalate ", " (sort (eventsFor node)))]
-  (model,effort) <- modelDefaults
+  defaults <- modelDefaults
   policy <- executionSettings s (agentIdText (runOwner run))
+  let config = resolveCodexConfig policy defaults
   i <- newId
   t <- now
   let digest = T.pack (concatMap (\b -> let v=showHex b "" in if length v==1 then '0':v else v) (BS.unpack (hash (TE.encodeUtf8 instruction))))
-      record = obj [("decisionId",str i),("callId",toJSON (turnId turn)),("node",toJSON node),("template",get source "template"),("promptHash",str digest),("templatePath",get source "path"),("renderedPrompt",str rendered),("model",str model),("effort",str (if executionMode policy == Deep then "xhigh" else effort)),("created",str t),("accepted",Bool False)]
+      record = obj [("decisionId",str i),("callId",toJSON (turnId turn)),("node",toJSON node),("template",get source "template"),("promptHash",str digest),("templatePath",get source "path"),("renderedPrompt",str rendered),("model",str (codexModel config)),("effort",str (codexEffort config)),("created",str t),("accepted",Bool False)]
       summary = merge (select ["decisionId","callId","node","promptHash","accepted"] record) (obj [("agent",str (agentIdText (runOwner run))),("promptTemplate",get record "template")])
   saveWork s (setWorkField "decisions" (arr (workItems w "decisions"++[summary])) w)
   writeJSON (archivePath s (agentIdText (runOwner run)) ("decisions/"<>i)) record
@@ -479,6 +480,18 @@ pendingWorks s = do
       message=obj [("role",str "user"),("content",str (callRequest c)),("turn",toJSON (callIdentity c)),("time",str time),("origin",origin)]
   modifyState s a $ \state -> if isJust (findId (runIdText (callIdentity c)) (items state "turns")) then state else appendItems "chat" [message] (appendItems "turns" [turn] state)
   DB.project s a
+-- Called under the service lock, so matching and resuming are one operation.
+-- An ordinary Chief reply is unambiguous only when one of its tasks is waiting.
+waitingClarification :: Service -> Text -> IO (Maybe Text)
+waitingClarification s a = do
+ chief <- DB.mainAgent s
+ if a /= chief then pure Nothing else do
+  works <- readWorks s
+  case [workloadId w | w <- works, let c = NE.last (workCalls w), callOwner c == AgentId chief, callState c == CallWaiting] of
+   [] -> pure Nothing
+   [wid] -> pure (Just wid)
+   _ -> failure 409 "Chief has several tasks waiting for an answer; this reply could not be matched."
+
 clarify :: Service -> Text -> Text -> Text -> IO Text
 clarify s a wid message = do
  works <- readWorks s

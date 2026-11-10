@@ -26,40 +26,6 @@ url base value = decodeURL $ B.parseURL base value
 decodeURL :: Json -> URL
 decodeURL value = {href:D.s "href" value,origin:D.s "origin" value,protocol:D.s "protocol" value,host:D.s "host" value,path:D.s "path" value,search:D.s "search" value,hash:D.s "hash" value,username:D.s "username" value,password:D.s "password" value}
 
-data Node = Text String | Element {tag :: String, attrs :: O.Object String, children :: Array Node, text :: String, source :: String}
-
-markup :: String -> Array Node
-markup = map node <<< D.arr <<< B.parseMarkup
-
-node :: Json -> Node
-node value = if D.s "tag" value == "" then Text $ D.s "text" value else
-  Element {tag:D.s "tag" value,attrs:D.objectStrings $ D.get "attrs" value,children:map node $ D.rows "children" value,text:D.s "text" value,source:D.s "source" value}
-
-tag :: Node -> String
-tag = case _ of
-  Text _ -> ""
-  Element value -> value.tag
-
-text :: Node -> String
-text = case _ of
-  Text value -> value
-  Element value -> value.text
-
-source :: Node -> String
-source = case _ of
-  Text _ -> ""
-  Element value -> value.source
-
-children :: Node -> Array Node
-children = case _ of
-  Text _ -> []
-  Element value -> value.children
-
-attribute :: String -> Node -> String
-attribute name = case _ of
-  Text _ -> ""
-  Element value -> fromMaybe "" $ O.lookup name value.attrs
-
 type WorkerRequest = {method :: String, origin :: String, localOrigin :: String, path :: String, mode :: String, url :: String}
 
 workerRequest :: Json -> WorkerRequest
@@ -83,7 +49,7 @@ type ThemeSettings = {dark :: Boolean, background :: String, foreground :: Strin
 themeSettings :: Boolean -> Json -> ThemeSettings
 themeSettings preferred value =
   let dark = if D.valid $ D.get "dark" value then D.b "dark" value else preferred
-  in {dark,background:D.fallback (if dark then "#000" else "#fff") $ D.s "background" value,foreground:D.fallback (if dark then "#eee" else "#171717") $ D.s "foreground" value}
+  in {dark,background:D.fallback (if dark then "#171717" else "#f6f6f6") $ D.s "background" value,foreground:D.fallback (if dark then "#eee" else "#171717") $ D.s "foreground" value}
 
 data GlobalEvent = ReportError String | Resize | Online | Resume | Visibility | Suspend | Back | Storage String | KeyDown Key | Click (Array String) | Ignore
 
@@ -110,10 +76,10 @@ nativeReport value =
   ,op:if D.s "open" value /= "" || D.s "file" value /= "" then "open" else D.s "action" value
   ,body:if D.s "open" value /= "" then D.json {url:D.get "open" value} else if D.s "file" value /= "" then D.json {path:D.get "file" value} else if D.s "action" value == "" then value else D.get "fields" value}
 
-data Destination = WebAddress String | FilePath String
+data Destination = WebAddress String | FilePath String | WorkspaceLink String
 derive instance eqDestination :: Eq Destination
 
-data Command = Open Destination (Maybe String) | FocusTab String | CloseTab String | GoBack | GoForward | Reload | Zoom Number | SaveBookmark String | RemoveBookmark String
+data Command = OpenMemo | Open Destination (Maybe String) | FocusTab String | CloseTab String | GoBack | GoForward | Reload | Zoom Number | SaveBookmark String | RemoveBookmark String
 derive instance eqCommand :: Eq Command
 
 openDestination :: String -> Command
@@ -127,9 +93,11 @@ addressCommand raw id = let value = S.trim raw in if value == "" then Nothing el
 
 request :: Command -> {op :: String, fields :: Json}
 request = case _ of
+  OpenMemo -> {op:"memo",fields:D.empty}
   Open target id -> {op:"open",fields:D.obj $ [case target of
     WebAddress value -> Tuple "url" $ D.text value
-    FilePath value -> Tuple "path" $ D.text value] <> maybe [] (\value -> [Tuple "id" $ D.text value]) id}
+    FilePath value -> Tuple "path" $ D.text value
+    WorkspaceLink value -> Tuple "href" $ D.text value] <> maybe [] (\value -> [Tuple "id" $ D.text value]) id}
   FocusTab id -> {op:"focus",fields:D.json {id}}
   CloseTab id -> {op:"close",fields:D.json {id}}
   GoBack -> {op:"back",fields:D.empty}
