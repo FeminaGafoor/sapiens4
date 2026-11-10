@@ -536,7 +536,9 @@ body.sapi-workspace .notes-wiki :is(h1,h2) { font-family:Georgia,"Times New Roma
 :root body.sapi-workspace .model-sapi-override .model-provider-icon{width:20px;height:20px}
 
 /* One themed picker for Sapis, models and effort; the list stays inside dialog scrolling. */
-:root body.sapi-workspace .model-picker{display:grid;gap:7px;min-width:0}
+:root body.sapi-workspace .model-picker{position:relative;display:grid;gap:7px;min-width:0}
+/* Effort is the last field: open upward to stay clear of the fixed footer. */
+:root body.sapi-workspace .model-picker:has(>button[id$="-effort"]) .model-picker-popover{position:absolute;bottom:calc(100% - 24px);left:0;right:0;z-index:32}
 :root body.sapi-workspace .model-picker-trigger{display:flex;align-items:center;justify-content:space-between;gap:12px;box-sizing:border-box;width:100%;min-height:44px;padding:11px 14px;border:1px solid var(--line);border-radius:9px;background:var(--sapi-surface);color:var(--ink);font:14px/1.4 var(--sapi-font);text-align:left}
 :root body.sapi-workspace .model-picker-trigger>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 :root body.sapi-workspace .model-picker-trigger:hover:not(:disabled){border-color:var(--muted)}
@@ -549,6 +551,6 @@ body.sapi-workspace .notes-wiki :is(h1,h2) { font-family:Georgia,"Times New Roma
 :root[data-theme] body.sapi-workspace .model-picker-option:hover{background:color-mix(in srgb,var(--ink) 7%,var(--sapi-surface));color:var(--ink);outline:none;filter:none}
 :root[data-theme] body.sapi-workspace .model-picker-option:focus-visible{outline:1px solid var(--muted);outline-offset:-2px}
 :root body.sapi-workspace .model-picker-option[aria-selected=true] .model-picker-check{color:var(--sapi-accent)}
-:root[data-theme] body.sapi-workspace .model-picker-dismiss:hover{background:transparent;color:inherit;filter:none}
+:root[data-theme] body.sapi-workspace .model-picker-dismiss:not(:disabled):is(:hover,:active,:focus-visible){background:transparent;color:inherit;filter:none;outline:none;box-shadow:none}
 :root body.sapi-workspace .model-picker-check{width:16px;flex-shrink:0}
 @media(max-width:600px){:root body.sapi-workspace .model-picker-trigger,:root body.sapi-workspace .model-picker-option{font-size:16px}}
