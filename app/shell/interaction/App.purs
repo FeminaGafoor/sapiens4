@@ -76,7 +76,6 @@ handle runtime input = session input
             current <- H.get
             when (current.sequence == m.sequence) do
               H.modify_ _ {account=value,setupChecked=true}
-              unless (D.b "completed" value) $ dispatch $ OpenDialog M.Onboarding F.NoRecord
           Left _ -> H.modify_ _ {accountChecking=false}
     Finalize -> liftEffect $ C.dispose runtime
     Poll -> E.runUpdate runtime dispatch U.Poll
