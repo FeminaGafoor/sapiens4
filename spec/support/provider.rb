@@ -10,6 +10,36 @@ if ARGV.include?('--version')
   exit
 end
 
+# Claude account commands. Claude counts as signed in unless a spec turns on
+# `claude_accounts`; then the login is a marker file in CLAUDE_CONFIG_DIR, so a
+# spec can see which folder Sapiens signed in to.
+if ARGV.first == 'auth'
+  home = ENV['CLAUDE_CONFIG_DIR'].to_s
+  marker = File.join(home, '.fixture-login')
+  File.open(File.join(root, 'claude-auth.jsonl'), 'a') do |file|
+    file.puts JSON.generate(args: ARGV, home: home, pid: Process.pid,
+      inherited: ENV.keys.grep(/\A(ANTHROPIC_|CLAUDE_CODE_)/).sort)
+  end
+  exit 2 if home.empty?
+  case ARGV[1]
+  when 'status'
+    exit(!config['claude_accounts'] || File.exist?(marker) ? 0 : 1)
+  when 'logout'
+    File.delete(marker) if File.exist?(marker)
+    exit 0
+  when 'login'
+    STDOUT.sync = true
+    puts 'Opening browser to sign in…'
+    puts "If the browser didn't open, visit: https://claude.com/cai/oauth/authorize?code=true&client_id=fixture&state=#{SecureRandom.hex(8)}"
+    sleep 0.02 until File.exist?(File.join(root, 'claude-login-approved')) || File.exist?(File.join(root, 'claude-login-fails'))
+    exit 1 if File.exist?(File.join(root, 'claude-login-fails'))
+    File.write(marker, 'signed in')
+    puts 'Login successful.'
+    exit 0
+  end
+  exit 2
+end
+
 exit 0 if ARGV.include?('login') && ARGV.include?('status')
 
 # Model discovery uses the real provider process boundary, without a model turn.

@@ -12,6 +12,8 @@ RSpec.describe 'Local Codex setup' do
       'OPENAI_API_KEY' => 'synthetic-key-must-not-be-used', 'CODEX_API_KEY' => 'synthetic-codex-key-must-not-be-used')
     File.write(host.environment.fetch('SAPIENS_CODEX_BINARY'), <<~RUBY)
       #!#{RbConfig.ruby}
+      # Claude account checks share this binary; they use the shared fixture, not the Codex log.
+      load #{File.join(__dir__, 'support/provider.rb').inspect} if ARGV.first == 'auth'
       require 'json'
       require 'rbconfig'
       root = ENV.fetch('SAPIENS_CONTRACT_ENV')
@@ -308,6 +310,8 @@ RSpec.describe 'Local Codex setup' do
     host = Host.new(start: false)
     File.write(host.environment.fetch('SAPIENS_CODEX_BINARY'), <<~RUBY)
       #!#{RbConfig.ruby}
+      # Claude account checks share this binary; they use the shared fixture, not the Codex log.
+      load #{File.join(__dir__, 'support/provider.rb').inspect} if ARGV.first == 'auth'
       require 'fileutils'
       root, home = ENV.fetch('SAPIENS_CONTRACT_ENV'), ENV.fetch('CODEX_HOME')
       if ARGV.include?('logout')

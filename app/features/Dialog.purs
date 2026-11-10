@@ -71,7 +71,7 @@ view m = case m.dialog of
   Nothing -> V.node "dialog" [V.id "modal"] []
   Just d -> V.node "dialog" [V.id $ if M.corporaDialog d.kind then "corpora-dialog" else "modal",V.cls $ if d.kind == M.AppMenu then "app-menu-sheet" else if d.kind == M.Models then "model-settings-dialog" else "",V.attr "aria-labelledby" "dialog-title",V.on "cancel" \e -> Link e CloseDialog]
     [V.div (if M.corporaDialog d.kind then "corpora-menu-heading" else "modal-top") [V.span [V.cls "tiny-label"] "SAPIENS4",V.when (dismissible d) $ V.icon (if M.corporaDialog d.kind then "Close" else "Close dialog") "×" CloseDialog]
-    ,V.node "div" [V.id $ if M.corporaDialog d.kind then "corpora-dialog-body" else "modal-content"] [V.when (d.kind == M.AIProviders && not (A.null m.dialogStack) && not (authenticating d)) $ V.button "ai-provider-back" "Back to model settings" CloseDialog,V.when (d.kind == M.AIProviders && d.providerPage /= M.Providers && not (authenticating d)) $ V.control [V.cls "ai-provider-back"] "‹  AI Connections" $ ProviderNavigate M.Providers,V.node "h2" [V.id "dialog-title",V.attr "tabindex" "-1",V.cls (if d.kind == M.AIProviders then "provider-title" else "")] ((if d.kind == M.AIProviders && d.providerPage /= M.Providers then [connectionIcon "codex"] else []) <> [V.text $ dialogTitle d]),body m d,V.textNode "p" [V.cls "corpora-feedback",V.attr "role" "status"] ((M.dialogError d))
+    ,V.node "div" [V.id $ if M.corporaDialog d.kind then "corpora-dialog-body" else "modal-content"] [V.when (d.kind == M.AIProviders && not (A.null m.dialogStack) && not (authenticating d)) $ V.button "ai-provider-back" "Back to model settings" CloseDialog,V.when (d.kind == M.AIProviders && d.providerPage /= M.Providers && not (authenticating d)) $ V.control [V.cls "ai-provider-back"] "‹  AI Connections" $ ProviderNavigate M.Providers,V.node "h2" [V.id "dialog-title",V.attr "tabindex" "-1",V.cls (if d.kind == M.AIProviders then "provider-title" else "")] ((if d.kind == M.AIProviders && d.providerPage /= M.Providers then [connectionIcon (if d.providerPage == M.ClaudeConfirmDisconnect then "claude" else "codex")] else []) <> [V.text $ dialogTitle d]),body m d,V.textNode "p" [V.cls "corpora-feedback",V.attr "role" "status"] ((M.dialogError d))
       ,V.when (A.elem d.kind [M.Onboarding,M.AIProviders,M.Computer] && M.dialogError d /= "") $ V.button "button" "Check again" $ OnboardingPoll d.identity]
     ,V.when (d.kind == M.Models) $ V.div "model-save-row"
       [V.control [V.cls "button primary",V.disabled $ M.dialogBusy d || case d.content of
@@ -101,6 +101,7 @@ dialogTitle d
       M.CodexAuth -> case d.content of
         F.Setup value -> connectionTitle value
         _ -> "Connecting Codex"
+      M.ClaudeConfirmDisconnect -> "Claude Code"
       _ -> "Codex"
   | d.kind == M.Onboarding = case d.content of
       F.Setup value -> if D.s "step" value == "welcome" then "Choose your AI" else connectionTitle value
@@ -467,10 +468,49 @@ providerLink slug caption status action = V.controlWith [V.cls "ai-provider-row 
   [connectionIcon slug,providerCopy caption status,V.span [V.cls "ai-provider-arrow",V.attr "aria-hidden" "true"] "›"] action
 
 
+claudeRow :: M.Dialog -> Json -> V.Html
+claudeRow d value = providerRow "claude" "Claude Code" status action
+  where
+  claude = D.get "claude" value
+  provider = D.s "status" claude
+  login = D.get "login" claude
+  state = D.s "state" login
+  status = case provider, state of
+    "signing_in", _ -> "Waiting for browser sign-in…"
+    "signing_out", _ -> "Disconnecting…"
+    "missing", _ -> "Install Claude Code, then check again"
+    "unavailable", _ -> "Couldn't check Claude"
+    "", _ -> "Checking…"
+    _, "logout_failed" -> "Couldn't disconnect. Try again"
+    "signed_in", _ -> "Connected"
+    _, "failed" -> "Sign-in didn't finish"
+    _, "expired" -> "Sign-in expired"
+    _, "cancelled" -> "Sign-in cancelled"
+    _, _ -> "Not connected"
+  action = case provider of
+    "signed_in" -> disconnect
+    "sign_in_required" -> setupButton d "claude-connect" (if A.elem state ["failed","expired"] then "Try again" else "Connect")
+    "signing_in" -> V.div ""
+      [V.when (D.s "url" login /= "") $ setupButton d "claude-open-login" "Open sign-in page"
+      ,V.control [V.cls "button",V.id "cancel-claude-login",V.disabled $ M.dialogBusy d] "Cancel" $ DialogCommand $ Intent.Setup "claude-cancel"]
+    "unavailable" -> V.div "" [setupButton d "refresh" "Check again",disconnect]
+    "missing" -> setupButton d "refresh" "Check again"
+    _ -> V.text ""
+  -- Like Codex, Disconnect asks first. Setup only connects, so it has no Disconnect.
+  disconnect = if d.kind == M.AIProviders
+    then V.control [V.cls "button",V.disabled $ M.dialogBusy d] "Disconnect" $ ProviderNavigate M.ClaudeConfirmDisconnect
+    else V.text ""
+
+claudeDisconnectView :: M.Dialog -> V.Html
+claudeDisconnectView d = V.node "section" [V.cls "ai-provider-detail-body",V.label "Claude Code account"]
+  [V.textNode "h4" [] "Disconnect Claude?"
+  ,V.p "" "Your Sapis won't be able to use Claude until you reconnect. Your chats and settings will stay on this device. Your own Claude CLI login on this computer isn't affected."
+  ,V.p "form-hint" "Finish or stop active Claude tasks before continuing. Codex work can continue."
+  ,V.div "account-actions" [setupButton d "claude-sign-out" "Disconnect",V.control [V.cls "button",V.disabled $ M.dialogBusy d] "Cancel" $ ProviderNavigate M.Providers]]
+
 comingSoonProviders :: Array V.Html
 comingSoonProviders =
-  [providerRow "claude" "Claude Code" "Uses this computer’s Claude CLI sign-in" (V.span [V.cls "ai-provider-soon"] "CLI account")
-  ,providerRow "gemini" "Gemini CLI" "Google" (V.span [V.cls "ai-provider-soon"] "Coming soon")
+  [providerRow "gemini" "Gemini CLI" "Google" (V.span [V.cls "ai-provider-soon"] "Coming soon")
   ,providerRow "kimi" "Kimi Code" "Moonshot AI" (V.span [V.cls "ai-provider-soon"] "Coming soon")]
 
 aiProvidersView :: M.Dialog -> Json -> V.Html
@@ -496,9 +536,10 @@ aiProvidersView d value =
     [if provider == "signing_out" then V.p "form-hint" "Signing out of the previous account…" else signInView value
     ,V.when (A.elem provider ["signing_in","signing_out"]) $ V.p "form-hint" "Stay here until sign-in finishes, or cancel sign-in to leave."]
   else if details then [accountView d]
+  else if page == M.ClaudeConfirmDisconnect then [claudeDisconnectView d]
   else
     [V.p "form-hint" "Connect the AI tools your Sapis can use."
-    ,V.div "ai-provider-list" $ [codex] <> comingSoonProviders]
+    ,V.div "ai-provider-list" $ [codex,claudeRow d value] <> comingSoonProviders]
 
 
 providersView :: M.Dialog -> Json -> V.Html
@@ -508,9 +549,9 @@ providersView d value =
       alreadyConnected = D.s "provider" value == "signed_in"
   in V.div "setup-screen" $ case D.s "step" value of
     "welcome" ->
-      [V.p "form-hint" "Connect Codex, or continue with your existing Claude CLI account."
+      [V.p "form-hint" "Connect Codex or Claude. You can add the other one later in AI Connections."
       ,V.div "ai-provider-list" $ [providerRow "codex" "Codex" (if alreadyConnected then "Already connected" else "OpenAI")
-          (V.control [V.cls "button primary",V.disabled $ M.dialogBusy d] (if alreadyConnected then "Continue" else "Connect") $ DialogCommand $ Intent.Setup "connect")] <> comingSoonProviders
+          (V.control [V.cls "button primary",V.disabled $ M.dialogBusy d] (if alreadyConnected then "Continue" else "Connect") $ DialogCommand $ Intent.Setup "connect"),claudeRow d value] <> comingSoonProviders
       ,setup "defer" "Set up later"]
     _ ->
       [signInView value

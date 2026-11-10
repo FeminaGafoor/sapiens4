@@ -199,14 +199,17 @@ catalogModel = parseValue 502 $ withObject "Codex model" $ \o -> do
 -- Claude's control initialization advertises models without submitting a turn.
 claudeModels :: IO Value
 claudeModels = do
- result <- timeout 30000000 discover
+ result <- timeout 30000000 $ bracket
+  (claudeLock Shared >>= maybe (failure 409 "Claude sign-in is changing. Finish or cancel sign-in, then retry model discovery.") pure)
+  unlockFile (const discover)
  maybe (failure 504 "Claude model discovery timed out. Try again.") pure result
  where
  discover = do
   binary <- claudeBinary >>= maybe (failure 503 "Claude CLI was not found on this host.") pure
   workdir <- getTemporaryDirectory
+  environment <- claudeEnvironment
   let args=["--print","--input-format","stream-json","--output-format","stream-json","--verbose","--safe-mode","--no-session-persistence","--strict-mcp-config","--tools","","--permission-mode","plan"]
-  bracket (createProcess (proc binary args) {cwd=Just workdir,std_in=CreatePipe,std_out=CreatePipe,std_err=CreatePipe,create_group=True,use_process_jobs=True,detach_console=os=="mingw32"}) cleanup $ \handles -> do
+  bracket (createProcess (proc binary args) {env=Just environment,cwd=Just workdir,std_in=CreatePipe,std_out=CreatePipe,std_err=CreatePipe,create_group=True,use_process_jobs=True,detach_console=os=="mingw32"}) cleanup $ \handles -> do
    (hin,hout,herr) <- case handles of
     (Just i,Just o,Just e,_) -> pure (i,o,e)
     _ -> failure 502 "Claude discovery could not open its pipes."
@@ -304,6 +307,28 @@ codexEnvironment = do
      tools=maybe "" (\p -> takeDirectory (takeDirectory p)</>"codex-path") binary
      path=fromMaybe "" (listToMaybe [value | (key,value)<-environment,name key=="PATH"])
  pure (("CODEX_HOME",home):("PATH",tools<>[searchPathSeparator]<>path):filter (\(key,_) -> name key/="PATH" && not ("CODEX_" `T.isPrefixOf` T.pack (name key) || "OPENAI_" `T.isPrefixOf` T.pack (name key))) environment)
+-- Sapiens' own Claude sign-in lives next to its Codex home. Login, model
+-- discovery and runs share it, so signing in or out in Sapiens never touches
+-- the user's own Claude CLI login.
+claudeHome :: IO FilePath
+claudeHome = do
+ home <- (</>"claude") . takeDirectory <$> codexHome
+ createDirectoryIfMissing True home
+#ifndef mingw32_HOST_OS
+ setFileMode home 0o700
+#endif
+ pure home
+
+-- Never inherit a shell's Claude config folder, API key, OAuth token or cloud
+-- provider switch: in Claude's credential order they outrank the stored login.
+claudeEnvironment :: IO [(String,String)]
+claudeEnvironment = do
+ home <- claudeHome
+ environment <- getEnvironment
+ let name=if os=="mingw32" then map toUpper else id
+     inherited key = let k=T.pack (name key) in not ("ANTHROPIC_" `T.isPrefixOf` k || "CLAUDE_CODE_" `T.isPrefixOf` k || k=="CLAUDE_CONFIG_DIR")
+ pure (("CLAUDE_CONFIG_DIR",home):filter (inherited . fst) environment)
+
 codexHome :: IO FilePath
 codexHome = do
  config <- lookupEnv "SAPIENS_CONFIG_DIR" >>= maybe (do
@@ -336,6 +361,30 @@ holdProfile hold = profileFile "account-state.json" >>= \path -> writeJSON path 
 
 profileLock :: SharedExclusive -> IO (Maybe FileLock)
 profileLock mode = profileFile "account.lock" >>= flip tryLockFile mode
+
+-- Claude runs and discovery hold this lock shared; sign-in and sign-out hold it
+-- exclusively. It is separate from the Codex lock.
+claudeLock :: SharedExclusive -> IO (Maybe FileLock)
+claudeLock mode = profileFile "claude-account.lock" >>= flip tryLockFile mode
+
+claudeNotConnected :: Text
+claudeNotConnected = "Claude isn't connected. Connect it in AI Connections, then try again."
+
+-- True only when Claude Code clearly answers that Sapiens' Claude login is
+-- signed out (`claude auth status` exits 1). A missing, slow or broken check
+-- never blocks work; the run then reports its own error.
+claudeSignedOut :: IO Bool
+claudeSignedOut = do
+ binary <- claudeBinary
+ case binary of
+  Nothing -> pure False
+  Just path -> (do
+   environment <- claudeEnvironment
+   result <- bracket
+    (createProcess (proc path ["auth","status"]) {env=Just environment,std_in=NoStream,std_out=NoStream,std_err=NoStream,create_group=True,use_process_jobs=True,detach_console=os=="mingw32"})
+    (\(_,_,_,process) -> killTree process >> void (waitForProcess process))
+    (\(_,_,_,process) -> timeout 10000000 (waitForProcess process))
+   pure (result==Just (ExitFailure 1))) `catch` (\(_::IOException) -> pure False)
 
 runLease :: IO (Maybe FileLock)
 runLease = mask_ $ do
@@ -409,7 +458,7 @@ invokeModel s run input = do
      workdir = workspaceRoot s (agentIdText (runOwner run))
      args = case provider of CodexProvider -> codexArguments workdir config; ClaudeProvider -> claudeArguments config
  binary <- (case provider of CodexProvider -> codexBinary; ClaudeProvider -> claudeBinary) >>= maybe (failure 503 (providerName provider <> " CLI was not found on this host.")) pure
- environment <- case provider of CodexProvider -> codexEnvironment; ClaudeProvider -> getEnvironment
+ environment <- case provider of CodexProvider -> codexEnvironment; ClaudeProvider -> claudeEnvironment
  started <- realToFrac . (*1000) <$> getPOSIXTime :: IO Double
  writeIORef (runActivity run) (obj [("started",toJSON started),("updated",toJSON started),("phase",str "Waiting for model"),("last_action",str "")])
  bracket (createProcess (proc binary args) { cwd=Just workdir,env=Just (("SAPIENS_AGENCY_RUN",T.unpack (runIdText (runId run))):filter ((/="SAPIENS_AGENCY_RUN") . fst) environment),std_in=CreatePipe,std_out=CreatePipe,std_err=CreatePipe,create_group=True,use_process_jobs=True,detach_console=os=="mingw32" }) cleanup $ \handles -> do
@@ -457,24 +506,34 @@ invokeModel s run input = do
      require (not expired) 504 (providerName provider <> " exceeded 1800s; its process tree was stopped.")
      err <- T.unlines . reverse <$> readIORef errors
      out <- T.unlines . reverse <$> readIORef recent
+     message <- providerMessage <$> readIORef stream
+     -- A failed Claude run caused by a signed-out Claude gets a clear next step.
+     when (provider==ClaudeProvider && (exit/=ExitSuccess || isNothing message)) $ do
+      signedOut <- claudeSignedOut
+      require (not signedOut) 409 claudeNotConnected
      require (exit == ExitSuccess) 500 (providerName provider <> " execution failed: " <> err <> out)
-     (providerMessage <$> readIORef stream) >>= maybe (failure 500 (providerName provider <> " completed without a successful result.")) pure
+     maybe (failure 500 (providerName provider <> " completed without a successful result.")) pure message
  where cleanup (hin,hout,herr,ph) = do
         killTree ph
         void (waitForProcess ph)
         forM_ (catMaybes [hin,hout,herr]) $ \h -> hClose h `catch` (\(_::IOException) -> pure ())
         modifyMVar_ (runProcess run) (const (pure Nothing))
 
--- Claude's existing CLI session is independent of the app-owned Codex profile.
--- A no-op release admits Claude; Nothing leaves Codex work queued.
+-- Each provider has its own app-owned account and lock. Nothing leaves the
+-- work queued while that provider's sign-in is changing.
 modelRunLease :: ModelConfig -> IO (Maybe (IO ()))
 modelRunLease config = case configuredProvider config of
- ClaudeProvider -> pure (Just (pure ()))
+ ClaudeProvider -> fmap unlockFile <$> claudeLock Shared
  CodexProvider -> fmap unlockFile <$> runLease
 
 withModelProfile :: Service -> Text -> IO a -> IO a
 withModelProfile s owner action = do
  config <- runModelSettings s owner
  case configuredProvider config of
-  ClaudeProvider -> action
+  ClaudeProvider -> bracket
+   (claudeLock Shared >>= maybe (failure 409 "Claude sign-in is changing. Finish or cancel it, then try again.") pure)
+   unlockFile $ \_ -> do
+    signedOut <- claudeSignedOut
+    require (not signedOut) 409 claudeNotConnected
+    action
   CodexProvider -> withReadyProfile action

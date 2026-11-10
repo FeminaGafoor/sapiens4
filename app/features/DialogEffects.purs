@@ -37,6 +37,11 @@ foreign import afterRender :: Effect (Promise Unit)
 setupPath :: M.Dialog -> String
 setupPath d = if d.kind == M.Computer then "/api/host/computer" else "/api/host/onboarding"
 
+-- | Keep polling while Codex or Claude is signing in or out.
+accountChanging :: Json -> Boolean
+accountChanging value = A.elem (D.s "provider" value) changing || A.elem (D.s "status" (D.get "claude" value)) changing
+  where changing = ["signing_in","signing_out"]
+
 handle :: C.Runtime -> E.Dispatch -> Action -> E.UI Unit
 handle runtime dispatch action = case action of
   OpenDialog kind record -> do
@@ -101,7 +106,7 @@ handle runtime dispatch action = case action of
         F.Setup previous -> D.s "provider" previous /= "signing_in"
         _ -> true)) $ focusSetup id "#cancel-codex-login"
       when (d.kind == M.Onboarding && D.b "completed" value) $ dispatch CloseDialog
-      when (A.elem (D.s "provider" value) ["signing_in","signing_out"]) $ E.later 1000.0 $ dispatch $ OnboardingPoll id) $ C.json (setupPath d) "GET" D.null
+      when (accountChanging value) $ E.later 1000.0 $ dispatch $ OnboardingPoll id) $ C.json (setupPath d) "GET" D.null
   CloseDialog -> do
     m <- H.get
     case m.dialog of
@@ -321,12 +326,12 @@ handle runtime dispatch action = case action of
                 else if A.elem setupAction ["login","device-login","change-account"] then
                   if D.s "provider" value == "signed_in" then M.CodexDetails else M.CodexAuth
                 else if setupAction == "cancel" then M.CodexDetails
-                else if setupAction == "sign-out" then M.Providers
+                else if A.elem setupAction ["sign-out","claude-sign-out"] then M.Providers
                 else current.providerPage
           in current {content=F.Setup value,status=M.Editing,providerPage=page}
         focusSetup requested.identity (if D.s "provider" value == "signing_in" then "#cancel-codex-login" else "#dialog-title")
         when (requested.kind == M.Onboarding && D.b "completed" value) $ dispatch CloseDialog
-        when (A.elem (D.s "provider" value) ["signing_in","signing_out"]) $ E.later 1000.0 $ dispatch $ OnboardingPoll requested.identity) $ C.json (setupPath requested) "POST" $ D.json {action: setupAction}
+        when (accountChanging value) $ E.later 1000.0 $ dispatch $ OnboardingPoll requested.identity) $ C.json (setupPath requested) "POST" $ D.json {action: setupAction}
     Intent.SuggestNames -> do
       E.modifyDialog d.identity (\s -> s {identity=s.identity+1})
       H.modify_ (\s -> s {sequence=s.sequence+1})

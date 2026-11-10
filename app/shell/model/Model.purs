@@ -41,7 +41,7 @@ derive instance eqDialogKind :: Eq DialogKind
 corporaDialog :: DialogKind -> Boolean
 corporaDialog kind = A.elem kind [CreateCorpora,EditCorpora,ConnectRemote,HostPairing,RelayList,RelayAdd,RelaySwitch,RelayTerms,Notice]
 
-data ProviderPage = Providers | CodexDetails | CodexAuth | ConfirmChange | ConfirmDisconnect
+data ProviderPage = Providers | CodexDetails | CodexAuth | ConfirmChange | ConfirmDisconnect | ClaudeConfirmDisconnect
 derive instance eqProviderPage :: Eq ProviderPage
 
 data DialogStatus = Editing | Submitting String | Rejected String
