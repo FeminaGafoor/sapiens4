@@ -1,6 +1,51 @@
 require_relative 'spec_helper'
 
 RSpec.describe 'Model settings and account integration', :host do
+  it 'connects from settings on a fresh profile without visiting the welcome screen' do
+    skip 'The fixture executable uses a POSIX script' if Gem.win_platform?
+    host.stop
+    config = host.environment.fetch('SAPIENS_CONFIG_DIR')
+    FileUtils.rm_f([File.join(config, 'onboarding.json'), File.join(config, 'codex/auth.json')])
+    File.write(host.environment.fetch('SAPIENS_CODEX_BINARY'), <<~RUBY)
+      #!#{RbConfig.ruby}
+      root, home = ENV.fetch('SAPIENS_CONTRACT_ENV'), ENV.fetch('CODEX_HOME')
+      if ARGV.include?('logout')
+        File.delete(File.join(home, 'auth.json')) if File.exist?(File.join(home, 'auth.json'))
+        exit
+      end
+      if ARGV.include?('login')
+        exit(File.exist?(File.join(home, 'auth.json')) ? 0 : 1) if ARGV.include?('status')
+        $stdout.sync = true
+        if ARGV.include?('--device-auth')
+          puts 'Enter this one-time code'
+          puts 'ABCD-EFGH'
+        else
+          warn 'https://auth.openai.com/oauth/authorize?state=synthetic&response_type=code'
+        end
+        sleep 0.02 until File.exist?(File.join(root, 'finish-login'))
+        File.write(File.join(home, 'auth.json'), 'synthetic settings authentication')
+        exit
+      end
+      load #{File.join(__dir__, 'support/provider.rb').inspect}
+    RUBY
+    host.start
+    expect(host.api('GET', '/api/host/onboarding')).to include('completed' => false, 'provider' => 'sign_in_required')
+    expect(host.api('POST', '/api/host/onboarding', action: 'login')).to include('provider' => 'signing_in')
+    Contract.wait { host.api('GET', '/api/host/onboarding').dig('login', 'url').to_s.include?('response_type=code') }
+    host.api('POST', '/api/host/onboarding', action: 'cancel')
+    host.restart
+    expect(host.api('GET', '/api/host/onboarding')).to include('completed' => false, 'ready' => false)
+    host.api('POST', '/api/host/onboarding', action: 'device-login')
+    Contract.wait { host.api('GET', '/api/host/onboarding').dig('login', 'code') == 'ABCD-EFGH' }
+    File.write(File.join(host.root, 'finish-login'), '')
+    Contract.wait { host.api('GET', '/api/host/onboarding').fetch('ready') }
+    expect(host.api('GET', '/api/host/onboarding')).to include('completed' => true, 'hold' => '')
+    host.api('POST', '/api/host/onboarding', action: 'change-account')
+    Contract.wait { host.api('GET', '/api/host/onboarding').fetch('ready') }
+    expect(host.api('GET', '/api/host/onboarding')).to include('hold' => 'review')
+    expect(host.api('POST', '/api/host/onboarding', action: 'resume')).to include('hold' => '')
+  end
+
   it 'isolates Codex account holds from Claude, protects active Codex work and preserves model choices' do
     config = host.environment.fetch('SAPIENS_CONFIG_DIR')
     settings = host.api('GET', '/api/model-settings')

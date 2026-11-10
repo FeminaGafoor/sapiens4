@@ -213,7 +213,6 @@ startAuth onboarding@(Onboarding _ worker progress _ _) action = modifyMVar_ wor
  running <- maybe (pure False) (fmap isNothing . poll) active
  require (not running) 409 "Account sign-in or sign-out is already running."
  saved <- setupState onboarding
- require (boolean (get saved "welcomed")) 409 "Start setup from the welcome screen."
  let replacing=action `elem` ["change-account","sign-out"]
  binary <- P.codexBinary >>= maybe (failure 503 "Codex is missing. Reinstall Sapiens to repair its runtime.") pure
  environment <- P.codexEnvironment
@@ -227,6 +226,8 @@ startAuth onboarding@(Onboarding _ worker progress _ _) action = modifyMVar_ wor
     else do
      require (status/="signed_in") 409 "ChatGPT is already connected."
      require (status=="sign_in_required") 503 "Could not check your existing sign-in. Recheck before continuing."
+    -- Explicit account actions can start from Settings without the welcome UI.
+    saveSetup onboarding (put "welcomed" (Bool True))
     -- Persist the hold before revocation or login can begin. A crash cannot
     -- release queued work under an uncertain or newly selected account.
     P.holdProfile (if replacing then "uncertain" else "disconnected")
