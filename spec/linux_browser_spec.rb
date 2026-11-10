@@ -105,9 +105,38 @@ RSpec.describe 'Linux native browser behavior' do
     native_action('set-value', native_control(role: 'TextField', value: 'fixture.txt'), '--value', destination)
     native_action('press', native_control('Save', role: 'Button'))
     Contract.wait(description: 'download destination rejection') do
-      control('workspace').fetch('tabs').any? { |tab| !tab['error'].to_s.empty? }
+      control('workspace').fetch('tabs').any? { |tab| tab['error'].to_s.include?('already exists') }
     end
     expect(File.read(destination)).to eq('Original content')
+  end
+
+  it 'preserves a destination created while a download is in progress' do
+    skip 'Foreground verification required' unless ENV['XDG_SESSION_TYPE'] == 'x11'
+    release = Queue.new
+    body = proc do |stream|
+      stream.write('x' * 16384)
+      Timeout.timeout(45) { release.pop }
+      stream.write('Last chunk')
+    end
+    @pages = HTTPPeer.new { |_| [200, body, {'Content-Type' => 'application/octet-stream', 'Content-Disposition' => 'attachment; filename="fixture.txt"'}] }
+    control('workspace_open', url: @pages.url)
+    native_control('Save download')
+    destination = File.join(@fixture.root, 'concurrent.txt')
+    native_action('set-value', native_control(role: 'TextField', value: 'fixture.txt'), '--value', destination)
+    native_action('press', native_control('Save', role: 'Button'))
+    Contract.wait(description: 'download dialog dismissed') do
+      output, error, code = Contract.capture(Desktop.driver, 'find', '--pid', @desktop.pid.to_s, '--title', 'Save download', '--depth', '40')
+      raise error unless code == 0
+      JSON.parse(output).fetch('matches').none? { |node| node['title'] == 'Save download' }
+    end
+    File.open(destination, 'wx') { |file| file.write('Keep this file') }
+    release << true
+    Contract.wait(description: 'download publication refused') do
+      control('workspace').fetch('tabs').any? { |tab| tab['error'].to_s.downcase.include?('exists') }
+    end
+    expect(File.read(destination)).to eq('Keep this file')
+  ensure
+    release << true if release
   end
 
   it 'cancels a pending download when its tab is closed' do

@@ -21,7 +21,12 @@ class HTTPPeer
       response.status = status
       response['Content-Type'] = 'application/json'
       (headers || {}).each { |key, value| response[key] = value }
-      response.body = body.is_a?(String) ? body : JSON.generate(body)
+      if body.is_a?(Proc)
+        response.chunked = true
+        response.body = body
+      else
+        response.body = body.is_a?(String) ? body : JSON.generate(body)
+      end
     end
     @url = "http://127.0.0.1:#{@server.config[:Port]}"
     @thread = Thread.new { @server.start }

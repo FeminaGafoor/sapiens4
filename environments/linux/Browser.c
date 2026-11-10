@@ -1,4 +1,9 @@
+#define _GNU_SOURCE
 #include "Browser.h"
+#include <errno.h>
+#include <fcntl.h>
+#include <glib/gstdio.h>
+#include <stdio.h>
 #include <json-glib/json-glib.h>
 #include <math.h>
 
@@ -17,6 +22,7 @@ typedef struct {
     Browser *browser;
     WebKitWebView *view;
     GtkFileChooserNative *save;
+    char *save_path, *staging_dir;
     WebKitDownload *download;
     char *owner, *id, *sequence, *error, *requested;
     gboolean retained;
@@ -150,33 +156,99 @@ static void save_close(Tab *tab) {
     g_clear_object(&tab->save);
 }
 
+static const char destination_exists[] = "The selected download destination already exists.";
+
+static void download_error(Tab *tab, const char *message) {
+    g_free(tab->error);
+    tab->error = g_strdup(message);
+    report(tab);
+}
+
 static void download_clear(Tab *tab) {
     save_close(tab);
     if (!tab->download) return;
     g_signal_handlers_disconnect_by_data(tab->download, tab);
     tab->browser->download = NULL;
     g_clear_object(&tab->download);
+    g_clear_pointer(&tab->save_path, g_free);
+    if (tab->staging_dir) {
+        // WebKit may leave a partial file when a download fails or is cancelled.
+        GDir *dir = g_dir_open(tab->staging_dir, 0, NULL);
+        if (dir) {
+            const char *name;
+            while ((name = g_dir_read_name(dir))) {
+                char *path = g_build_filename(tab->staging_dir, name, NULL);
+                g_unlink(path);
+                g_free(path);
+            }
+            g_dir_close(dir);
+        }
+        g_rmdir(tab->staging_dir);
+        g_clear_pointer(&tab->staging_dir, g_free);
+    }
 }
 
 static void download_finished(WebKitDownload *download, Tab *tab) {
     (void)download;
+    if (tab->save_path) {
+        char *payload = g_build_filename(tab->staging_dir, "payload", NULL);
+        // The destination can appear after the chooser closes. Publish the
+        // completed download atomically without replacing any existing entry.
+        if (renameat2(AT_FDCWD, payload, AT_FDCWD, tab->save_path, RENAME_NOREPLACE) != 0)
+            download_error(tab, errno == EEXIST ? destination_exists : g_strerror(errno));
+        g_free(payload);
+    }
     download_clear(tab);
 }
 
 static void download_failed(WebKitDownload *download, GError *error, Tab *tab) {
     (void)download;
-    if (g_error_matches(error, WEBKIT_DOWNLOAD_ERROR, WEBKIT_DOWNLOAD_ERROR_CANCELLED_BY_USER)) return;
-    g_free(tab->error);
-    tab->error = g_strdup(error->message);
-    report(tab);
+    // WebKit emits finished after failed as well.
+    g_clear_pointer(&tab->save_path, g_free);
+    if (!g_error_matches(error, WEBKIT_DOWNLOAD_ERROR, WEBKIT_DOWNLOAD_ERROR_CANCELLED_BY_USER))
+        download_error(tab, error->message);
 }
 
 static void saved(GtkNativeDialog *dialog, int response, Tab *tab) {
-    char *uri = response == GTK_RESPONSE_ACCEPT ? gtk_file_chooser_get_uri(GTK_FILE_CHOOSER(dialog)) : NULL;
+    char *path = response == GTK_RESPONSE_ACCEPT ? gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dialog)) : NULL;
     save_close(tab);
-    if (uri) webkit_download_set_destination(tab->download, uri);
-    else webkit_download_cancel(tab->download);
-    g_free(uri);
+    if (!path) {
+        webkit_download_cancel(tab->download);
+        return;
+    }
+    if (g_file_test(path, G_FILE_TEST_EXISTS | G_FILE_TEST_IS_SYMLINK)) {
+        download_error(tab, destination_exists);
+        webkit_download_cancel(tab->download);
+        g_free(path);
+        return;
+    }
+    // WebKit can remove its destination while cleaning up a rejected download.
+    // Give it only a private path on the selected destination's filesystem.
+    char *parent = g_path_get_dirname(path);
+    char *directory = g_build_filename(parent, ".sapiens-download-XXXXXX", NULL);
+    g_free(parent);
+    if (!g_mkdtemp(directory)) {
+        download_error(tab, g_strerror(errno));
+        webkit_download_cancel(tab->download);
+        g_free(directory);
+        g_free(path);
+        return;
+    }
+    tab->staging_dir = directory;
+    char *payload = g_build_filename(directory, "payload", NULL);
+    GError *error = NULL;
+    char *uri = g_filename_to_uri(payload, NULL, &error);
+    g_free(payload);
+    if (uri) {
+        tab->save_path = path;
+        webkit_download_set_destination(tab->download, uri);
+        g_free(uri);
+    } else {
+        download_error(tab, error->message);
+        g_error_free(error);
+        webkit_download_cancel(tab->download);
+        g_free(path);
+    }
 }
 
 static gboolean download_destination(WebKitDownload *download, const char *suggested, Tab *tab) {
@@ -216,6 +288,7 @@ static void download_started(WebKitWebContext *context, WebKitDownload *download
 
 static void tab_free(gpointer data) {
     Tab *tab = data;
+    g_clear_pointer(&tab->save_path, g_free);
     if (tab->download) webkit_download_cancel(tab->download);
     download_clear(tab);
     g_signal_handlers_disconnect_by_data(tab->view, tab);
