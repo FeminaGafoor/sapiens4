@@ -201,8 +201,9 @@ RSpec.describe 'Navigating work', :desktop do
   it 'keeps the next draft when the previous send is still being confirmed' do
     @host = desktop_host
     host.agent('Researcher')
+    host.configure(block: true)
     requested, release = Queue.new, Queue.new
-    proxy = HostProxy.new(host) do |request, response|
+    proxy = HostProxy.new(host, updates: true) do |request, response|
       if request.request_method == 'POST' && request.path.end_with?('/messages')
         requested << true
         Timeout.timeout(15) { release.pop }
@@ -213,9 +214,13 @@ RSpec.describe 'Navigating work', :desktop do
     desktop.fill('Message ChiefSapi', 'First request')
     desktop.press('Send message')
     Timeout.timeout(10) { requested.pop }
+    # Wait for the first turn to appear before editing its composer. Both the
+    # submit response and provider completion stay withheld during this input.
+    desktop.find('First request', role: 'AXStaticText')
     desktop.fill('Message ChiefSapi', 'Keep this next request')
     desktop.press('Open Researcher')
     release << true
+    host.release
     host.idle
     desktop.press('Open ChiefSapi')
     desktop.see('Contract test reply')
@@ -223,6 +228,7 @@ RSpec.describe 'Navigating work', :desktop do
     expect(host.state['turns'].map { |turn| turn['input'] }).to eq(['First request'])
   ensure
     release << true if release
+    host&.release
     proxy&.close
   end
 
