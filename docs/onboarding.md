@@ -1,6 +1,12 @@
 # Local AI onboarding
 
-Sapiens offers Codex connection on first launch and in **AI Connections**.
+Sapiens opens the workspace directly, including on first launch. Connect Codex
+from **Workspace & settings → Models → Manage AI connections**. Background
+account checks refresh connection status without opening a dialog or marking
+setup complete. The **Choose your AI** screen remains available through the
+explicit `OpenDialog Onboarding NoRecord` action for a separate onboarding flow;
+startup and resume do not invoke it automatically.
+
 Claude uses the existing Claude CLI account on this computer; Gemini and Kimi
 remain Coming soon. **Set up later** opens the workspace without connecting Codex.
 Browser sign-in uses
