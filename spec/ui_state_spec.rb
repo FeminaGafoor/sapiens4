@@ -229,6 +229,8 @@ RSpec.describe 'Navigating work', :desktop do
   ensure
     release << true if release
     host&.release
+    @desktop&.close
+    @desktop = nil
     proxy&.close
   end
 
