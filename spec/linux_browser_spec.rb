@@ -121,20 +121,20 @@ RSpec.describe 'Linux native browser behavior' do
     @pages = HTTPPeer.new { |_| [200, body, {'Content-Type' => 'application/octet-stream', 'Content-Disposition' => 'attachment; filename="fixture.txt"'}] }
     control('workspace_open', url: @pages.url)
     native_control('Save download')
-    destination = File.join(@fixture.root, 'concurrent.txt')
+    folder = Dir.mktmpdir('download destination ', @fixture.root)
+    destination = File.join(folder, 'concurrent.txt')
     native_action('set-value', native_control(role: 'TextField', value: 'fixture.txt'), '--value', destination)
     native_action('press', native_control('Save', role: 'Button'))
-    Contract.wait(description: 'download dialog dismissed') do
-      output, error, code = Contract.capture(Desktop.driver, 'find', '--pid', @desktop.pid.to_s, '--title', 'Save download', '--depth', '40')
-      raise error unless code == 0
-      JSON.parse(output).fetch('matches').none? { |node| node['title'] == 'Save download' }
-    end
+    # The network response is still held. Wait until the download has
+    # started writing in the chosen directory before introducing the collision.
+    Contract.wait(description: 'download started in the selected directory') { !Dir.empty?(folder) }
     File.open(destination, 'wx') { |file| file.write('Keep this file') }
     release << true
     Contract.wait(description: 'download publication refused') do
       control('workspace').fetch('tabs').any? { |tab| tab['error'].to_s.downcase.include?('exists') }
     end
     expect(File.read(destination)).to eq('Keep this file')
+    expect(Dir.children(folder)).to contain_exactly('concurrent.txt')
   ensure
     release << true if release
   end
