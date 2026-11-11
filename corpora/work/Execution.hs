@@ -66,10 +66,7 @@ submitTurn s a d = do
  attachments <- resolveAttachments s a (get d "attachments" `fallback` arr []) True
  require (not (T.null input) || not (null attachments)) 400 "Write a message or attach a file"
  flow <- decodeValue 400 flowValue
- config <- runModelSettings s a
- let provider = configuredProvider config
- binary <- case provider of CodexProvider -> codexBinary; ClaudeProvider -> claudeBinary
- require (isJust binary) 503 (providerName provider <> " CLI was not found on this host.")
+ runModelSettings s a >>= void . providerFor s
  when (flow==Computer) $ blindly s >>= doesFileExist >>= \built -> require built 503 "Computer helper is missing. Reinstall Sapiens to repair it."
  stopped <- readIORef (serviceStopping s)
  require (not stopped) 503 "Server is shutting down"

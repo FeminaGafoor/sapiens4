@@ -40,12 +40,12 @@ RSpec.describe 'Model settings', :desktop do
     desktop.see('Global default: Claude · Opus 5.5 · medium')
     desktop.press('Use corpora default')
     desktop.press('Sapi provider Codex')
-    desktop.press('Global settings')
-    desktop.see('Cannot save yet. Check model availability and effort for: Sapi customization — ChiefSapi.')
-    expect(desktop.find('Save and apply', role: 'AXButton')['enabled']).to eq(false)
-    desktop.press('Sapi customization')
     desktop.press('Customize sapi model')
-    picker('Sapi model', 'Fixture General')
+    picker('Sapi model', 'GPT-6-Astra')
+    open_picker('Sapi model')
+    desktop.key('end')
+    desktop.key('return')
+    picker('Sapi model', 'GPT-5.6-Luna')
     desktop.press('Global settings')
     desktop.see('Recommended: Opus 5.5 · medium')
     expect(host.api('GET', '/api/model-settings')).to eq(original)
@@ -55,20 +55,20 @@ RSpec.describe 'Model settings', :desktop do
     desktop.see('Recommended: Opus 5.5 · medium')
     expect(host.api('GET', '/api/model-settings')).to eq(original)
     desktop.press('Sapi customization')
-    picker('Sapi model', 'Fixture General')
+    picker('Sapi model', 'GPT-5.6-Luna')
     desktop.click('Save and apply')
     expect_saved_and_closed
     expect(desktop.find('Message ChiefSapi')['value']).to eq('Keep my unsent message')
     saved = host.api('GET', '/api/model-settings')
     expect(saved.fetch('defaults')).to include('provider' => 'claude')
-    expect(saved.fetch('overrides').fetch(chief)).to include('provider' => 'codex', 'model' => 'fixture-general', 'effort' => 'high')
+    expect(saved.fetch('overrides').fetch(chief)).to include('provider' => 'codex', 'model' => 'gpt-5.6-luna', 'effort' => 'medium')
     host.turn(host.submit(chief, 'Use the Sapi override'))
     expect(host.calls).not_to be_empty
-    host.calls.each { |call| expect(call.fetch('args')).to include('model="fixture-general"', 'model_reasoning_effort="high"') }
+    host.calls.each { |call| expect(call.fetch('args')).to include('model="gpt-5.6-luna"', 'model_reasoning_effort="medium"') }
 
     open_models
     desktop.press('Sapi customization')
-    picker('Sapi effort', 'high')
+    picker('Sapi effort', 'medium')
     desktop.press('Use corpora default')
     desktop.see('Follows global settings.')
     desktop.click('Save and apply')
@@ -95,12 +95,6 @@ RSpec.describe 'Model settings', :desktop do
 
   it 'navigates themed pickers, cancels without selection, resets unsupported effort and persists a model without effort' do
     start_desktop
-    host.configure(catalog_pages: [{data: [
-      {model: 'fixture-general', displayName: 'Fixture General', hidden: false, isDefault: true,
-       defaultReasoningEffort: 'low', supportedReasoningEfforts: [{reasoningEffort: 'low'}, {reasoningEffort: 'ultra'}]},
-      {model: 'fixture-quick', displayName: 'Fixture Quick', hidden: false, isDefault: false,
-       defaultReasoningEffort: 'low', supportedReasoningEfforts: [{reasoningEffort: 'low'}]}
-    ]}])
     open_models
     desktop.press('Customize default model')
     open_picker('Default effort')
@@ -115,58 +109,47 @@ RSpec.describe 'Model settings', :desktop do
     open_picker('Default model')
     desktop.key('end')
     desktop.key('escape')
-    picker('Default model', 'Fixture General')
+    picker('Default model', 'GPT-6-Astra')
     expect(desktop.text).to include('Save and apply')
     open_picker('Default model')
     desktop.press('Dismiss choices')
-    picker('Default model', 'Fixture General')
+    picker('Default model', 'GPT-6-Astra')
     open_picker('Default model')
     desktop.key('end')
     desktop.key('return')
-    picker('Default model', 'Fixture Quick')
-    picker('Default effort', 'Model default (low)')
+    picker('Default model', 'GPT-5.6-Luna')
+    picker('Default effort', 'Model default (medium)')
     open_picker('Default effort')
     expect(desktop.text).not_to include('ultra')
     desktop.key('home')
     desktop.key('tab')
-    picker('Default effort', 'Model default (low)')
+    picker('Default effort', 'Model default (medium)')
     desktop.press('Default provider Claude')
     desktop.press('Customize default model')
     open_picker('Default model')
     desktop.key('end')
     desktop.key('return')
-    picker('Default model', 'Fixture no effort')
+    picker('Default model', 'Haiku 4.5')
     expect(picker('Default effort', 'Provider default')['enabled']).to eq(false)
     desktop.click('Save and apply')
     expect_saved_and_closed
     open_models
-    picker('Default model', 'Fixture no effort')
+    picker('Default model', 'Haiku 4.5')
     expect(picker('Default effort', 'Provider default')['enabled']).to eq(false)
     desktop.press('Close dialog')
   end
 
-  it 'recovers discovery and save failures, preserves edits on conflict and reloads the persisted revision' do
+  it 'preserves edits on conflict and reloads the persisted revision' do
     start_desktop
-    host.configure(catalog_error: true)
     open_models
-    desktop.see('Retry model discovery')
-    host.configure(catalog_error: false)
-    desktop.click('Retry model discovery')
-    desktop.see('Recommended: Astra · medium')
     desktop.press('Customize default model')
-    picker('Default model', 'Fixture General')
+    picker('Default model', 'GPT-6-Astra')
     original = host.api('GET', '/api/model-settings')
-    host.configure(catalog_error: true)
-    desktop.click('Save and apply')
-    desktop.see('Codex could not list models. Check its login and CLI version.')
-    picker('Default model', 'Fixture General')
-    expect(host.api('GET', '/api/model-settings')).to eq(original)
-    host.configure(catalog_error: false)
     host.api('PUT', '/api/model-settings', {
-      revision: original.fetch('revision'), defaults: {provider: 'codex', model: 'fixture-general', effort: 'high'}, overrides: {}})
+      revision: original.fetch('revision'), defaults: {provider: 'codex', model: 'gpt-6-sol', effort: 'high'}, overrides: {}})
     desktop.click('Save and apply')
     desktop.see('Model settings changed elsewhere. Close and reopen Models before saving.')
-    picker('Default model', 'Fixture General')
+    picker('Default model', 'GPT-6-Astra')
     expect(host.api('GET', '/api/model-settings').fetch('revision')).to eq(original.fetch('revision') + 1)
     desktop.press('Close dialog')
     open_models

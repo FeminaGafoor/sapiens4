@@ -13,8 +13,8 @@ import Text.Read (readMaybe)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC
 import Data.IORef
-import Data.Char (toLower)
-import Data.List (nub,sortOn)
+import Data.Char (toUpper)
+import Data.List (find,isPrefixOf,isSuffixOf,nub,sortOn)
 import qualified Data.Map.Strict as M
 import Data.Maybe
 import Data.Text (Text)
@@ -35,7 +35,7 @@ import Text.Regex.TDFA ((=~))
 import System.Posix.Signals
 #endif
 import Types
-import Population (readModelSettings, ModelSelection(..), ModelSettingsDraft(..))
+import Population (readModelSettings, readProviders, ModelSelection(..), ModelSettingsDraft(..), Provider(..), ProviderModel(..), Providers(..), EventFormat(..))
 import qualified Computer as Computer
 
 data ProviderEvent
@@ -86,164 +86,65 @@ runModelSettings s owner = do
  let choice = M.findWithDefault (modelSettingsDefault configured) owner (modelSettingsOverrides configured)
  pure (ModelConfig (selectionProvider choice) (selectionModel choice) (selectionEffort choice))
 
-codexArguments :: FilePath -> ModelConfig -> [String]
-codexArguments workdir config =
- ["exec","-c","model_reasoning_effort=" ++ T.unpack (jsonText (str (configuredEffort config))),"-c","model=" ++ T.unpack (jsonText (str (configuredModel config))),"--skip-git-repo-check","--json","--dangerously-bypass-approvals-and-sandbox","--cd",workdir,"--color","never","-"]
+findProvider :: FilePath -> ProviderId -> IO Provider
+findProvider root key = readProviders root >>= maybe (failure 400 "Unsupported model provider") pure . find ((==key) . providerId) . providersList
 
--- Discovery is an on-demand catalog read, never an agent turn. Keep it outside
--- the service state lock; the process and every page share one deadline.
-codexModels :: IO Value
-codexModels = do
- result <- timeout 30000000 discover
- maybe (failure 504 "Codex model discovery timed out. Try again.") pure result
+providerFor :: Service -> ModelConfig -> IO (Provider,FilePath)
+providerFor s config = do
+ provider <- findProvider (repositoryRoot s) (configuredProvider config)
+ binary <- providerBinary provider >>= maybe (failure 503 (providerLabel provider <> " CLI was not found on this host.")) pure
+ pure (provider,binary)
+
+providerCatalog :: FilePath -> Text -> IO Value
+providerCatalog root key = do
+ provider <- findProvider root (ProviderId key)
+ pure (obj [("data",toJSON (providerModels provider))])
+
+providerArguments :: Provider -> FilePath -> ModelConfig -> [String]
+providerArguments provider workdir config = concatMap expand (providerRun provider)
  where
- discover = do
-  binary <- codexBinary >>= maybe (failure 503 "Codex CLI was not found on this host.") pure
-  workdir <- getTemporaryDirectory
-  environment <- getEnvironment
-  bracket (createProcess (proc binary ["app-server","--stdio"]) {env=Just environment,cwd=Just workdir,std_in=CreatePipe,std_out=CreatePipe,std_err=CreatePipe,create_group=True,use_process_jobs=True,detach_console=os=="mingw32"}) cleanup $ \handles -> do
-   (hin,hout,herr) <- case handles of
-    (Just i,Just o,Just e,_) -> pure (i,o,e)
-    _ -> failure 502 "Codex discovery could not open its pipes."
-   mapM_ (`hSetBinaryMode` True) [hin,hout,herr]
-   buffer <- newIORef BS.empty
-   let send value = BS.hPut hin (TE.encodeUtf8 (jsonText value <> "\n")) >> hFlush hin
-       line = do
-        bytes <- readIORef buffer
-        case BC.elemIndex '\n' bytes of
-         Just index -> do
-          writeIORef buffer (BS.drop (index+1) bytes)
-          pure (BS.take index bytes)
-         Nothing -> do
-          chunk <- BS.hGetSome hout 8192
-          require (not (BS.null chunk)) 502 "Codex closed the model discovery connection."
-          require (BS.length bytes + BS.length chunk <= 1048576) 502 "Codex model response is too large."
-          writeIORef buffer (bytes <> chunk)
-          line
-       receive ident remaining = do
-        require (remaining > (0 :: Int)) 502 "Too many Codex discovery notifications."
-        raw <- line
-        value <- either (const (failure 502 "Codex returned invalid discovery JSON.")) pure (eitherDecodeStrict' raw)
-        if get value "id" /= num ident then receive ident (remaining-1) else do
-         require (not (has value "error")) 502 "Codex could not list models. Check its login and CLI version."
-         require (has value "result") 502 "Codex discovery response has no result."
-         pure (get value "result")
-       request ident method params = send (obj [("id",num ident),("method",str method),("params",params)]) >> receive ident 1024
-       pages ident seen cursor collected = do
-        require (ident <= 22) 502 "Codex returned too many model pages."
-        page <- request ident "model/list" (obj [("cursor",cursor),("limit",num 100),("includeHidden",Bool False)])
-        rows <- field 502 page "data" :: IO [Value]
-        require (length collected + length rows <= 2000) 502 "Codex returned too many models."
-        models <- traverse catalogModel rows
-        let next=get page "nextCursor"; allModels=collected ++ models
-        case next of
-         Null -> pure (obj [("data",arr (filter (\m -> get m "hidden" /= Bool True) allModels))])
-         String token -> do
-          require (not (T.null token) && token `notElem` seen) 502 "Codex returned an invalid pagination cursor."
-          pages (ident+1) (token:seen) next allModels
-         _ -> failure 502 "Codex returned an invalid pagination cursor."
-       drain = do
-        bytes <- BS.hGetSome herr 8192
-        unless (BS.null bytes) drain
-   withAsync drain $ \_ -> do
-    void (request 1 "initialize" (obj [("clientInfo",obj [("name",str "sapiens4"),("version",str "1")]),("capabilities",obj [("explicitGatewayOauth",Bool True)])]))
-    send (obj [("method",str "initialized")])
-    pages 2 [] Null []
- cleanup (hin,hout,herr,ph) = do
-  killTree ph
-  void (waitForProcess ph)
-  forM_ (catMaybes [hin,hout,herr]) $ \h -> hClose h `catch` (\(_::IOException) -> pure ())
+ effort = configuredEffort config
+ expand "{effort-args}" = if T.null effort then [] else map fill (providerEffort provider)
+ expand arg = [fill arg]
+ fill = T.unpack . T.replace "{workdir}" (T.pack workdir) . T.replace "{model}" (configuredModel config) . T.replace "{effort}" effort
 
-validateModelSettingsDraft :: ModelSettingsDraft -> IO ()
-validateModelSettingsDraft draft = do
- let choices=modelSettingsDefault draft : M.elems (modelSettingsOverrides draft)
- forM_ (nub (map selectionProvider choices)) $ \provider -> do
-  catalog <- case provider of CodexProvider -> codexModels; ClaudeProvider -> claudeModels
-  let rows=items catalog "data"
-  forM_ (filter ((==provider) . selectionProvider) choices) $ \choice -> do
-   model <- maybe (failure 400 "The selected model is not in the current provider catalog.") pure
-     (listToMaybe (filter (\row -> at row "model" == selectionModel choice) rows))
-   require ((provider == ClaudeProvider && T.null (selectionEffort choice)) || str (selectionEffort choice) `elem` list (get model "efforts")) 400 "The selected effort is not supported by this model."
+validateModelSettingsDraft :: Service -> ModelSettingsDraft -> IO ()
+validateModelSettingsDraft s draft = forM_ (modelSettingsDefault draft : M.elems (modelSettingsOverrides draft)) $ \choice -> do
+ provider <- findProvider (repositoryRoot s) (selectionProvider choice)
+ model <- maybe (failure 400 "The selected model is not in the current provider catalog.") pure (find ((== selectionModel choice) . modelName) (providerModels provider))
+ require (T.null (selectionEffort choice) || selectionEffort choice `elem` modelEfforts model) 400 "The selected effort is not supported by this model."
 
-catalogModel :: Value -> IO Value
-catalogModel = parseValue 502 $ withObject "Codex model" $ \o -> do
- model <- o .: "model" :: Parser Text
- label <- o .: "displayName" :: Parser Text
- hidden <- o .: "hidden" :: Parser Bool
- isDefault <- o .: "isDefault" :: Parser Bool
- effort <- o .: "defaultReasoningEffort" :: Parser Text
- options <- o .: "supportedReasoningEfforts" :: Parser [Value]
- efforts <- forM options $ withObject "Reasoning effort" $ \option -> option .: "reasoningEffort" :: Parser Text
- unless (not (T.null model) && not (T.null label) && not (null efforts) && all (not . T.null) efforts && effort `elem` efforts) $ fail "Invalid model or effort choices"
- pure (obj [("model",str model),("displayName",str label),("hidden",Bool hidden),("isDefault",Bool isDefault),("defaultReasoningEffort",str effort),("efforts",toJSON (nub efforts))])
-
--- Claude's control initialization advertises models without submitting a turn.
-claudeModels :: IO Value
-claudeModels = do
- result <- timeout 30000000 discover
- maybe (failure 504 "Claude model discovery timed out. Try again.") pure result
+providerBinary :: Provider -> IO (Maybe FilePath)
+providerBinary provider = do
+ override <- lookupEnv ("SAPIENS_" ++ map toUpper (T.unpack (providerName (providerId provider))) ++ "_BINARY")
+ case override of
+  Just p | not (null p) -> findExecutable p
+  _ -> do
+   path <- findExecutable (providerCommand provider)
+   home <- getHomeDirectory
+   listed <- concat <$> mapM (installed home) (providerPaths provider)
+   existing <- filterM doesFileExist (nub (maybeToList path ++ listed))
+   runnable <- filterM (fmap executable . getPermissions) existing
+   versions <- forM runnable $ \p -> do
+    result <- try (timeout 10000000 (readProcessWithExitCode p ["--version"] "")) :: IO (Either SomeException (Maybe (ExitCode,String,String)))
+    case result of
+     Left errorValue | Just (_ :: SomeAsyncException) <- fromException errorValue -> throwIO errorValue
+     Left errorValue | Just (_ :: AsyncCancelled) <- fromException errorValue -> throwIO errorValue
+     _ -> pure ()
+    let version = case result of
+         Right (Just (ExitSuccess,out,_)) -> let (_,_,_,numbers) = out =~ ("([0-9]+)\\.([0-9]+)\\.([0-9]+)" :: String) :: (String,String,String,[String]) in mapMaybe readMaybe numbers
+         _ -> [] :: [Int]
+    pure (version,p)
+   pure (snd <$> listToMaybe (reverse (sortOn id (filter (not . null . fst) versions))))
  where
- discover = do
-  binary <- claudeBinary >>= maybe (failure 503 "Claude CLI was not found on this host.") pure
-  workdir <- getTemporaryDirectory
-  environment <- getEnvironment
-  let args=["--print","--input-format","stream-json","--output-format","stream-json","--verbose","--safe-mode","--no-session-persistence","--strict-mcp-config","--tools","","--permission-mode","plan"]
-  bracket (createProcess (proc binary args) {env=Just environment,cwd=Just workdir,std_in=CreatePipe,std_out=CreatePipe,std_err=CreatePipe,create_group=True,use_process_jobs=True,detach_console=os=="mingw32"}) cleanup $ \handles -> do
-   (hin,hout,herr) <- case handles of
-    (Just i,Just o,Just e,_) -> pure (i,o,e)
-    _ -> failure 502 "Claude discovery could not open its pipes."
-   mapM_ (`hSetBinaryMode` True) [hin,hout,herr]
-   buffer <- newIORef BS.empty
-   let line = do
-        bytes <- readIORef buffer
-        case BC.elemIndex '\n' bytes of
-         Just index -> writeIORef buffer (BS.drop (index+1) bytes) >> pure (BS.take index bytes)
-         Nothing -> do
-          chunk <- BS.hGetSome hout 8192
-          require (not (BS.null chunk)) 502 "Claude closed the model discovery connection."
-          require (BS.length bytes + BS.length chunk <= 1048576) 502 "Claude model response is too large."
-          writeIORef buffer (bytes <> chunk)
-          line
-       receive remaining = do
-        require (remaining > (0 :: Int)) 502 "Too many Claude discovery notifications."
-        value <- line >>= either (const (failure 502 "Claude returned invalid discovery JSON.")) pure . eitherDecodeStrict'
-        let response=get value "response"
-        if at value "type" /= "control_response" || at response "request_id" /= "sapiens-model-discovery" then receive (remaining-1) else do
-         require (at response "subtype" == "success") 502 "Claude could not list models. Check its login and CLI version."
-         rows <- field 502 (get response "response") "models" :: IO [Value]
-         require (length rows <= 2000) 502 "Claude returned too many models."
-         models <- traverse claudeCatalogModel rows
-         -- Prefer named entries over the duplicate 'default' alias; keep its flag.
-         let defaults=[at row "model" | row <- models,boolean (get row "isDefault")]
-             named=sortOn (\row -> boolean (get row "isDefault")) models
-             unique=foldl (\acc row -> if any ((==at row "model") . (`at` "model")) acc then acc else acc++[row]) [] named
-         pure (obj [("data",arr [put "isDefault" (Bool (at row "model" `elem` defaults)) row | row <- unique])])
-       drain = BS.hGetSome herr 8192 >>= \bytes -> unless (BS.null bytes) drain
-   withAsync drain $ \_ -> do
-    BS.hPut hin (TE.encodeUtf8 (jsonText (obj [("type",str "control_request"),("request_id",str "sapiens-model-discovery"),("request",obj [("subtype",str "initialize")])]) <> "\n"))
-    hFlush hin
-    receive 1024
- cleanup (hin,hout,herr,ph) = do
-  killTree ph
-  void (waitForProcess ph)
-  forM_ (catMaybes [hin,hout,herr]) $ \h -> hClose h `catch` (\(_::IOException) -> pure ())
-
-claudeCatalogModel :: Value -> IO Value
-claudeCatalogModel = parseValue 502 $ withObject "Claude model" $ \o -> do
- alias <- o .: "value" :: Parser Text
- resolved <- o .:? "resolvedModel"
- label <- o .: "displayName" :: Parser Text
- supports <- o .:? "supportsEffort" .!= False
- advertised <- o .:? "supportedEffortLevels" .!= [] :: Parser [Text]
- let model=fromMaybe alias resolved
-     efforts=if supports then nub advertised else []
- unless (not (T.null alias) && not (T.null model) && not (T.null label) && all (\effort -> not (T.null effort) && T.length effort <= 80) efforts) $ fail "Invalid Claude model metadata"
- pure (obj [("model",str model),("displayName",str label),("hidden",Bool False),("isDefault",Bool (alias=="default")),("defaultReasoningEffort",str ""),("efforts",toJSON efforts)])
-
-claudeArguments :: ModelConfig -> [String]
-claudeArguments config =
- ["--print","--output-format","stream-json","--verbose","--model",T.unpack (configuredModel config),"--no-session-persistence","--dangerously-skip-permissions"]
- ++ [value | not (T.null (configuredEffort config)),value <- ["--effort",T.unpack (configuredEffort config)]]
+ installed home entry = foldM expand [""] (splitDirectories (if "~/" `isPrefixOf` entry then home </> drop 2 entry else entry))
+ expand roots part
+  | '*' `elem` part = concat <$> forM roots (\root -> do
+     present <- doesDirectoryExist root
+     names <- if present then listDirectory root else pure []
+     pure [root </> name | name <- names, matches part name])
+  | otherwise = pure [root </> part | root <- roots]
+ matches part name = let (before,after) = break (=='*') part in length name >= length part - 1 && before `isPrefixOf` name && drop 1 after `isSuffixOf` name
 
 -- Intermediate assistant text is not completion. Only a successful terminal
 -- result can complete the host decision; a zero exit code alone is insufficient.
@@ -259,71 +160,17 @@ claudeEvents value = case at value "type" of
  "user" -> pure [ToolCompleted (at tool "tool_use_id") "Tool completed" | tool <- items (get value "message") "content",at tool "type" == "tool_result"]
  _ -> pure []
 
-claudeBinary :: IO (Maybe FilePath)
-claudeBinary = do
- override <- lookupEnv "SAPIENS_CLAUDE_BINARY"
- case override of
-  Just path | not (null path) -> findExecutable path
-  _ -> do
-   path <- findExecutable "claude"
-   home <- getHomeDirectory
-   let versions=home </> ".nvm/versions/node"
-   exists <- doesDirectoryExist versions
-   nodes <- if exists then reverse . sortOn id <$> listDirectory versions else pure []
-   let candidates=maybeToList path ++ [home </> ".local/bin" </> (if os=="mingw32" then "claude.exe" else "claude")]
-         ++ [versions </> version </> "bin/claude" | version <- nodes,os/="mingw32"]
-       native=filter (\file -> os/="mingw32" || map toLower (takeExtension file)==".exe") candidates
-   files <- filterM doesFileExist (nub native)
-   listToMaybe <$> filterM (fmap executable . getPermissions) files
-codexBinary :: IO (Maybe FilePath)
-codexBinary = do
- override <- lookupEnv "SAPIENS_CODEX_BINARY"
- case override of
-  Just p | not (null p) -> findExecutable p
-  _ -> do
-   path <- findExecutable "codex"
-   home <- getHomeDirectory
-   local <- fromMaybe (home </> "AppData/Local") <$> lookupEnv "LOCALAPPDATA"
-   roaming <- fromMaybe (home </> "AppData/Roaming") <$> lookupEnv "APPDATA"
-   let children folder = do
-        present <- doesDirectoryExist folder
-        if present then map (folder </>) <$> listDirectory folder else pure []
-       vendors scope = do
-        packages <- filter (T.isPrefixOf "codex" . T.pack . takeFileName) <$> children scope
-        concat <$> forM packages (\package -> map (</> "codex/codex.exe") <$> children (package </> "vendor"))
-   installed <- if os /= "mingw32" then pure [] else do
-    app <- map (</> "codex.exe") <$> children (local </> "OpenAI/Codex/bin")
-    npm <- vendors (roaming </> "npm/node_modules/@openai")
-    bundled <- vendors (roaming </> "npm/node_modules/@openai/codex/node_modules/@openai")
-    pure (app ++ npm ++ bundled)
-   let candidates = maybeToList path ++ installed ++ ["/Applications/" ++ app ++ ".app/Contents/Resources/" ++ binary | os == "darwin", app <- ["Codex","ChatGPT"],binary <- ["codex","codex-cli/bin/codex"]]
-       native = filter (\p -> os /= "mingw32" || map toLower (takeExtension p) == ".exe") candidates
-   existing <- filterM doesFileExist (nub native)
-   runnable <- filterM (fmap executable . getPermissions) existing
-   versions <- forM runnable $ \p -> do
-    result <- try (timeout 10000000 (readProcessWithExitCode p ["--version"] "")) :: IO (Either SomeException (Maybe (ExitCode,String,String)))
-    case result of
-     Left errorValue | Just (_ :: SomeAsyncException) <- fromException errorValue -> throwIO errorValue
-     Left errorValue | Just (_ :: AsyncCancelled) <- fromException errorValue -> throwIO errorValue
-     _ -> pure ()
-    let version = case result of
-         Right (Just (ExitSuccess,out,_)) -> let (_,_,_,numbers) = out =~ ("codex-cli[[:space:]]+([0-9]+)\\.([0-9]+)\\.([0-9]+)" :: String) :: (String,String,String,[String]) in mapMaybe readMaybe numbers
-         _ -> [] :: [Int]
-    pure (version,p)
-   pure (snd <$> listToMaybe (reverse (sortOn id (filter (not . null . fst) versions))))
 killTree :: ProcessHandle -> IO ()
 killTree ph = do
-#ifdef mingw32_HOST_OS
- -- Retain the job handle until termination, even if its root already exited.
- -- getProcessExitCode can otherwise close the root and lose the job handle.
- terminateProcess ph
-#else
  result <- getProcessExitCode ph
  when (isNothing result) $ do
   pid <- getPid ph
   case pid of
    Nothing -> terminateProcess ph
    Just root -> do
+#ifdef mingw32_HOST_OS
+    terminateProcess ph
+#else
     let send sig p = signalProcess sig p `catch` (\(_::IOException) -> pure ())
         collect stopped pending = do
          mapM_ (send sigSTOP) pending
@@ -333,8 +180,8 @@ killTree ph = do
          if null children then pure known else collect known children
     stopped <- collect [] [root] `catch` (\(_::SomeException) -> pure [root])
     mapM_ (send sigKILL) (reverse stopped)
-  pure ()
 #endif
+  pure ()
 invoke :: Service -> Run -> Text -> IO Text
 invoke s run input = do
  foreground <- Computer.captureForeground (repositoryRoot s) (workspaceRoot s (agentIdText (runOwner run)))
@@ -353,10 +200,10 @@ invokeModel s run input = do
  before <- getMonotonicTimeNSec
  require (before < runDeadline run) 504 "Call time limit exhausted between decision nodes"
  let config = runModelConfig run
-     provider = configuredProvider config
      workdir = workspaceRoot s (agentIdText (runOwner run))
-     args = case provider of CodexProvider -> codexArguments workdir config; ClaudeProvider -> claudeArguments config
- binary <- (case provider of CodexProvider -> codexBinary; ClaudeProvider -> claudeBinary) >>= maybe (failure 503 (providerName provider <> " CLI was not found on this host.")) pure
+ (provider,binary) <- providerFor s config
+ let args = providerArguments provider workdir config
+     name = providerLabel provider
  environment <- getEnvironment
  started <- realToFrac . (*1000) <$> getPOSIXTime :: IO Double
  writeIORef (runActivity run) (obj [("started",toJSON started),("updated",toJSON started),("phase",str "Waiting for model"),("last_action",str "")])
@@ -377,7 +224,7 @@ invokeModel s run input = do
        case eitherDecodeStrict' (TE.encodeUtf8 line) of
         Left _ -> pure ()
         Right rawEvent -> do
-         events <- case provider of CodexProvider -> (:[]) <$> decodeValue 500 rawEvent; ClaudeProvider -> claudeEvents rawEvent
+         events <- case providerEvents provider of CodexJson -> (:[]) <$> decodeValue 500 rawEvent; ClaudeStream -> claudeEvents rawEvent
          forM_ events $ \event -> do
           state <- readIORef stream
           activity <- readIORef (runActivity run)
@@ -404,12 +251,12 @@ invokeModel s run input = do
      stop <- readIORef (runCancel run)
      expired <- readIORef timedOut
      require (not stop) 409 "Stopped by Admin; review external effects before retrying"
-     require (not expired) 504 (providerName provider <> " exceeded 1800s; its process tree was stopped.")
+     require (not expired) 504 (name <> " exceeded 1800s; its process tree was stopped.")
      err <- T.unlines . reverse <$> readIORef errors
      out <- T.unlines . reverse <$> readIORef recent
      message <- providerMessage <$> readIORef stream
-     require (exit == ExitSuccess) 500 (providerName provider <> " execution failed: " <> err <> out)
-     maybe (failure 500 (providerName provider <> " completed without a successful result.")) pure message
+     require (exit == ExitSuccess) 500 (name <> " execution failed: " <> err <> out)
+     maybe (failure 500 (name <> " completed without a successful result.")) pure message
  where cleanup (hin,hout,herr,ph) = do
         killTree ph
         void (waitForProcess ph)

@@ -50,7 +50,7 @@ Default model: `gpt-6-astra`, reasoning `medium`, until Models settings are save
 | --- | --- |
 | `SAPIENS_DATA_DIR` | Data directory |
 | `SAPIENS_PYTHON` | Python executable |
-| `SAPIENS_CODEX_BINARY` | Codex executable |
+| `SAPIENS_<ID>_BINARY` | Provider executable, for example `SAPIENS_CODEX_BINARY` |
 | `SAPIENS_BLINDLY_BINARY` | Blindly4 executable |
 
 Decision templates live in `corpora/prompts/`. **Edit decision prompts** saves local
@@ -133,50 +133,23 @@ provider errors visible in the dialog.
 The Models screen now uses `GET /api/model-settings` and `PUT /api/model-settings`
 with the same object shape and validation rules. **Save and apply** atomically
 writes `model-settings.json`, using an independent revision counter. Until this
-file exists, GET returns Codex `gpt-6-astra` / `medium` at revision 0, and execution
-continues using the existing environment defaults and Normal/Deep mode.
+file exists, GET returns the default from `corpora/providers.json` at revision 0.
 
 After applying, each new run uses its Sapi override, or the corpora default when
-no override exists. The selected effort is explicit and supersedes Normal/Deep;
-Deep does not silently change it to an unsupported effort. Configuration is
+no override exists. Configuration is
 resolved once under the service lock when a run starts. Every provider invocation
 and decision audit record in that run uses the captured model and effort, even
 if settings are saved between decision steps. Queued work, retries and delegated
 runs resolve the current settings when their new run starts. This does not pin a
 whole Routine or workload across multiple runs or restarts.
 
-Saving validates the catalog outside the service lock. Execution does not launch
-catalog discovery or silently fall back to a different model on provider failure.
-Existing Codex command permissions are unchanged. AgencyKind overrides remain subsequent work. Catalog entries advertise choices;
-they do not guarantee account authorization for an eventual model call.
+### Providers
 
-
-### Claude provider
-
-`GET /api/providers/claude/models` obtains the installed CLI catalog through its
-streaming control initialization, without submitting a user prompt. Discovery uses
-safe mode with tools and MCP integrations disabled, a 30-second deadline, bounded
-responses and process cleanup. Entries use `resolvedModel` where available;
-duplicate aliases are collapsed. Effort choices come from the advertised metadata.
-An empty effort string means the Claude provider default; the CLI receives no
-`--effort` flag. Models without effort metadata expose only this default.
-
-The product recommendation is `claude-opus-5-5` with `medium`, enabled only when
-that exact model and effort appear in the catalog. It is independent of the CLI's
-changing `default` or `opus` aliases. Mixed-provider defaults and per-Sapi overrides
-are supported, with each required provider validated once per save.
-
-Execution uses the existing Sapi workspace, prompt, run identity, process deadline
-and cancellation handling. Claude runs with `--print --output-format stream-json
---verbose --no-session-persistence --dangerously-skip-permissions`, an explicit
-model, and an effort flag only when configured. Only a successful terminal result
-completes the decision; intermediate text and error results cannot count as
-success. Decision records include the provider as well as the model and effort.
-The existing noninteractive permission policy is retained; read-only remains
-outside this change.
-
-`SAPIENS_CLAUDE_BINARY` overrides executable discovery. Otherwise it searches PATH,
-the native user installation and, on Unix, NVM installations. Windows requires a
-native executable. This integration does not install Claude or change login state.
-Model discovery does not prove that a subscription can execute a model. Tests use
-isolated simulated providers; live account behavior requires a separate smoke test.
+`corpora/providers.json` lists each provider CLI: id, name, executable, extra
+install paths, login and status commands, run arguments, output format and models
+with their efforts. `GET /api/providers/{id}/models` returns that model list.
+Saving checks every choice against it; an empty effort sends no effort flag.
+Run arguments use `{model}`, `{workdir}` and `{effort-args}`. The executable is
+`SAPIENS_<ID>_BINARY`, else PATH, else the listed paths, preferring the newest
+`--version`. Sign-in stays in each CLI. Adding a provider is a new entry; a new
+output format also needs an event reader in `Provider.hs`.

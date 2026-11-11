@@ -190,15 +190,9 @@ savePreferences s d = do
  DB.saveSingleton s DB.Preferences current
  pure (obj [("saved",Bool True),("preferences",current)])
 dispatch :: Service -> Text -> Text -> Maybe Value -> IO (Int,BL.ByteString,Text)
-dispatch _ "GET" "/api/providers/claude/models" _ = do
- value <- Provider.claudeModels
- pure (200,encode value,"application/json; charset=utf-8")
-dispatch _ "GET" "/api/providers/codex/models" _ = do
- value <- Provider.codexModels
- pure (200,encode value,"application/json; charset=utf-8")
 dispatch s "PUT" "/api/model-settings" body = do
  requested <- decodeValue 400 (fromMaybe Null body)
- Provider.validateModelSettingsDraft requested
+ Provider.validateModelSettingsDraft s requested
  saved <- locked s (saveModelSettings s requested)
  pure (200,encode saved,"application/json; charset=utf-8")
 dispatch s method target body = locked s $ do
@@ -210,6 +204,7 @@ dispatch s method target body = locked s $ do
      owner kind a=if kind=="groups" then void (G.getGroup s a False) else void (DB.agent s a)
  case (method,parts) of
   ("GET",["api","model-settings"]) -> json 200 (toJSON <$> readModelSettings s)
+  ("GET",["api","providers",provider,"models"]) -> json 200 (Provider.providerCatalog (repositoryRoot s) provider)
   ("GET",["api","health"]) -> json 200 (pure (obj [("status",str "ok"),("provider",str "codex")]))
   ("GET",["api","state"]) -> json 200 (snapshotUnlocked s)
   ("GET",["api","computer"]) -> json 200 (Computer.computerStatus (repositoryRoot s))

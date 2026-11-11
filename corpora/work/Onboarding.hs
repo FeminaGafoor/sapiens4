@@ -3,6 +3,7 @@ module Onboarding where
 
 import Types
 import qualified Provider as P
+import Population (readProviders, Provider(..), Providers(..))
 import qualified Computer as C
 import Control.Concurrent
 import Control.Concurrent.Async
@@ -70,12 +71,10 @@ cliStatus findBinary environmentOf args = do
     Nothing -> "unavailable")) `catch` (\(_::IOException) -> pure "unavailable")
 
 onboardingView :: Onboarding -> IO Value
-onboardingView onboarding = do
- (codex,claude) <- concurrently
-  (trackedCheck onboarding (cliStatus P.codexBinary getEnvironment ["login","status"]))
-  (trackedCheck onboarding (cliStatus P.claudeBinary getEnvironment ["auth","status"]))
- let entry key label command found = obj [("id",str key),("name",str label),("status",str found),("login",str command)]
- pure (obj [("providers",arr [entry "codex" "Codex" "codex login" codex,entry "claude" "Claude Code" "claude auth login" claude])])
+onboardingView onboarding@(Onboarding root _) = do
+ providers <- providersList <$> readProviders root
+ found <- mapConcurrently (\provider -> trackedCheck onboarding (cliStatus (P.providerBinary provider) getEnvironment (providerStatus provider))) providers
+ pure (obj [("providers",arr [obj [("id",str (providerName (providerId provider))),("name",str (providerLabel provider)),("status",str status),("login",str (providerLogin provider))] | (provider,status) <- zip providers found])])
 
 computerView :: Onboarding -> IO Value
 computerView (Onboarding root _) = do

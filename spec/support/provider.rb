@@ -17,68 +17,6 @@ end
 
 exit 0 if ARGV.include?('login') && ARGV.include?('status')
 
-# Model discovery uses the real provider process boundary, without a model turn.
-if ARGV.include?('app-server')
-  STDOUT.sync = true
-  initialized = false
-  default_model = {'model' => 'fixture-general', 'displayName' => 'Fixture General',
-    'hidden' => false, 'isDefault' => true, 'defaultReasoningEffort' => 'high',
-    'supportedReasoningEfforts' => [{'reasoningEffort' => 'low'}, {'reasoningEffort' => 'high'}]}
-  pages = config.fetch('catalog_pages', [{'data' => [default_model], 'nextCursor' => nil}])
-  STDIN.each_line do |line|
-    message = JSON.parse(line)
-    File.open(File.join(root, 'discovery.jsonl'), 'a') do |file|
-      file.puts JSON.generate(message.merge('pid' => Process.pid))
-    end
-    case message.fetch('method')
-    when 'initialize'
-      puts JSON.generate(id: message.fetch('id'), result: {})
-    when 'initialized'
-      initialized = true
-    when 'model/list'
-      raise 'Missing initialized notification' unless initialized
-      if config['catalog_block']
-        sleep 0.02 until File.exist?(File.join(root, 'released'))
-      end
-      if config['catalog_error']
-        puts JSON.generate(id: message.fetch('id'), error: {code: -1, message: 'Fixture catalog failure'})
-      elsif config['catalog_malformed']
-        puts 'not-json'
-      else
-        cursor = message.fetch('params')['cursor']
-        page = pages.fetch(cursor ? Integer(cursor) : 0)
-        puts JSON.generate(method: 'fixture/notification', params: {})
-        puts JSON.generate(id: message.fetch('id'), result: page)
-      end
-    end
-  end
-  exit
-end
-
-# Claude discovery has its own control protocol and never submits a user prompt.
-if ARGV.include?('--input-format')
-  STDOUT.sync = true
-  STDIN.each_line do |line|
-    request = JSON.parse(line)
-    File.open(File.join(root, 'claude-discovery.jsonl'), 'a') { |file| file.puts(JSON.generate(request.merge('pid' => Process.pid))) }
-    raise 'Unexpected Claude discovery request' unless request.dig('request', 'subtype') == 'initialize'
-    sleep 0.02 until !config['claude_catalog_block'] || File.exist?(File.join(root, 'released'))
-    models = config.fetch('claude_models', [
-      {value: 'default', resolvedModel: 'claude-opus-5-5', displayName: 'Default (recommended)', supportsEffort: true, supportedEffortLevels: %w[low medium high xhigh max]},
-      {value: 'opus', resolvedModel: 'claude-opus-5-5', displayName: 'Opus 5.5', supportsEffort: true, supportedEffortLevels: %w[low medium high xhigh max]},
-      {value: 'legacy', resolvedModel: 'claude-fixture-no-effort', displayName: 'Fixture no effort'}
-    ])
-    if config['claude_catalog_malformed']
-      puts 'not-json'
-    else
-      puts JSON.generate(type: 'control_response', response: {
-        subtype: config['claude_catalog_error'] ? 'error' : 'success',
-        request_id: request.fetch('request_id'), response: {models: models}})
-    end
-  end
-  exit
-end
-
 claude = ARGV.include?('--print')
 text = STDIN.read
 context = text.include?("\nContext:\n") ? JSON.parse(text.split("\nContext:\n", 2).last) : {}

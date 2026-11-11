@@ -5,7 +5,6 @@ module Population where
 import Control.Exception
 import Control.Monad
 import Data.Aeson hiding (pairs)
-import Data.Aeson.Types (Parser)
 import qualified Data.Map.Strict as Map
 import Data.Char
 import Data.IORef
@@ -261,21 +260,17 @@ corporaIdentity s = do
  template <- prompt s "corpora-settings-request"
  pure $ merge (remove ["operations"] (toJSON cfg)) (obj [("id",get identity "corpora_id"),("name",toJSON (corporaName cfg) `fallback` str ("CORPORA · " <> at row "name")),("chief_id",str chief),("settings_template",str (T.strip template)),("stopping",Bool False)])
 
-data ModelSelection = ModelSelection { selectionProvider :: ModelProvider, selectionModel :: Text, selectionEffort :: Text }
+data ModelSelection = ModelSelection { selectionProvider :: ProviderId, selectionModel :: Text, selectionEffort :: Text }
  deriving (Eq, Show)
 instance FromJSON ModelSelection where
  parseJSON value = do
   onlyFields ["provider","model","effort"] value
   withObject "Model selection" (\o -> do
-   provider <- o .: "provider" :: Parser Text
-   kind <- case provider of
-    "codex" -> pure CodexProvider
-    "claude" -> pure ClaudeProvider
-    _ -> fail "Unsupported model provider"
+   provider <- o .: "provider"
    model <- o .: "model"
    effort <- o .: "effort"
-   unless (not (T.null model) && T.length model <= 200 && (kind == ClaudeProvider || not (T.null effort)) && T.length effort <= 80) $ fail "Choose a model and effort"
-   pure (ModelSelection kind model effort)) value
+   unless (not (T.null provider) && T.length provider <= 80 && not (T.null model) && T.length model <= 200 && T.length effort <= 80) $ fail "Choose a model and effort"
+   pure (ModelSelection (ProviderId provider) model effort)) value
 instance ToJSON ModelSelection where
  toJSON choice = obj [("provider",str (providerName (selectionProvider choice))),("model",str (selectionModel choice)),("effort",str (selectionEffort choice))]
 
@@ -298,7 +293,34 @@ activeModelSettings :: Service -> IO (Maybe ModelSettingsDraft)
 activeModelSettings s = readJSON (serviceRoot s </> "model-settings.json") Nothing
 
 readModelSettings :: Service -> IO ModelSettingsDraft
-readModelSettings s = fromMaybe (ModelSettingsDraft 0 (ModelSelection CodexProvider "gpt-6-astra" "medium") Map.empty) <$> activeModelSettings s
+readModelSettings s = activeModelSettings s >>= maybe ((\configured -> ModelSettingsDraft 0 (providersDefault configured) Map.empty) <$> readProviders (repositoryRoot s)) pure
+
+data EventFormat = CodexJson | ClaudeStream deriving (Eq, Show)
+instance FromJSON EventFormat where
+ parseJSON = withText "Event format" $ \format -> case format of
+  "codex-json" -> pure CodexJson
+  "claude-stream" -> pure ClaudeStream
+  _ -> fail "Unknown event format"
+
+data ProviderModel = ProviderModel { modelName :: Text, modelLabel :: Text, modelEfforts :: [Text], modelDefaultEffort :: Text, modelIsDefault :: Bool }
+instance FromJSON ProviderModel where
+ parseJSON = withObject "Provider model" $ \o -> ProviderModel <$> o .: "model" <*> o .: "displayName" <*> o .: "efforts" <*> o .: "defaultReasoningEffort" <*> o .: "isDefault"
+instance ToJSON ProviderModel where
+ toJSON m = obj [("model",str (modelName m)),("displayName",str (modelLabel m)),("efforts",toJSON (modelEfforts m)),("defaultReasoningEffort",str (modelDefaultEffort m)),("isDefault",Bool (modelIsDefault m))]
+
+data Provider = Provider
+ { providerId :: ProviderId, providerLabel :: Text, providerCommand :: FilePath, providerPaths :: [FilePath], providerLogin :: Text
+ , providerStatus :: [String], providerRun :: [Text], providerEffort :: [Text], providerEvents :: EventFormat, providerModels :: [ProviderModel] }
+instance FromJSON Provider where
+ parseJSON = withObject "Provider" $ \o -> Provider <$> (ProviderId <$> o .: "id") <*> o .: "name" <*> o .: "binary" <*> o .: "paths" <*> o .: "login"
+  <*> o .: "status" <*> o .: "run" <*> o .: "effort" <*> o .: "events" <*> o .: "models"
+
+data Providers = Providers { providersDefault :: ModelSelection, providersList :: [Provider] }
+instance FromJSON Providers where
+ parseJSON = withObject "Providers" $ \o -> Providers <$> o .: "default" <*> o .: "providers"
+
+readProviders :: FilePath -> IO Providers
+readProviders root = readJSON (root </> "corpora/providers.json") Null >>= decodeValue 500
 
 saveModelSettings :: Service -> ModelSettingsDraft -> IO ModelSettingsDraft
 saveModelSettings s requested = do

@@ -21,24 +21,15 @@ RSpec.describe 'Applied Codex model settings', :host do
     end
   end
 
-  before do
-    host.configure(catalog_pages: [{data: [
-      {model: 'gpt-6-astra', displayName: 'Astra', hidden: false, isDefault: false,
-       defaultReasoningEffort: 'low', supportedReasoningEfforts: [{reasoningEffort: 'low'}, {reasoningEffort: 'medium'}]},
-      {model: 'fixture-quick', displayName: 'Quick', hidden: false, isDefault: true,
-       defaultReasoningEffort: 'low', supportedReasoningEfforts: [{reasoningEffort: 'low'}]}
-    ]}])
-  end
-
   it 'persists defaults and Sapi overrides and restores inheritance' do
     agent = host.agent
-    saved = apply_settings(overrides: {agent => choice('fixture-quick', 'low')})
+    saved = apply_settings(overrides: {agent => choice('gpt-6-luna', 'low')})
     host.restart
     expect(host.api('GET', '/api/model-settings')).to eq(saved)
     host.turn(host.submit(chief, 'Use the corpora default'))
     host.turn(host.submit(agent, 'Use my override'))
     expect_calls(host.calls.select { |call| call['owner'] == chief }, 'gpt-6-astra', 'medium')
-    expect_calls(host.calls.select { |call| call['owner'] == agent }, 'fixture-quick', 'low')
+    expect_calls(host.calls.select { |call| call['owner'] == agent }, 'gpt-6-luna', 'low')
     count = host.calls.size
     apply_settings(revision: 1)
     host.turn(host.submit(agent, 'Inherit the corpora default'))
@@ -54,7 +45,7 @@ RSpec.describe 'Applied Codex model settings', :host do
       first = host.submit(chief, 'Keep this run consistent')
       Contract.wait(description: 'first model invocation') { host.calls.any? }
       run = host.calls.first.fetch('agency_run')
-      apply_settings(revision: already_applied ? 1 : 0, defaults: choice('fixture-quick', 'low'))
+      apply_settings(revision: already_applied ? 1 : 0, defaults: choice('gpt-6-luna', 'low'))
       host.release
       host.turn(first)
       host.idle
@@ -67,13 +58,13 @@ RSpec.describe 'Applied Codex model settings', :host do
       expect(records).to all(include('model' => expected_model, 'effort' => expected_effort))
       count = host.calls.size
       host.turn(host.submit(chief, 'Use the new settings'))
-      expect_calls(host.calls.drop(count), 'fixture-quick', 'low')
+      expect_calls(host.calls.drop(count), 'gpt-6-luna', 'low')
     end
   end
 
   {
     'stale revision' => [{revision: 0}, 409],
-    'unsupported effort' => [{defaults: {provider: 'codex', model: 'fixture-quick', effort: 'medium'}}, 400],
+    'unsupported effort' => [{defaults: {provider: 'codex', model: 'gpt-6-luna', effort: 'ultra'}}, 400],
     'unknown provider' => [{defaults: {provider: 'unknown', model: 'unsupported', effort: 'medium'}}, 400],
     'nonexistent Sapi' => [{overrides: {'missing-sapi' => {provider: 'codex', model: 'gpt-6-astra', effort: 'medium'}}}, 404]
   }.each do |label, (changes, status)|
@@ -84,39 +75,10 @@ RSpec.describe 'Applied Codex model settings', :host do
     end
   end
 
-  it 'preserves active settings when catalog validation fails and executes without rediscovery' do
-    saved = apply_settings
-    host.configure(catalog_error: true)
-    expect(host.request('PUT', '/api/model-settings', settings(revision: 1)).first).to eq(502)
-    expect(host.api('GET', '/api/model-settings')).to eq(saved)
-    before = File.read(File.join(host.root, 'discovery.jsonl'))
-    host.turn(host.submit(chief))
-    expect_calls(host.calls, 'gpt-6-astra', 'medium')
-    expect(File.read(File.join(host.root, 'discovery.jsonl'))).to eq(before)
-  end
-
-  it 'does not hold the state lock while validating a save with the provider' do
-    host.configure(catalog_block: true)
-    saving = Thread.new { apply_settings }
-    begin
-      Contract.wait(description: 'catalog validation request') do
-        path = File.join(host.root, 'discovery.jsonl')
-        File.exist?(path) && File.read(path).include?('model/list')
-      end
-      expect(host.api('GET', '/api/model-settings').fetch('revision')).to eq(0)
-      expect(host.state.fetch('agents')).not_to be_empty
-      expect(saving.alive?).to eq(true)
-    ensure
-      host.release
-      saving.join
-    end
-    expect(saving.value.fetch('revision')).to eq(1)
-  end
-
   it 'reports provider execution failure without silently falling back to another model' do
-    apply_settings(defaults: choice('fixture-quick', 'low'))
+    apply_settings(defaults: choice('gpt-6-luna', 'low'))
     host.configure(fail: true)
     host.turn(host.submit(chief), 'failed')
-    expect_calls(host.calls, 'fixture-quick', 'low')
+    expect_calls(host.calls, 'gpt-6-luna', 'low')
   end
 end
