@@ -30,20 +30,6 @@ RSpec.describe 'Applied Codex model settings', :host do
     ]}])
   end
 
-  it 'offers an old draft for review without activating it, then applies it explicitly' do
-    draft = host.api('PUT', '/api/model-settings-draft', settings(defaults: choice('fixture-quick', 'low')))
-    offered = host.api('GET', '/api/model-settings')
-    expect(offered).to eq(draft.merge('revision' => 0))
-    expect(File.exist?(File.join(host.root, 'model-settings.json'))).to eq(false)
-    host.turn(host.submit(chief, 'Before applying'))
-    expect_calls(host.calls, 'gpt-6-sol', 'high')
-    first_count = host.calls.size
-    host.api('PUT', '/api/model-settings', offered)
-    host.turn(host.submit(chief, 'After applying'))
-    expect_calls(host.calls.drop(first_count), 'fixture-quick', 'low')
-    expect(host.api('GET', '/api/model-settings-draft')).to eq(draft)
-  end
-
   it 'persists defaults and Sapi overrides, respects explicit effort over Deep, and restores inheritance' do
     agent = host.agent
     host.api('PUT', "/api/agents/#{agent}", name: 'Researcher', role: 'Research', execution: {mode: 'deep'})

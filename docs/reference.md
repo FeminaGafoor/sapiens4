@@ -104,29 +104,6 @@ Group notes, messages, attachments, tasks and calls use `/api/groups/<id>`.
 Updates require the relevant revision. [RSpec scenarios](../spec) exercise the
 public contracts; see [Testing](testing.md) to run them.
 
-### Model configuration drafts
-
-`GET /api/model-settings-draft` reads the corpora's saved configuration draft.
-Without a saved file it returns revision 0, Codex `gpt-6-astra` / `medium`, and no
-per-Sapi overrides. This is the Sapiens4 recommendation, not the CLI catalog's
-default. Reading does not create a file or change execution settings.
-
-`PUT /api/model-settings-draft` accepts the same object:
-
-```json
-{"revision":0,"defaults":{"provider":"codex","model":"gpt-6-astra","effort":"medium"},"overrides":{}}
-```
-
-Overrides are keyed by Sapi ID and contain complete provider/model/effort choices.
-Omitting an override restores inheritance. Saves validate the current Codex catalog
-outside the service state lock, then check the revision and Sapi identities under
-the lock and atomically replace `model-settings-draft.json`. The response contains
-the incremented revision. A stale revision returns 409 without overwriting the
-saved draft. Invalid models/efforts or unsupported providers return 400; discovery
-failures leave the previous draft intact. Both Codex and Claude selections are supported.
-
-The draft endpoint remains inactive and is not consumed by execution.
-
 ### Applied model settings
 
 The Sapi customization page explicitly distinguishes inherited settings from a
@@ -158,9 +135,8 @@ provider errors visible in the dialog.
 The Models screen now uses `GET /api/model-settings` and `PUT /api/model-settings`
 with the same object shape and validation rules. **Save and apply** atomically
 writes `model-settings.json`, using an independent revision counter. Until this
-file exists, GET offers any previous draft for review at revision 0, and execution
-continues using the existing environment defaults and Normal/Deep mode. Opening
-the dialog never activates a draft.
+file exists, GET returns Codex `gpt-6-astra` / `medium` at revision 0, and execution
+continues using the existing environment defaults and Normal/Deep mode.
 
 After applying, each new run uses its Sapi override, or the corpora default when
 no override exists. The selected effort is explicit and supersedes Normal/Deep;

@@ -268,8 +268,6 @@ corporaIdentity s = do
  template <- prompt s "corpora-settings-request"
  pure $ merge (remove ["operations"] (toJSON cfg)) (obj [("id",get identity "corpora_id"),("name",toJSON (corporaName cfg) `fallback` str ("CORPORA · " <> at row "name")),("chief_id",str chief),("settings_template",str (T.strip template)),("stopping",Bool False)])
 
--- Drafts remain inactive. Explicitly saved active settings use a separate file;
--- reading settings never activates a draft or rewrites an existing installation.
 data ModelSelection = ModelSelection { selectionProvider :: ModelProvider, selectionModel :: Text, selectionEffort :: Text }
  deriving (Eq, Show)
 instance FromJSON ModelSelection where
@@ -303,30 +301,15 @@ instance FromJSON ModelSettingsDraft where
 instance ToJSON ModelSettingsDraft where
  toJSON draft = obj [("revision",num (modelSettingsRevision draft)),("defaults",toJSON (modelSettingsDefault draft)),("overrides",toJSON (modelSettingsOverrides draft))]
 
-readModelSettingsDraft :: Service -> IO ModelSettingsDraft
-readModelSettingsDraft s = readJSON (serviceRoot s </> "model-settings-draft.json")
- (ModelSettingsDraft 0 (ModelSelection CodexProvider "gpt-6-astra" "medium") Map.empty)
-
-saveModelSettingsDraft :: Service -> ModelSettingsDraft -> IO ModelSettingsDraft
-saveModelSettingsDraft s requested = do
- current <- readModelSettingsDraft s
- saveModelSettingsFile s "model-settings-draft.json" current requested
-
 activeModelSettings :: Service -> IO (Maybe ModelSettingsDraft)
 activeModelSettings s = readJSON (serviceRoot s </> "model-settings.json") Nothing
 
 readModelSettings :: Service -> IO ModelSettingsDraft
-readModelSettings s = do
- active <- activeModelSettings s
- case active of
-  Just configured -> pure configured
-  -- Offer the previous draft for review, with an independent active revision.
-  Nothing -> (\draft -> draft {modelSettingsRevision=0}) <$> readModelSettingsDraft s
+readModelSettings s = fromMaybe (ModelSettingsDraft 0 (ModelSelection CodexProvider "gpt-6-astra" "medium") Map.empty) <$> activeModelSettings s
 
 saveModelSettings :: Service -> ModelSettingsDraft -> IO ModelSettingsDraft
 saveModelSettings s requested = do
  current <- readModelSettings s
- -- An inactive draft is not evidence that an override's Sapi is still active.
  active <- activeModelSettings s
  let previous = fromMaybe (current {modelSettingsOverrides=Map.empty}) active
  saveModelSettingsFile s "model-settings.json" previous requested
