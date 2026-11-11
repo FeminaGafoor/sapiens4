@@ -54,7 +54,7 @@ make kind record m = {kind,title,record,fields,content,status:M.Editing,identity
     M.Installation -> "Add to Home Screen"
     M.Notice -> "Connection notice"
   fields = case kind of
-    M.AgentSettings -> base {mode=(orchestration m $ F.contextId record).mode,manager=(orchestration m $ F.contextId record).manager}
+    M.AgentSettings -> base {manager=(orchestration m $ F.contextId record).manager}
     M.GroupTask -> case record of
       F.TaskRecord _ -> base
       _ -> base {assignee=(M.selected m).lead,state="backlog"}
@@ -117,9 +117,7 @@ body m d = case d.kind of
     ,input "Name" F.Name [V.bool "required" true,V.attr "maxlength" "24",V.attr "aria-describedby" "name-help",V.attr "autocomplete" "off"]
     ,V.node "div" [V.cls "name-suggestions",V.id "name-help",V.label "Suggested names"] $ map (\name -> V.button "button" name $ Field F.Name name) suggestions <> [V.icon "More name suggestions" "↻" $ DialogCommand Intent.SuggestNames]
     ,input "Role" F.Role [V.bool "required" true,V.attr "maxlength" "60"]
-    ,if F.contextId d.record == m.snapshot.main_agent_id then V.div "settings-row" [V.text "Main orchestrator"] else select "Manager" F.Manager $ map (\a -> Tuple (a.id) (a.name <> if a.id == m.snapshot.main_agent_id then " · Main orchestrator" else "")) managers
-    ,select "Work mode" F.Mode [Tuple "normal" "Normal · high",Tuple "deep" "Deep work · xhigh"]
-    ,V.p "form-hint" $ "Each call has a " <> show (execution.timeout / 60.0) <> "-minute limit in either mode."]
+    ,if F.contextId d.record == m.snapshot.main_agent_id then V.div "settings-row" [V.text "Main orchestrator"] else select "Manager" F.Manager $ map (\a -> Tuple (a.id) (a.name <> if a.id == m.snapshot.main_agent_id then " · Main orchestrator" else "")) managers]
   M.GroupSettings -> form "Save Group"
     [input "Name" F.Name [V.bool "required" true,V.attr "maxlength" "60"],textarea "Purpose" F.Description 2 [V.attr "maxlength" "2000"]
     ,select "Lead" F.Lead $ map (\a -> Tuple (a.id) $ a.name) sapis
@@ -161,7 +159,6 @@ body m d = case d.kind of
   form caption children = V.node "form" [V.cls "form-stack",V.submit SubmitDialog] $ children <> [V.textNode "button" [V.attr "type" "submit",V.cls "button primary",V.disabled (M.dialogBusy d)] (caption)]
   owner = m.snapshot.computer.owner
   windows = m.snapshot.computer.platform == "win32"
-  execution = orchestration m $ F.contextId d.record
   sapis = A.filter (\a -> not (M.isGroup a || a.retired)) m.agents
   managers = A.filter (\a -> allowed [] $ a.id) sapis
   allowed seen id = id == "" || id /= F.contextId d.record && not (A.elem id seen) && allowed (A.cons id seen) ((orchestration m id).manager)
@@ -364,7 +361,7 @@ saveEntity :: M.Dialog -> Either String SaveRequest
 saveEntity d = case d.kind of
   M.AgentSettings
     | not (D.matches "^[A-Z][A-Za-z0-9_.:#+|()&$^\\-]*$" d.fields.name) -> Left nameHelp
-    | otherwise -> Right {path:"/api/agents/" <> B.encodeURI (F.contextId d.record),method:"PUT",body:D.json {name:d.fields.name,role:d.fields.role,manager:if d.fields.manager == "" then D.null else D.text d.fields.manager,execution:{mode:d.fields.mode}},caption:"Sapi saved."}
+    | otherwise -> Right {path:"/api/agents/" <> B.encodeURI (F.contextId d.record),method:"PUT",body:D.json {name:d.fields.name,role:d.fields.role,manager:if d.fields.manager == "" then D.null else D.text d.fields.manager},caption:"Sapi saved."}
   M.GroupSettings -> Right {path:"/api/groups/" <> B.encodeURI (F.contextId d.record),method:"PUT",body:D.json {name:d.fields.name,description:d.fields.description,lead:d.fields.lead,members:d.fields.members,revision:d.fields.revision},caption:"Group saved."}
   _ -> Left "This dialog does not edit a Sapi or Group."
 

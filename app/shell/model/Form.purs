@@ -8,22 +8,21 @@ import Sapiens.Domain as X
 import Foreign.Object as O
 import Sapiens.Data as D
 
-data Field = Name | Role | Manager | Mode | Description | Lead | Title | Body | Assignee | State | Value | Node | Path | Content | Scope | Message | Connection | Invitation | Code | Pending | Link | Expiration | Qr | Accepted | Archived | ShowLink
+data Field = Name | Role | Manager | Description | Lead | Title | Body | Assignee | State | Value | Node | Path | Content | Scope | Message | Connection | Invitation | Code | Pending | Link | Expiration | Qr | Accepted | Archived | ShowLink
 derive instance eqField :: Eq Field
 
 type Fields =
-  { name :: String, role :: String, manager :: String, mode :: String, description :: String, lead :: String, title :: String, body :: String, assignee :: String, state :: String, value :: String, node :: String, path :: String, content :: String, scope :: String, message :: String, connection :: String, invitation :: String, code :: String, pending :: String, link :: String, expiration :: String, qr :: String, accepted :: String, archived :: String, showLink :: String, members :: Array String, revision :: Number, scanning :: Boolean, dates :: O.Object String }
+  { name :: String, role :: String, manager :: String, description :: String, lead :: String, title :: String, body :: String, assignee :: String, state :: String, value :: String, node :: String, path :: String, content :: String, scope :: String, message :: String, connection :: String, invitation :: String, code :: String, pending :: String, link :: String, expiration :: String, qr :: String, accepted :: String, archived :: String, showLink :: String, members :: Array String, revision :: Number, scanning :: Boolean, dates :: O.Object String }
 
 decode :: Json -> Fields
 decode value =
-  { name: D.s "name" value, role: D.s "role" value, manager: D.s "manager" value, mode: D.s "mode" value, description: D.s "description" value, lead: D.s "lead" value, title: D.s "title" value, body: D.s "body" value, assignee: D.s "assignee" value, state: D.s "state" value, value: D.s "value" value, node: D.s "node" value, path: D.s "path" value, content: D.s "content" value, scope: D.s "scope" value, message: D.s "message" value, connection: D.s "connection" value, invitation: D.s "invitation" value, code: D.s "code" value, pending: D.s "pending" value, link: D.s "link" value, expiration: D.s "expiration" value, qr: D.s "qr" value, accepted: D.s "accepted" value, archived: D.s "archived" value, showLink: D.s "showLink" value, members:D.strings $ D.get "members" value, revision:D.n "revision" value, scanning:D.b "scanning" value, dates:D.objectStrings $ D.get "dates" value }
+  { name: D.s "name" value, role: D.s "role" value, manager: D.s "manager" value, description: D.s "description" value, lead: D.s "lead" value, title: D.s "title" value, body: D.s "body" value, assignee: D.s "assignee" value, state: D.s "state" value, value: D.s "value" value, node: D.s "node" value, path: D.s "path" value, content: D.s "content" value, scope: D.s "scope" value, message: D.s "message" value, connection: D.s "connection" value, invitation: D.s "invitation" value, code: D.s "code" value, pending: D.s "pending" value, link: D.s "link" value, expiration: D.s "expiration" value, qr: D.s "qr" value, accepted: D.s "accepted" value, archived: D.s "archived" value, showLink: D.s "showLink" value, members:D.strings $ D.get "members" value, revision:D.n "revision" value, scanning:D.b "scanning" value, dates:D.objectStrings $ D.get "dates" value }
 
 name :: Field -> String
 name = case _ of
   Name -> "name"
   Role -> "role"
   Manager -> "manager"
-  Mode -> "mode"
   Description -> "description"
   Lead -> "lead"
   Title -> "title"
@@ -52,7 +51,6 @@ fieldValue field form = case field of
   Name -> form.name
   Role -> form.role
   Manager -> form.manager
-  Mode -> form.mode
   Description -> form.description
   Lead -> form.lead
   Title -> form.title
@@ -81,7 +79,6 @@ update field text form = case field of
   Name -> form {name=text}
   Role -> form {role=text}
   Manager -> form {manager=text}
-  Mode -> form {mode=text}
   Description -> form {description=text}
   Lead -> form {lead=text}
   Title -> form {title=text}

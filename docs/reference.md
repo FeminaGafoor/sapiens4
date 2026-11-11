@@ -43,7 +43,7 @@ Local Workspace windows receive change notifications over a same-origin WebSocke
 
 ## Configuration
 
-Default model: `gpt-6-sol`, reasoning `high`; Deep work uses `xhigh`. A call's
+Default model: `gpt-6-astra`, reasoning `medium`, until Models settings are saved. A call's
 30-minute limit is shared across its decision steps. Environment overrides:
 
 | Variable | Purpose |
@@ -51,8 +51,6 @@ Default model: `gpt-6-sol`, reasoning `high`; Deep work uses `xhigh`. A call's
 | `SAPIENS_DATA_DIR` | Data directory |
 | `SAPIENS_PYTHON` | Python executable |
 | `SAPIENS_CODEX_BINARY` | Codex executable |
-| `SAPIENS_CODEX_MODEL` | Model |
-| `SAPIENS_CODEX_REASONING_EFFORT` | Reasoning effort |
 | `SAPIENS_BLINDLY_BINARY` | Blindly4 executable |
 
 Decision templates live in `corpora/prompts/`. **Edit decision prompts** saves local

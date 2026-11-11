@@ -30,9 +30,8 @@ RSpec.describe 'Applied Codex model settings', :host do
     ]}])
   end
 
-  it 'persists defaults and Sapi overrides, respects explicit effort over Deep, and restores inheritance' do
+  it 'persists defaults and Sapi overrides and restores inheritance' do
     agent = host.agent
-    host.api('PUT', "/api/agents/#{agent}", name: 'Researcher', role: 'Research', execution: {mode: 'deep'})
     saved = apply_settings(overrides: {agent => choice('fixture-quick', 'low')})
     host.restart
     expect(host.api('GET', '/api/model-settings')).to eq(saved)
@@ -46,11 +45,11 @@ RSpec.describe 'Applied Codex model settings', :host do
     expect_calls(host.calls.drop(count), 'gpt-6-astra', 'medium')
   end
 
-  {'legacy settings' => false, 'previously applied settings' => true}.each do |label, already_applied|
+  {'built-in default settings' => false, 'previously applied settings' => true}.each do |label, already_applied|
     it "keeps #{label} for every step and audit record of a running task while new runs use the update" do
       apply_settings if already_applied
-      expected_model = already_applied ? 'gpt-6-astra' : 'gpt-6-sol'
-      expected_effort = already_applied ? 'medium' : 'high'
+      expected_model = 'gpt-6-astra'
+      expected_effort = 'medium'
       host.configure(mode: 'Exec', rules: {'Assessing' => {block: true}})
       first = host.submit(chief, 'Keep this run consistent')
       Contract.wait(description: 'first model invocation') { host.calls.any? }

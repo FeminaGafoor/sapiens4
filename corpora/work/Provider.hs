@@ -35,7 +35,7 @@ import Text.Regex.TDFA ((=~))
 import System.Posix.Signals
 #endif
 import Types
-import Population (executionSettings, activeModelSettings, ModelSelection(..), ModelSettingsDraft(..))
+import Population (readModelSettings, ModelSelection(..), ModelSettingsDraft(..))
 import qualified Computer as Computer
 
 data ProviderEvent
@@ -80,27 +80,11 @@ providerStep time event state activity = case event of
   ToolCompleted _ label -> put "last_action" (str label) activity
   _ -> activity
 
-modelDefaults :: IO ModelConfig
-modelDefaults = ModelConfig CodexProvider <$> (maybe "gpt-6-sol" T.pack <$> lookupEnv "SAPIENS_CODEX_MODEL") <*> (maybe "high" T.pack <$> lookupEnv "SAPIENS_CODEX_REASONING_EFFORT")
-
-resolveModelConfig :: ExecutionSettings -> ModelConfig -> ModelConfig
-resolveModelConfig settings defaults = case executionMode settings of
- Normal -> defaults
- Deep -> defaults { configuredEffort = "xhigh" }
-
--- Resolve once under the service lock when a run starts. Active selections are
--- explicit: the legacy Normal/Deep mode must not overwrite their validated effort.
 runModelSettings :: Service -> Text -> IO ModelConfig
 runModelSettings s owner = do
- active <- activeModelSettings s
- case active of
-  Just configured -> do
-   let choice = M.findWithDefault (modelSettingsDefault configured) owner (modelSettingsOverrides configured)
-   pure (ModelConfig (selectionProvider choice) (selectionModel choice) (selectionEffort choice))
-  Nothing -> do
-   defaults <- modelDefaults
-   policy <- executionSettings s owner
-   pure (resolveModelConfig policy defaults)
+ configured <- readModelSettings s
+ let choice = M.findWithDefault (modelSettingsDefault configured) owner (modelSettingsOverrides configured)
+ pure (ModelConfig (selectionProvider choice) (selectionModel choice) (selectionEffort choice))
 
 codexArguments :: FilePath -> ModelConfig -> [String]
 codexArguments workdir config =

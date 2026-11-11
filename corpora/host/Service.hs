@@ -147,9 +147,8 @@ snapshotUnlocked s = do
  dir <- directory s
  orchestration <- forM rows $ \row -> do
   let a=at row "id"
-  policy <- executionSettings s a
   notes <- memoMetadata (workspaceRoot s a)
-  pure (a,obj [("manager",get (get dir a) "parent"),("execution",toJSON policy),("notes",notes)])
+  pure (a,obj [("manager",get (get dir a) "parent"),("notes",notes)])
  runs <- M.elems <$> readMVar (serviceRuns s)
  activity <- forM runs $ \run -> do
   value <- readIORef (runActivity run)

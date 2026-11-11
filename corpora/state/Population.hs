@@ -71,11 +71,6 @@ assignManager s a parent = do
  let entry = get d a; old = get entry "parent"
  saveDirectory s (put a (put "parent" parent entry) d)
  when (old /= parent) $ DB.record s [a] a "sapi.manager.changed" (obj [("previous",old),("manager",parent)]) "admin" Nothing
-executionSettings :: Service -> Text -> IO ExecutionSettings
-executionSettings s a = do
- let p = agentRoot s a </> "run-settings.json"
- exists <- doesFileExist p
- readJSON (if exists then p else agentRoot s a </> "execution.json") (ExecutionSettings Normal)
 ensureAgent :: Service -> Value -> IO ()
 ensureAgent s row = do
  let a = at row "id"; root = agentRoot s a; work = workspaceRoot s a; p = root </> "state.json"
@@ -177,8 +172,7 @@ createAgent s d = do
  pure row
 identityEdit :: Value -> Validation (Text,Text)
 identityEdit d = do
- check (all (`elem` ["name","role","manager","execution"]) (keys d)) 400 "Unknown or inactive setting"
- when (has d "execution") $ check (keys (get d "execution") == ["mode"] && at (get d "execution") "mode" `elem` ["normal","deep"]) 400 "Choose Normal or Deep work; call timeouts are managed globally"
+ check (all (`elem` ["name","role","manager"]) (keys d)) 400 "Unknown or inactive setting"
  name <- validateValue 400 nameP d
  role <- validateValue 400 (textFieldP "role" 60) d
  pure (name,role)
@@ -190,7 +184,6 @@ updateAgent s a d = do
  state <- agentState s a
  require (not (any ((`elem` [Queued,Running]) . turnStatus) (agentTurns state))) 409 "Wait for this Sapi's current turn before changing its identity"
  when (has d "manager") $ validateManager s a (get d "manager") >>= assignManager s a
- when (has d "execution") $ writeJSON (agentRoot s a </> "run-settings.json") (get d "execution")
  DB.executeSQL s "UPDATE agents SET name=?,role=? WHERE id=?" [SQLText name,SQLText role,SQLText a]
  DB.record s [a] a "sapi.updated" d "admin" Nothing
  DB.agent s a >>= setManifests s
