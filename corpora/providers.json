@@ -1,5 +1,6 @@
 {
  "default":{"provider":"codex","model":"gpt-6-astra","effort":"medium"},
+ "upcoming":{"gemini":"Gemini CLI","kimi":"Kimi Code"},
  "providers":[
   {
    "id":"codex",

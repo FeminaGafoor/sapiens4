@@ -3,7 +3,7 @@ module Sapiens.Form where
 import Prelude
 import Data.Argonaut.Core (Json, toObject)
 import Data.Array as A
-import Data.Maybe (Maybe(..), fromMaybe)
+import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Sapiens.Domain as X
 import Foreign.Object as O
 import Sapiens.Data as D
@@ -117,124 +117,62 @@ type Access = {built :: Boolean, trusted :: Boolean, foregroundAvailable :: Bool
 data Content = NoContent | ComputerAccess Access | Prompts (Array Prompt) | RelayRegistry Relays | Pairing PairStatus | ModelPreview ModelDraft | Setup Json
 derive instance eqContent :: Eq Content
 
--- Editable model settings, validated against each provider catalog before saving.
-data ModelProvider = Codex | Claude
-derive instance eqModelProvider :: Eq ModelProvider
-data ModelEffort = RecommendedEffort | CatalogEffort String
-derive instance eqModelEffort :: Eq ModelEffort
-data ModelChoice = RecommendedModel | CustomModel String ModelEffort
-derive instance eqModelChoice :: Eq ModelChoice
-type ModelConfig = {provider :: ModelProvider, choice :: ModelChoice}
+type ModelChoice = {provider :: String, model :: String, effort :: String}
 type CatalogModel = {model :: String, label :: String, isDefault :: Boolean, defaultEffort :: String, efforts :: Array String}
-data ModelCatalog = CatalogLoading | CatalogReady (Array CatalogModel) | CatalogFailed String
-derive instance eqModelCatalog :: Eq ModelCatalog
-data ModelSettingsPage = GlobalModels | SapiModels
-derive instance eqModelSettingsPage :: Eq ModelSettingsPage
-type ModelDraft = {picker :: String, page :: ModelSettingsPage, defaults :: ModelConfig, overrides :: O.Object ModelConfig, sapi :: String, catalog :: ModelCatalog, claudeCatalog :: ModelCatalog, loaded :: Boolean, revision :: Number, saved :: Json}
-
-catalogRows :: ModelCatalog -> Array CatalogModel
-catalogRows = case _ of
-  CatalogReady rows -> rows
-  _ -> []
-
-modelCatalog :: Json -> ModelCatalog
-modelCatalog value = CatalogReady $ map (\row -> {model:D.s "model" row,label:D.s "displayName" row,isDefault:D.b "isDefault" row,defaultEffort:D.s "defaultReasoningEffort" row,efforts:D.strings $ D.get "efforts" row}) $ D.rows "data" value
-
-catalogDefault :: ModelCatalog -> Maybe CatalogModel
-catalogDefault catalog = let rows = catalogRows catalog in case A.find _.isDefault rows of
-  Just row -> Just row
-  Nothing -> A.head rows
+type ModelProvider = {id :: String, name :: String, models :: Array CatalogModel}
+type ModelDraft = {providers :: Array ModelProvider, defaults :: ModelChoice, overrides :: O.Object ModelChoice, loaded :: Boolean, revision :: Number, saved :: Json}
 data ModelTarget = CorporaDefault | SapiOverride String
-data ModelEdit = ChooseProvider ModelProvider | CustomizeModel Boolean | ModelName String | ChooseEffort ModelEffort
-data ModelPreviewAction = ShowModelSettingsPage ModelSettingsPage | EditModel ModelTarget ModelEdit | SelectModelSapi String | InheritModel String Boolean
+data ModelEdit = InheritDefault | ChooseProvider String | ChooseModel String | ChooseEffort String
 
-modelProviderName :: ModelProvider -> String
-modelProviderName = case _ of
-  Codex -> "Codex"
-  Claude -> "Claude"
+modelDraft :: ModelDraft
+modelDraft = {providers:[],defaults:{provider:"",model:"",effort:""},overrides:O.empty,loaded:false,revision:0.0,saved:D.null}
 
-providerCatalog :: ModelProvider -> ModelDraft -> ModelCatalog
-providerCatalog Codex draft = draft.catalog
-providerCatalog Claude draft = draft.claudeCatalog
-
-recommendedModel :: ModelProvider -> String
-recommendedModel Codex = "gpt-6-astra"
-recommendedModel Claude = "claude-opus-5-5"
-
-modelEffortName :: ModelEffort -> String
-modelEffortName = case _ of
-  RecommendedEffort -> "Recommended"
-  CatalogEffort effort -> effort
-
-modelDraft :: String -> ModelDraft
-modelDraft sapi = {picker:"",page:GlobalModels,defaults:{provider:Codex,choice:RecommendedModel},overrides:O.empty,sapi,catalog:CatalogLoading,claudeCatalog:CatalogLoading,loaded:false,revision:0.0,saved:D.null}
-
--- The product recommendation is separate from the provider catalog default.
-resolvedModelConfig :: ModelCatalog -> ModelConfig -> {provider :: String, model :: String, effort :: String}
-resolvedModelConfig catalog config = case config.choice of
-  RecommendedModel -> {provider:provider,model:recommendedModel config.provider,effort:"medium"}
-  CustomModel modelName effort -> {provider:provider,model:modelName,effort:case effort of
-    RecommendedEffort -> fromMaybe "" $ _.defaultEffort <$> A.find ((_ == modelName) <<< _.model) (catalogRows catalog)
-    CatalogEffort value -> value}
+modelProviders :: Json -> Array ModelProvider
+modelProviders value = map provider $ D.rows "providers" value
   where
-  provider = if config.provider == Codex then "codex" else "claude"
+  provider row = {id:D.s "id" row,name:D.s "name" row,models:map model $ D.rows "models" row}
+  model row = {model:D.s "model" row,label:D.s "displayName" row,isDefault:D.b "isDefault" row,defaultEffort:D.s "defaultReasoningEffort" row,efforts:D.strings $ D.get "efforts" row}
+
+catalogModels :: ModelDraft -> String -> Array CatalogModel
+catalogModels draft provider = fromMaybe [] $ _.models <$> A.find ((_ == provider) <<< _.id) draft.providers
+
+catalogModel :: ModelDraft -> ModelChoice -> Maybe CatalogModel
+catalogModel draft choice = A.find ((_ == choice.model) <<< _.model) $ catalogModels draft choice.provider
+
+modelChoiceValid :: ModelDraft -> ModelChoice -> Boolean
+modelChoiceValid draft choice = case catalogModel draft choice of
+  Just row -> A.elem choice.effort row.efforts || choice.effort == "" && row.defaultEffort == ""
+  Nothing -> false
 
 modelDraftPayload :: ModelDraft -> Json
-modelDraftPayload draft = D.json {revision:draft.revision,defaults:resolve draft.defaults,overrides:map resolve draft.overrides}
-  where resolve config = resolvedModelConfig (providerCatalog config.provider draft) config
+modelDraftPayload draft = D.json {revision:draft.revision,defaults:draft.defaults,overrides:draft.overrides}
 
 modelDraftValid :: ModelDraft -> Boolean
-modelDraftValid draft = draft.loaded && modelConfigValid draft draft.defaults && A.all (modelConfigValid draft) (O.values draft.overrides)
-
-modelConfigValid :: ModelDraft -> ModelConfig -> Boolean
-modelConfigValid draft config =
-  let choice = resolvedModelConfig (providerCatalog config.provider draft) config
-  in A.any (\row -> row.model == choice.model && ((config.provider == Claude && choice.effort == "") || A.elem choice.effort row.efforts)) (catalogRows $ providerCatalog config.provider draft)
+modelDraftValid draft = draft.loaded && A.all (modelChoiceValid draft) (A.cons draft.defaults $ O.values draft.overrides)
 
 modelDraftChanged :: ModelDraft -> Boolean
-modelDraftChanged draft = draft.revision == 0.0 || modelDraftPayload draft /= draft.saved
+modelDraftChanged draft = modelDraftPayload draft /= draft.saved
 
 savedModelDraft :: Json -> ModelDraft -> ModelDraft
 savedModelDraft value draft = draft {defaults=choice (D.get "defaults" value),overrides=map choice $ fromMaybe O.empty $ toObject $ D.get "overrides" value,revision=D.n "revision" value,saved=value,loaded=true}
   where
-  choice raw = {provider:if D.s "provider" raw == "claude" then Claude else Codex,choice:
-    if D.s "model" raw == recommendedModel (if D.s "provider" raw == "claude" then Claude else Codex) && D.s "effort" raw == "medium" then RecommendedModel
-    else CustomModel (D.s "model" raw) (CatalogEffort $ D.s "effort" raw)}
+  choice raw = {provider:D.s "provider" raw,model:D.s "model" raw,effort:D.s "effort" raw}
 
-previewConfig :: ModelTarget -> ModelDraft -> ModelConfig
-previewConfig target draft = case target of
-  CorporaDefault -> draft.defaults
-  SapiOverride id -> fromMaybe draft.defaults $ O.lookup id draft.overrides
-
-updateModelPreview :: ModelPreviewAction -> ModelDraft -> ModelDraft
-updateModelPreview action draft = case action of
-  ShowModelSettingsPage page -> draft {page=page,picker=""}
-  SelectModelSapi sapi -> draft {sapi=sapi,picker=""}
-  InheritModel id true -> draft {overrides=O.delete id draft.overrides,picker=""}
-  InheritModel id false -> draft {overrides=O.insert id (previewConfig (SapiOverride id) draft) draft.overrides,picker=""}
-  EditModel target edit ->
-    let config = previewConfig target draft
-        catalog = providerCatalog config.provider draft
-        changed = case edit of
-          ChooseProvider provider | provider /= config.provider -> {provider,choice:RecommendedModel}
-          ChooseProvider _ -> config
-          CustomizeModel false -> config {choice=RecommendedModel}
-          CustomizeModel true -> case config.choice of
-            RecommendedModel -> case A.find (\row -> row.model == recommendedModel config.provider && A.elem "medium" row.efforts) (catalogRows catalog) of
-              Just row -> config {choice=CustomModel row.model (CatalogEffort "medium")}
-              Nothing -> case catalogDefault catalog of
-                Just row -> config {choice=CustomModel row.model RecommendedEffort}
-                Nothing -> config
-            _ -> config
-          ModelName modelName -> case config.choice of
-            CustomModel _ _ | A.any ((_ == modelName) <<< _.model) (catalogRows catalog) -> config {choice=CustomModel modelName RecommendedEffort}
-            _ -> config
-          ChooseEffort effort -> case config.choice of
-            CustomModel modelName _ | effort == RecommendedEffort || A.any (\row -> row.model == modelName && A.elem (modelEffortName effort) row.efforts) (catalogRows catalog) -> config {choice=CustomModel modelName effort}
-            _ -> config
-    in case target of
-      CorporaDefault -> draft {defaults=changed,picker=""}
-      SapiOverride id -> draft {overrides=O.insert id changed draft.overrides,picker=""}
+editModel :: ModelTarget -> ModelEdit -> ModelDraft -> ModelDraft
+editModel target edit draft = case target, edit of
+  SapiOverride id, InheritDefault -> draft {overrides=O.delete id draft.overrides}
+  CorporaDefault, _ -> draft {defaults=change draft.defaults}
+  SapiOverride id, _ -> draft {overrides=O.insert id (change $ fromMaybe draft.defaults $ O.lookup id draft.overrides) draft.overrides}
+  where
+  pick provider row = {provider,model:row.model,effort:row.defaultEffort}
+  change choice = case edit of
+    ChooseProvider provider -> let rows = catalogModels draft provider in
+      maybe choice (pick provider) $ case A.find _.isDefault rows of
+        Just row -> Just row
+        Nothing -> A.head rows
+    ChooseModel model -> maybe choice (pick choice.provider) $ catalogModel draft (choice {model=model})
+    ChooseEffort effort -> choice {effort=effort}
+    InheritDefault -> choice
 
 computerAccess :: Json -> Content
 computerAccess value = ComputerAccess

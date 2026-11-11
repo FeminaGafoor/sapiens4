@@ -10,6 +10,7 @@ import Control.Concurrent.Async
 import Control.Exception
 import Control.Monad
 import Data.Aeson (Value(..))
+import qualified Data.Map.Strict as M
 import qualified Data.Text as T
 import System.Directory
 import System.Environment (getEnvironment)
@@ -72,9 +73,11 @@ cliStatus findBinary environmentOf args = do
 
 onboardingView :: Onboarding -> IO Value
 onboardingView onboarding@(Onboarding root _) = do
- providers <- providersList <$> readProviders root
+ configured <- readProviders root
+ let providers = providersList configured
  found <- mapConcurrently (\provider -> trackedCheck onboarding (cliStatus (P.providerBinary provider) getEnvironment (providerStatus provider))) providers
- pure (obj [("providers",arr [obj [("id",str (providerName (providerId provider))),("name",str (providerLabel provider)),("status",str status),("login",str (providerLogin provider))] | (provider,status) <- zip providers found])])
+ pure (obj [("providers",arr ([obj [("id",str (providerName (providerId provider))),("name",str (providerLabel provider)),("status",str status),("login",str (providerLogin provider))] | (provider,status) <- zip providers found]
+  ++ [obj [("id",str key),("name",str name),("status",str "coming_soon")] | (key,name) <- M.toList (providersUpcoming configured)]))])
 
 computerView :: Onboarding -> IO Value
 computerView (Onboarding root _) = do

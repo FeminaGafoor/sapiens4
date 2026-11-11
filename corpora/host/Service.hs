@@ -204,7 +204,7 @@ dispatch s method target body = locked s $ do
      owner kind a=if kind=="groups" then void (G.getGroup s a False) else void (DB.agent s a)
  case (method,parts) of
   ("GET",["api","model-settings"]) -> json 200 (toJSON <$> readModelSettings s)
-  ("GET",["api","providers",provider,"models"]) -> json 200 (Provider.providerCatalog (repositoryRoot s) provider)
+  ("GET",["api","providers"]) -> json 200 (Provider.providersView (repositoryRoot s))
   ("GET",["api","health"]) -> json 200 (pure (obj [("status",str "ok"),("provider",str "codex")]))
   ("GET",["api","state"]) -> json 200 (snapshotUnlocked s)
   ("GET",["api","computer"]) -> json 200 (Computer.computerStatus (repositoryRoot s))

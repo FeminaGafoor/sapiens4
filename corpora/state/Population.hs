@@ -315,9 +315,9 @@ instance FromJSON Provider where
  parseJSON = withObject "Provider" $ \o -> Provider <$> (ProviderId <$> o .: "id") <*> o .: "name" <*> o .: "binary" <*> o .: "paths" <*> o .: "login"
   <*> o .: "status" <*> o .: "run" <*> o .: "effort" <*> o .: "events" <*> o .: "models"
 
-data Providers = Providers { providersDefault :: ModelSelection, providersList :: [Provider] }
+data Providers = Providers { providersDefault :: ModelSelection, providersList :: [Provider], providersUpcoming :: Map.Map Text Text }
 instance FromJSON Providers where
- parseJSON = withObject "Providers" $ \o -> Providers <$> o .: "default" <*> o .: "providers"
+ parseJSON = withObject "Providers" $ \o -> Providers <$> o .: "default" <*> o .: "providers" <*> o .: "upcoming"
 
 readProviders :: FilePath -> IO Providers
 readProviders root = readJSON (root </> "corpora/providers.json") Null >>= decodeValue 500

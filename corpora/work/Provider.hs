@@ -95,10 +95,10 @@ providerFor s config = do
  binary <- providerBinary provider >>= maybe (failure 503 (providerLabel provider <> " CLI was not found on this host.")) pure
  pure (provider,binary)
 
-providerCatalog :: FilePath -> Text -> IO Value
-providerCatalog root key = do
- provider <- findProvider root (ProviderId key)
- pure (obj [("data",toJSON (providerModels provider))])
+providersView :: FilePath -> IO Value
+providersView root = do
+ configured <- providersList <$> readProviders root
+ pure (obj [("providers",arr [obj [("id",str (providerName (providerId provider))),("name",str (providerLabel provider)),("models",toJSON (providerModels provider))] | provider <- configured])])
 
 providerArguments :: Provider -> FilePath -> ModelConfig -> [String]
 providerArguments provider workdir config = concatMap expand (providerRun provider)

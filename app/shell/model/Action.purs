@@ -26,7 +26,6 @@ data Action
   | TogglePane Pane
   | Home
   | Draft String
-  | ModelPickerKey Event String Int (Array String)
   | MessageKey Event
   | Send
   | RetryDocument String
@@ -93,10 +92,7 @@ data DialogIntent
   = ManageModelConnections
   | Setup String
   | SuggestNames
-  | ToggleModelPicker String Int
-  | PickModelOption String F.ModelPreviewAction
-  | PreviewModel F.ModelPreviewAction
-  | ReloadModels F.ModelProvider
+  | EditModel F.ModelTarget F.ModelEdit
   | ReloadModelSettings
   | SaveModelSettings
   | CreateAgent

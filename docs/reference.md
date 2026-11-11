@@ -147,7 +147,7 @@ whole Routine or workload across multiple runs or restarts.
 
 `corpora/providers.json` lists each provider CLI: id, name, executable, extra
 install paths, login and status commands, run arguments, output format and models
-with their efforts. `GET /api/providers/{id}/models` returns that model list.
+with their efforts. `GET /api/providers` returns the providers and their models.
 Saving checks every choice against it; an empty effort sends no effort flag.
 Run arguments use `{model}`, `{workdir}` and `{effort-args}`. The executable is
 `SAPIENS_<ID>_BINARY`, else PATH, else the listed paths, preferring the newest
