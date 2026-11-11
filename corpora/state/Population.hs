@@ -284,7 +284,7 @@ instance FromJSON ModelSettingsDraft where
    revision <- o .: "revision"
    defaults <- o .: "defaults"
    overrides <- o .: "overrides"
-   unless (revision >= 0 && revision <= 2147483647 && Map.size overrides <= 1000) $ fail "Invalid model settings revision or override count"
+   unless (revision >= 0 && Map.size overrides <= 1000) $ fail "Invalid model settings revision or override count"
    pure (ModelSettingsDraft revision defaults overrides)) value
 instance ToJSON ModelSettingsDraft where
  toJSON draft = obj [("revision",num (modelSettingsRevision draft)),("defaults",toJSON (modelSettingsDefault draft)),("overrides",toJSON (modelSettingsOverrides draft))]
@@ -322,13 +322,10 @@ saveModelSettings s requested = do
  let previous = fromMaybe (current {modelSettingsOverrides=Map.empty}) active
  saveModelSettingsFile s "model-settings.json" previous requested
 
--- Caller holds the service lock after validating the provider catalog.
 saveModelSettingsFile :: Service -> FilePath -> ModelSettingsDraft -> ModelSettingsDraft -> IO ModelSettingsDraft
 saveModelSettingsFile s filename current requested = do
  require (modelSettingsRevision requested == modelSettingsRevision current) 409 "Model settings changed elsewhere. Close and reopen Models before saving."
- require (modelSettingsRevision current < 2147483647) 409 "Model settings revision limit reached."
  forM_ (Map.keys (modelSettingsOverrides requested)) $ \owner -> do
-  -- Retiring a Sapi must not make its unchanged saved override block other edits.
   unless (Map.lookup owner (modelSettingsOverrides requested) == Map.lookup owner (modelSettingsOverrides current)) $ requireActive s owner
  let saved=requested {modelSettingsRevision=modelSettingsRevision current+1}
  writeJSON (serviceRoot s </> filename) saved

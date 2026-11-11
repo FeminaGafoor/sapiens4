@@ -17,9 +17,6 @@ RSpec.describe 'Model settings', :desktop do
 
   def expect_saved_and_closed
     desktop.see('Model settings saved.')
-    toast = desktop.find('Model settings saved.')
-    window = desktop.tree.find { |node| node['role'] == 'AXWindow' }
-    expect(toast.fetch('position').fetch('y')).to be > window.fetch('position').fetch('y') + window.fetch('size').fetch('height') / 2
     desktop.find('Message ChiefSapi')
     expect(desktop.text).not_to include('Save and apply')
   end

@@ -161,8 +161,6 @@ instance EventFormat ClaudeStream where
 formats :: [(Text, Value -> IO [ProviderEvent])]
 formats = [("codex-json",events CodexJson),("claude-stream",events ClaudeStream)]
 
--- Intermediate assistant text is not completion. Only a successful terminal
--- result can complete the host decision; a zero exit code alone is insufficient.
 claudeEvents :: Value -> IO [ProviderEvent]
 claudeEvents value = case at value "type" of
  "system" | at value "subtype" == "init" -> (\session -> [SessionStarted session]) <$> field 502 value "session_id"

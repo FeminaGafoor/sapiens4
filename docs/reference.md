@@ -102,54 +102,15 @@ Group notes, messages, attachments, tasks and calls use `/api/groups/<id>`.
 Updates require the relevant revision. [RSpec scenarios](../spec) exercise the
 public contracts; see [Testing](testing.md) to run them.
 
-### Applied model settings
+### Models and providers
 
-The Sapi customization page explicitly distinguishes inherited settings from a
-full per-Sapi override. It displays the global provider/model/effort summary and
-explains that removing inheritance creates settings for that Sapi only. Re-enabling
-inheritance removes the override on save. This presentation change does not enforce
-one provider per corpora or migrate existing mixed-provider configurations.
-Sapi, model and effort pickers share a themed, bounded list. Arrow keys, Home/End
-and initial-letter navigation move focus; Enter/Space selects, Escape cancels,
-and Tab leaves the picker. Clicking outside dismisses the list. Picker state is
-local to the dialog and never enters the saved settings payload.
+`GET /api/model-settings` returns the corpora default and per-Sapi overrides;
+`PUT /api/model-settings` saves them with the current revision (a stale revision
+gets 409). Until the first save, GET returns the default from
+`corpora/providers.json`. A run captures its model and effort when it starts.
 
-The Models dialog has Global settings and Sapi customization pages sharing one
-unsaved draft. Page navigation does not write settings. Save and apply saves both
-pages together; closing without saving discards pending edits. The selected page
-is presentation state and is not persisted in the settings payload.
-
-Feedback is derived from that draft: saving, invalid selections, unsaved changes,
-or saved settings. Invalid selections identify Global settings or
-the affected Sapi even when that selection is on the other page. Successful-save
-feedback does not depend on the application's transient toast timer when reopening
-saved settings. A successful Save and apply closes the native modal before showing
-the confirmation toast. It rises from the bottom center, outside the blurred
-backdrop, and respects reduced-motion settings. The footer
-contains only Save and apply; the top-right close control dismisses unsaved edits.
-Failed saves keep the dialog and pending edits open, with revision-conflict and
-provider errors visible in the dialog.
-
-The Models screen now uses `GET /api/model-settings` and `PUT /api/model-settings`
-with the same object shape and validation rules. **Save and apply** atomically
-writes `model-settings.json`, using an independent revision counter. Until this
-file exists, GET returns the default from `corpora/providers.json` at revision 0.
-
-After applying, each new run uses its Sapi override, or the corpora default when
-no override exists. Configuration is
-resolved once under the service lock when a run starts. Every provider invocation
-and decision audit record in that run uses the captured model and effort, even
-if settings are saved between decision steps. Queued work, retries and delegated
-runs resolve the current settings when their new run starts. This does not pin a
-whole Routine or workload across multiple runs or restarts.
-
-### Providers
-
-`corpora/providers.json` lists each provider CLI: id, name, executable, extra
-install paths, login and status commands, run arguments, output format and models
-with their efforts. `GET /api/providers` returns the providers and their models.
-Saving checks every choice against it; an empty effort sends no effort flag.
-Run arguments use `{model}`, `{workdir}` and `{effort-args}`. The executable is
-`SAPIENS_<ID>_BINARY`, else PATH, else the listed paths, preferring the newest
-`--version`. Sign-in stays in each CLI. Adding a provider is a new entry; a new
-output format also needs an event reader in `Provider.hs`.
+`corpora/providers.json` lists each provider CLI: executable, extra install paths,
+login and status commands, run arguments, output format and models with efforts.
+`GET /api/providers` returns them. An empty effort sends no effort flag. The
+executable is `SAPIENS_<ID>_BINARY`, else PATH, else the listed paths. Sign-in
+stays in each CLI. A new output format needs one `EventFormat` instance.

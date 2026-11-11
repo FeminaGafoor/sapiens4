@@ -162,9 +162,7 @@
 :root body.sapi-workspace .tiny-label { font:10px var(--sapi-font);letter-spacing:.5px;color:var(--muted); }
 :root body.sapi-workspace .icon-button { border-radius:6px; }
 :root body.sapi-workspace :is(.icon-button:hover,.theme-toggle:hover) { background:var(--sapi-purple-tint); }
-:root body.sapi-workspace .toast { top:auto;right:auto;bottom:calc(24px + env(safe-area-inset-bottom,0px));left:50%;transform:translate(-50%,8px);width:max-content;max-width:min(340px,calc(100vw - 40px));box-sizing:border-box;padding:11px 16px;border:1px solid var(--sapi-accent);border-radius:8px;background:var(--sapi-surface);color:var(--ink);font:13px/1.5 var(--sapi-font);text-align:left;overflow-wrap:anywhere;box-shadow:0 4px 16px #0002; }
-:root body.sapi-workspace .toast.visible { transform:translate(-50%,0); }
-@media(prefers-reduced-motion:reduce){:root body.sapi-workspace .toast{transition:none}}
+:root body.sapi-workspace .toast { background:var(--ink);color:var(--sapi-white);border:0;border-radius:10px;font:12px/1.5 var(--sapi-font);box-shadow:0 6px 24px #0002; }
 :root[data-theme] body.sapi-workspace .send-button { background:var(--ink);color:var(--sapi-white);border:0; }
 :root body.sapi-workspace .settings-row { border-color:var(--line); }
 
@@ -437,7 +435,6 @@
 .connection-status { display:inline-flex;align-items:center;gap:6px;white-space:nowrap;font-size:11px;color:var(--muted); }
 .connection-dot { width:6px;height:6px;flex:none;border-radius:50%;background:#888; }
 .connection-status[data-online="true"] .connection-dot { background:#3b9b69; }
-/* Models settings preview: scoped to this dialog, using the existing theme. */
 :root body.sapi-workspace dialog.model-settings-dialog{width:min(640px,calc(100vw - 32px));max-height:calc(var(--mobile-viewport-height,100dvh) - 32px);overflow:hidden}
 :root body.sapi-workspace dialog.model-settings-dialog[open]{display:flex;flex-direction:column}
 :root body.sapi-workspace .model-settings-dialog>.modal-top{flex-shrink:0}
@@ -474,7 +471,6 @@
 
 :root body.sapi-workspace { --sapi-hover:var(--sapi-purple-tint);--sapi-accent:var(--sapi-violet); }
 
-/* D3: AI providers share one simple navigation pattern. */
 :root body.sapi-workspace .ai-provider-list { border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--sapi-white);margin:14px 0; }
 :root body.sapi-workspace .ai-provider-row { min-height:68px;display:flex;align-items:center;gap:13px;padding:12px 14px;border-top:1px solid var(--line); }
 :root body.sapi-workspace .ai-provider-row:first-child { border-top:0; }
