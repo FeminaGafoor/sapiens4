@@ -35,7 +35,7 @@ import Text.Regex.TDFA ((=~))
 import System.Posix.Signals
 #endif
 import Types
-import Population (readModelSettings, readProviders, ModelSelection(..), ModelSettingsDraft(..), Provider(..), ProviderModel(..), Providers(..), EventFormat(..))
+import Population (readModelSettings, readProviders, ModelSelection(..), ModelSettingsDraft(..), Provider(..), ProviderModel(..), Providers(..))
 import qualified Computer as Computer
 
 data ProviderEvent
@@ -146,6 +146,21 @@ providerBinary provider = do
   | otherwise = pure [root </> part | root <- roots]
  matches part name = let (before,after) = break (=='*') part in length name >= length part - 1 && before `isPrefixOf` name && drop 1 after `isSuffixOf` name
 
+class EventFormat f where
+ events :: f -> Value -> IO [ProviderEvent]
+
+data CodexJson = CodexJson
+data ClaudeStream = ClaudeStream
+
+instance EventFormat CodexJson where
+ events _ raw = (:[]) <$> decodeValue 500 raw
+
+instance EventFormat ClaudeStream where
+ events _ = claudeEvents
+
+formats :: [(Text, Value -> IO [ProviderEvent])]
+formats = [("codex-json",events CodexJson),("claude-stream",events ClaudeStream)]
+
 -- Intermediate assistant text is not completion. Only a successful terminal
 -- result can complete the host decision; a zero exit code alone is insufficient.
 claudeEvents :: Value -> IO [ProviderEvent]
@@ -204,6 +219,7 @@ invokeModel s run input = do
  (provider,binary) <- providerFor s config
  let args = providerArguments provider workdir config
      name = providerLabel provider
+ readEvents <- maybe (failure 500 ("Unknown output format: " <> providerEvents provider)) pure (lookup (providerEvents provider) formats)
  environment <- getEnvironment
  started <- realToFrac . (*1000) <$> getPOSIXTime :: IO Double
  writeIORef (runActivity run) (obj [("started",toJSON started),("updated",toJSON started),("phase",str "Waiting for model"),("last_action",str "")])
@@ -224,8 +240,8 @@ invokeModel s run input = do
        case eitherDecodeStrict' (TE.encodeUtf8 line) of
         Left _ -> pure ()
         Right rawEvent -> do
-         events <- case providerEvents provider of CodexJson -> (:[]) <$> decodeValue 500 rawEvent; ClaudeStream -> claudeEvents rawEvent
-         forM_ events $ \event -> do
+         parsed <- readEvents rawEvent
+         forM_ parsed $ \event -> do
           state <- readIORef stream
           activity <- readIORef (runActivity run)
           time <- realToFrac . (*1000) <$> getPOSIXTime :: IO Double

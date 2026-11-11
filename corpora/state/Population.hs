@@ -295,13 +295,6 @@ activeModelSettings s = readJSON (serviceRoot s </> "model-settings.json") Nothi
 readModelSettings :: Service -> IO ModelSettingsDraft
 readModelSettings s = activeModelSettings s >>= maybe ((\configured -> ModelSettingsDraft 0 (providersDefault configured) Map.empty) <$> readProviders (repositoryRoot s)) pure
 
-data EventFormat = CodexJson | ClaudeStream deriving (Eq, Show)
-instance FromJSON EventFormat where
- parseJSON = withText "Event format" $ \format -> case format of
-  "codex-json" -> pure CodexJson
-  "claude-stream" -> pure ClaudeStream
-  _ -> fail "Unknown event format"
-
 data ProviderModel = ProviderModel { modelName :: Text, modelLabel :: Text, modelEfforts :: [Text], modelDefaultEffort :: Text, modelIsDefault :: Bool }
 instance FromJSON ProviderModel where
  parseJSON = withObject "Provider model" $ \o -> ProviderModel <$> o .: "model" <*> o .: "displayName" <*> o .: "efforts" <*> o .: "defaultReasoningEffort" <*> o .: "isDefault"
@@ -310,7 +303,7 @@ instance ToJSON ProviderModel where
 
 data Provider = Provider
  { providerId :: ProviderId, providerLabel :: Text, providerCommand :: FilePath, providerPaths :: [FilePath], providerLogin :: Text
- , providerStatus :: [String], providerRun :: [Text], providerEffort :: [Text], providerEvents :: EventFormat, providerModels :: [ProviderModel] }
+ , providerStatus :: [String], providerRun :: [Text], providerEffort :: [Text], providerEvents :: Text, providerModels :: [ProviderModel] }
 instance FromJSON Provider where
  parseJSON = withObject "Provider" $ \o -> Provider <$> (ProviderId <$> o .: "id") <*> o .: "name" <*> o .: "binary" <*> o .: "paths" <*> o .: "login"
   <*> o .: "status" <*> o .: "run" <*> o .: "effort" <*> o .: "events" <*> o .: "models"
