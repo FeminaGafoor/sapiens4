@@ -72,7 +72,7 @@ cliStatus findBinary environmentOf args = do
 onboardingView :: Onboarding -> IO Value
 onboardingView onboarding = do
  (codex,claude) <- concurrently
-  (trackedCheck onboarding (cliStatus P.codexBinary P.codexEnvironment ["login","status"]))
+  (trackedCheck onboarding (cliStatus P.codexBinary getEnvironment ["login","status"]))
   (trackedCheck onboarding (cliStatus P.claudeBinary getEnvironment ["auth","status"]))
  let entry key label command found = obj [("id",str key),("name",str label),("status",str found),("login",str command)]
  pure (obj [("providers",arr [entry "codex" "Codex" "codex login" codex,entry "claude" "Claude Code" "claude auth login" claude])])
