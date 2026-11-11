@@ -1,6 +1,5 @@
 module Sapiens.Action where
 
-import Sapiens.Model as M
 import Prelude (class Eq)
 
 import Sapiens.Form as F
@@ -14,7 +13,6 @@ import Web.Event.Event (Event)
 
 data Action
   = Initialize
-  | CheckSetup
   | LoadRegistry
   | Finalize
   | Poll
@@ -82,7 +80,6 @@ data Action
   | ScanFrame Int
   | UploadQR
   | StopScan
-  | ProviderNavigate M.ProviderPage
   | OnboardingPoll Int
   | HostPairPoll Int
   | Install

@@ -74,8 +74,8 @@ onboardingView onboarding = do
  (codex,claude) <- concurrently
   (trackedCheck onboarding (cliStatus P.codexBinary P.codexEnvironment ["login","status"]))
   (trackedCheck onboarding (cliStatus P.claudeBinary getEnvironment ["auth","status"]))
- let idle=obj [("state",str "idle")]
- pure (obj [("provider",str codex),("ready",Bool (codex=="signed_in")),("hold",str ""),("login",idle),("claude",obj [("status",str claude),("login",idle)])])
+ let entry key label command found = obj [("id",str key),("name",str label),("status",str found),("login",str command)]
+ pure (obj [("providers",arr [entry "codex" "Codex" "codex login" codex,entry "claude" "Claude Code" "claude auth login" claude])])
 
 computerView :: Onboarding -> IO Value
 computerView (Onboarding root _) = do
