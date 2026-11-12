@@ -98,7 +98,7 @@ providerFor s config = do
 providersView :: FilePath -> IO Value
 providersView root = do
  configured <- providersList <$> readProviders root
- pure (obj [("providers",arr [obj [("id",str (providerName (providerId provider))),("name",str (providerLabel provider)),("models",toJSON (providerModels provider))] | provider <- configured])])
+ pure (obj [("providers",arr [obj [("id",str (providerName (providerId provider))),("name",str (providerLabel provider)),("recommended",toJSON (providerRecommended provider)),("models",toJSON (providerModels provider))] | provider <- configured])])
 
 providerArguments :: Provider -> FilePath -> ModelConfig -> [String]
 providerArguments provider workdir config = concatMap expand (providerRun provider)

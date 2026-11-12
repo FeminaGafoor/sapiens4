@@ -110,7 +110,8 @@ gets 409). Until the first save, GET returns the default from
 `corpora/providers.json`. A run captures its model and effort when it starts.
 
 `corpora/providers.json` lists each provider CLI: executable, extra install paths,
-login and status commands, run arguments, output format and models with efforts.
+login and status commands, run arguments, output format, the recommended model and
+effort picked when a provider is chosen, and models with efforts.
 `GET /api/providers` returns them. An empty effort sends no effort flag. The
 executable is `SAPIENS_<ID>_BINARY`, else PATH, else the listed paths. Sign-in
 stays in each CLI. A new output format needs one `EventFormat` instance.

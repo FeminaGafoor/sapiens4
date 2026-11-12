@@ -12,6 +12,7 @@
    "run":["exec","{effort-args}","-c","model=\"{model}\"","--skip-git-repo-check","--json","--dangerously-bypass-approvals-and-sandbox","--cd","{workdir}","--color","never","-"],
    "effort":["-c","model_reasoning_effort=\"{effort}\""],
    "events":"codex-json",
+   "recommended":{"provider":"codex","model":"gpt-6-astra","effort":"medium"},
    "models":[
     {"model":"gpt-6.1-sol","displayName":"GPT-6.1-Sol","efforts":["low","medium","high","xhigh","max","ultra"],"defaultReasoningEffort":"low","isDefault":true},
     {"model":"gpt-6-astra","displayName":"GPT-6-Astra","efforts":["low","medium","high","xhigh","max","ultra"],"defaultReasoningEffort":"low","isDefault":false},
@@ -32,6 +33,7 @@
    "run":["--print","--output-format","stream-json","--verbose","--model","{model}","--no-session-persistence","--dangerously-skip-permissions","{effort-args}"],
    "effort":["--effort","{effort}"],
    "events":"claude-stream",
+   "recommended":{"provider":"claude","model":"claude-opus-5-5","effort":"medium"},
    "models":[
     {"model":"claude-opus-5-5","displayName":"Opus 5.5","efforts":["low","medium","high","xhigh","max"],"defaultReasoningEffort":"","isDefault":true},
     {"model":"claude-sonnet-5-5","displayName":"Sonnet 5.5","efforts":["low","medium","high","xhigh","max"],"defaultReasoningEffort":"","isDefault":false},

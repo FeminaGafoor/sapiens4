@@ -32,7 +32,8 @@ RSpec.describe 'Model settings', :desktop do
     desktop.value('ChiefSapi provider', 'Use default')
     choose('ChiefSapi provider', 2, 'Claude Code')
     desktop.value('ChiefSapi model', 'Opus 5.5')
-    choose('ChiefSapi effort', 3, 'high')
+    desktop.value('ChiefSapi effort', 'medium')
+    choose('ChiefSapi effort', 1, 'high')
     desktop.press('Manage AI connections')
     desktop.see('Your AI lineup')
     desktop.press('Back to model settings')
@@ -53,7 +54,7 @@ RSpec.describe 'Model settings', :desktop do
     expect(host.api('GET', '/api/model-settings').fetch('overrides')).to be_empty
   end
 
-  it 'shows provider default for a model without efforts and keeps edits on a save conflict' do
+  it 'shows CLI default for a model without efforts and keeps edits on a save conflict' do
     start_desktop
     host.api('PUT', '/api/model-settings', {revision: 0, defaults: {provider: 'claude', model: 'claude-haiku-4-5-20251001', effort: ''}, overrides: {}})
     open_models

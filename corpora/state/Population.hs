@@ -303,10 +303,10 @@ instance ToJSON ProviderModel where
 
 data Provider = Provider
  { providerId :: ProviderId, providerLabel :: Text, providerCommand :: FilePath, providerPaths :: [FilePath], providerLogin :: Text
- , providerStatus :: [String], providerRun :: [Text], providerEffort :: [Text], providerEvents :: Text, providerModels :: [ProviderModel] }
+ , providerStatus :: [String], providerRun :: [Text], providerEffort :: [Text], providerEvents :: Text, providerRecommended :: ModelSelection, providerModels :: [ProviderModel] }
 instance FromJSON Provider where
  parseJSON = withObject "Provider" $ \o -> Provider <$> (ProviderId <$> o .: "id") <*> o .: "name" <*> o .: "binary" <*> o .: "paths" <*> o .: "login"
-  <*> o .: "status" <*> o .: "run" <*> o .: "effort" <*> o .: "events" <*> o .: "models"
+  <*> o .: "status" <*> o .: "run" <*> o .: "effort" <*> o .: "events" <*> o .: "recommended" <*> o .: "models"
 
 data Providers = Providers { providersDefault :: ModelSelection, providersList :: [Provider], providersUpcoming :: Map.Map Text Text }
 instance FromJSON Providers where

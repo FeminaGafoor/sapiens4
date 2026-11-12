@@ -119,7 +119,7 @@ derive instance eqContent :: Eq Content
 
 type ModelChoice = {provider :: String, model :: String, effort :: String}
 type CatalogModel = {model :: String, label :: String, isDefault :: Boolean, defaultEffort :: String, efforts :: Array String}
-type ModelProvider = {id :: String, name :: String, models :: Array CatalogModel}
+type ModelProvider = {id :: String, name :: String, recommended :: ModelChoice, models :: Array CatalogModel}
 type ModelDraft = {providers :: Array ModelProvider, defaults :: ModelChoice, overrides :: O.Object ModelChoice, loaded :: Boolean, revision :: Number, saved :: Json}
 data ModelTarget = CorporaDefault | SapiOverride String
 data ModelEdit = InheritDefault | ChooseProvider String | ChooseModel String | ChooseEffort String
@@ -130,7 +130,8 @@ modelDraft = {providers:[],defaults:{provider:"",model:"",effort:""},overrides:O
 modelProviders :: Json -> Array ModelProvider
 modelProviders value = map provider $ D.rows "providers" value
   where
-  provider row = {id:D.s "id" row,name:D.s "name" row,models:map model $ D.rows "models" row}
+  provider row = {id:D.s "id" row,name:D.s "name" row,recommended:choice (D.get "recommended" row),models:map model $ D.rows "models" row}
+  choice raw = {provider:D.s "provider" raw,model:D.s "model" raw,effort:D.s "effort" raw}
   model row = {model:D.s "model" row,label:D.s "displayName" row,isDefault:D.b "isDefault" row,defaultEffort:D.s "defaultReasoningEffort" row,efforts:D.strings $ D.get "efforts" row}
 
 catalogModels :: ModelDraft -> String -> Array CatalogModel
@@ -166,10 +167,12 @@ editModel target edit draft = case target, edit of
   where
   pick provider row = {provider,model:row.model,effort:row.defaultEffort}
   change choice = case edit of
-    ChooseProvider provider -> let rows = catalogModels draft provider in
-      maybe choice (pick provider) $ case A.find _.isDefault rows of
-        Just row -> Just row
-        Nothing -> A.head rows
+    ChooseProvider provider -> case A.find (modelChoiceValid draft) $ _.recommended <$> A.filter ((_ == provider) <<< _.id) draft.providers of
+      Just best -> best
+      Nothing -> let rows = catalogModels draft provider in
+        maybe choice (pick provider) $ case A.find _.isDefault rows of
+          Just row -> Just row
+          Nothing -> A.head rows
     ChooseModel model -> maybe choice (pick choice.provider) $ catalogModel draft (choice {model=model})
     ChooseEffort effort -> choice {effort=effort}
     InheritDefault -> choice

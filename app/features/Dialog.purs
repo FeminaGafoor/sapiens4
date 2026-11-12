@@ -207,8 +207,8 @@ modelSettings m draft = V.div "model-settings"
   summary choice = S.joinWith " · "
     [maybe choice.provider _.name $ A.find ((_ == choice.provider) <<< _.id) draft.providers
     ,maybe choice.model _.label $ F.catalogModel draft choice
-    ,if choice.effort == "" then "Provider default" else choice.effort]
-  efforts model = (if model.defaultEffort == "" then [{value:"",label:"Provider default"}] else []) <> map (\effort -> {value:effort,label:effort}) model.efforts
+    ,if choice.effort == "" then "CLI default" else choice.effort]
+  efforts model = (if model.defaultEffort == "" then [{value:"",label:"CLI default"}] else []) <> map (\effort -> {value:effort,label:effort}) model.efforts
 
 linuxComputer :: M.Model -> M.Dialog -> V.Html
 linuxComputer m d = V.div ""
