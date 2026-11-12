@@ -34,6 +34,8 @@ RSpec.describe 'MCP server for other AI tools', :host do
     expect(unknown['isError']).to be(true)
     chat, = session(tool('chat', corpora: corpora, sapi: chief, limit: 1))
     expect(body(chat).map { |row| row.slice('id', 'input', 'status') }).to eq([turn.slice('id', 'input', 'status')])
+    sent, waited = session(tool('send', corpora: corpora, sapi: chief, text: 'Reply when done.'), tool('chat', corpora: corpora, sapi: chief, limit: 1, wait: 30))
+    expect(body(waited).map { |row| row.slice('id', 'status') }).to eq([{'id' => body(sent).fetch('id'), 'status' => 'done'}])
   end
 
   it 'lets another AI pause a corpora, which refuses new work until it is activated again' do
