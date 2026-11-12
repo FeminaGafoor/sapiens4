@@ -1,6 +1,7 @@
 module Mcp (mcpMain) where
 
 import Types
+import Control.Concurrent (threadDelay)
 import Control.Exception
 import Control.Monad
 import Data.Aeson hiding (pairs)
@@ -58,7 +59,7 @@ toolName tool = case tool of
  SetLifecycle -> "lifecycle"
 
 schema :: Tool -> Value
-schema tool = obj [("name",str (toolName tool)),("description",str description),("inputSchema",obj [("type",str "object"),("properties",obj fields),("required",arr [str k | (k,_) <- fields, k /= "limit"])])]
+schema tool = obj [("name",str (toolName tool)),("description",str description),("inputSchema",obj [("type",str "object"),("properties",obj fields),("required",arr [str k | (k,_) <- fields, k `notElem` ["limit","wait"]])])]
  where
  property kind about = obj [("type",str kind),("description",str about)]
  corpora = ("corpora",property "string" "Corpora id from the corpora tool")
@@ -66,8 +67,8 @@ schema tool = obj [("name",str (toolName tool)),("description",str description),
  (description,fields) = case tool of
   ListCorpora -> ("List the local and remote corpora this Sapiens4 host can reach, with id, name, location and status.",[])
   ListSapis -> ("List the Sapis of one corpora with role, busy state and open workspace tabs.",[corpora])
-  ReadChat -> ("Read the latest turns of one Sapi (input, output, status). Use it to follow a reply after send.",[corpora,sapi,("limit",property "integer" "Number of turns, 1 to 50, default 10")])
-  SendMessage -> ("Send a message to one Sapi. It starts work and returns the queued turn id; read the reply with chat.",[corpora,sapi,("text",property "string" "The message")])
+  ReadChat -> ("Read the latest turns of one Sapi (input, output, status). Use it to follow a reply after send; with wait it first waits until the Sapi has no queued or running turn.",[corpora,sapi,("limit",property "integer" "Number of turns, 1 to 50, default 10"),("wait",property "integer" "Seconds to wait for running work to finish, 0 to 120, default 0")])
+  SendMessage -> ("Send a message to one Sapi. It starts work and returns the queued turn id; read the reply with chat, using wait to block until it finishes.",[corpora,sapi,("text",property "string" "The message")])
   SetLifecycle -> ("Pause or activate one corpora. Pausing stops running work.",[corpora,("action",merge (property "string" "pause or activate") (obj [("enum",arr [str "pause",str "activate"])]))])
 
 callTool :: Endpoint -> Value -> IO Value
@@ -88,13 +89,16 @@ run endpoint tool args = case tool of
  ListSapis -> do
   state <- within "GET" "/api/state" Nothing
   let tabs owner = [select ["id","title","url","path"] tab | tab <- items (get (get (get state "preferences") "workspaces") owner) "tabs"]
-      busy owner = any (\turn -> at turn "agent" == owner && at turn "status" `elem` ["queued","running"]) (items state "turns")
+      busy owner = any (working owner) (items state "turns")
   pure (arr [merge (select ["id","name","role"] row) (obj [("chief",Bool (get row "id" == get state "main_agent_id")),("busy",Bool (busy (at row "id"))),("tabs",arr (tabs (at row "id")))]) | row <- items state "agents", get row "retired" /= Bool True])
  ReadChat -> do
   owner <- ident "sapi"
-  state <- within "GET" "/api/state" Nothing
   let limit = let n = int (get args "limit") in if n <= 0 then 10 else min 50 n
-      own = [select ["id","status","input","output","error","created"] turn | turn <- items state "turns", at turn "agent" == owner]
+      settle remaining = do
+       state <- within "GET" "/api/state" Nothing
+       if any (working owner) (items state "turns") && remaining > 0 then threadDelay 1000000 >> settle (remaining - 1) else pure state
+  state <- settle (max 0 (min 120 (int (get args "wait"))))
+  let own = [select ["id","status","input","output","error","created"] turn | turn <- items state "turns", at turn "agent" == owner]
   pure (arr (drop (length own - limit) own))
  SendMessage -> do
   owner <- ident "sapi"
@@ -110,6 +114,9 @@ run endpoint tool args = case tool of
   corpora <- ident "corpora"
   call method ("/api/host/corpora/" <> corpora <> path) body
  call method path body = request endpoint method path body
+
+working :: Text -> Value -> Bool
+working owner turn = at turn "agent" == owner && case fromJSON (get turn "status") of Success status -> activeStatus status; _ -> False
 
 request :: Endpoint -> Text -> Text -> Maybe Value -> IO Value
 request (Endpoint url manager) method path body = do
