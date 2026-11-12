@@ -47,6 +47,7 @@ common host
     HTTP,
     Management,
     Memo,
+    Mcp,
     Population,
     Provider,
     Onboarding,
