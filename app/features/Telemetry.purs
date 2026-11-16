@@ -27,11 +27,11 @@ requestMetadata env =
     { client_kind:if env.native then "native" else if env.installed then "installed_webapp" else "browser"
     , client_device_family:info.family,client_os:S.toLower info.os }
 
-metadata :: Boolean -> X.Location -> Number -> Environment -> Json
-metadata remote location now env = D.merge (requestMetadata env) $ D.json
-  { client_os_version_ua:(clientDetails env).version,client_user_agent:env.userAgent
+metadata :: Boolean -> X.Corpora -> Number -> Environment -> Json
+metadata remote corpora now env = D.merge (requestMetadata env) $ D.json
+  { corpora_id:corpora.id
   , ui_mode:if remote then "remote_control" else "local",ui_visible:not env.hidden
-  , target_location:case location of
+  , target_location:case corpora.location of
       X.Local -> "local"
       X.Remote -> "remote"
       _ -> "unknown"

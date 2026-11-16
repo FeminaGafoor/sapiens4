@@ -1,7 +1,6 @@
 module HostServer where
 
 import Types
-import Population (corporaSettings)
 import qualified Telemetry
 import System.Environment (getArgs)
 import qualified Data.Aeson.KeyMap as KM
@@ -69,9 +68,9 @@ startHostUsing inherited consent choice root requested managed = mask $ \restore
   report openingStorage
   bracketOnError (Service.openService choice root) Service.closeService $ \service -> do
    writeIORef (serviceTelemetry service) reporter
-   report openedStorage >> start reporter desktop service
+   report openedStorage >> start reporter service
  where
- start reporter desktop service = do
+ start reporter service = do
   unless managed (recoverRelays root)
   (socket,port) <- listenLoopback requested
   flip onException (Socket.close socket) $ do
@@ -88,12 +87,11 @@ startHostUsing inherited consent choice root requested managed = mask $ \restore
    worker <- async $ withAsync (watchSnapshotFiles service) $ \watcher -> link watcher >> runSettingsSocket settings socket (application service bridge registry onboarding port)
    void (race (wait worker) (takeMVar ready))
    Service.startService service
+   unless managed $ forM_ reporter $ \telemetry -> Telemetry.emit telemetry Telemetry.AppStarted Nothing KM.empty
    when (not managed && choice==StartNew) (emitTelemetry service Telemetry.CorporaCreated KM.empty)
-   when (not managed && desktop) $ forM_ reporter $ \telemetry -> Telemetry.emit telemetry Telemetry.AppOpened Nothing KM.empty
    heartbeat <- if managed then pure Nothing else Just <$> async (forever $ do
     threadDelay (floor (nominalDiffTimeToSeconds Telemetry.heartbeatInterval * 1000000))
-    active <- corporaSettings service
-    when (corporaStatus active==Active) $ forM_ reporter $ \telemetry -> Telemetry.emit telemetry Telemetry.SchedulerHeartbeat Nothing KM.empty)
+    forM_ reporter $ \telemetry -> Telemetry.emit telemetry Telemetry.AppHeartbeat Nothing KM.empty)
    stopTranscriber <- startTranscriber service
    stopped <- newMVar False
    let stop = modifyMVar_ stopped $ \done -> if done then pure True else do
@@ -188,7 +186,9 @@ httpApplication service bridge registry onboarding port req respond = respond =<
     jsonResponse 200 <$> Telemetry.consentView reporter
    ("POST",["","api","host","telemetry","heartbeat"]) -> do
     reporter <- readIORef (serviceTelemetry service)
-    mapM_ (`Telemetry.uiHeartbeat` data_) reporter
+    forM_ reporter $ \telemetry -> do
+     context <- Telemetry.localClientContext telemetry data_
+     Telemetry.uiHeartbeat telemetry Nothing (merge data_ (Object (Telemetry.clientContextFields context)))
     pure (jsonResponse 202 empty)
    ("POST",["","api","host","computer"]) -> maybe (failure 404 "Local setup unavailable") (fmap (jsonResponse 200) . flip O.computerAction data_) onboarding
    ("GET",["","api","host","onboarding"]) -> maybe (failure 404 "Local setup unavailable") (fmap (jsonResponse 200) . O.onboardingView) onboarding

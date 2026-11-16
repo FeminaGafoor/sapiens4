@@ -2,7 +2,8 @@ module Telemetry
  ( Telemetry, RuntimeKind(..), Event(..), openTelemetry, openTelemetryWith, closeTelemetry
  , enabled, setConsent, consentView, emit, emitAt, heartbeatInterval, uiHeartbeat
  , startupConsentOption, startupConsentArguments
- , RequestTransport(..), requestMetadata, pairedMetadata
+ , RequestTransport(..), requestMetadata, ClientContext, parseClientContext, clientContextFields
+ , localClientContext, nativeClientContext
  ) where
 
 import Control.Concurrent.Async
@@ -33,23 +34,24 @@ import RuntimePaths (configDirectory)
 import System.Directory
 import System.Environment (lookupEnv)
 import System.FilePath
-import System.Info (os,arch)
+import System.Info (arch)
 import System.IO
 import System.IO.Error (isDoesNotExistError)
 import System.Timeout (timeout)
 import TelemetryWire
+import TelemetryDevice
 
 data RuntimeKind = Desktop | Headless deriving Eq
 data RequestTransport = Direct | Remote | UnknownTransport
-data Event = AppOpened | CorporaCreated | RequestAccepted | RemotePaired | SchedulerHeartbeat | UIHeartbeat
+data Event = AppStarted | CorporaCreated | RequestAccepted | RemotePaired | AppHeartbeat | UIHeartbeat
  deriving Eq
 eventName :: Event -> Text
 eventName event = case event of
- AppOpened -> "app_opened"
+ AppStarted -> "app_started"
  CorporaCreated -> "corpora_created"
  RequestAccepted -> "request_accepted"
  RemotePaired -> "remote_paired"
- SchedulerHeartbeat -> "scheduler_heartbeat"
+ AppHeartbeat -> "app_heartbeat"
  UIHeartbeat -> "ui_heartbeat"
 
 metadataValue :: Key -> Value -> Value
@@ -60,39 +62,37 @@ category :: [Text] -> Value -> Text
 category allowed (String value) | value `elem` allowed = value
 category _ _ = "unknown"
 
-clientMetadata :: Value -> Object
-clientMetadata value = KM.fromList
- [(key,String (category allowed (metadataValue key value))) | (key,allowed) <-
-  [("client_kind",["native","browser","installed_webapp"])
-  ,("client_device_family",["desktop","phone","tablet"])
-  ,("client_os",clientOSCategories)]]
+data ClientContext = ClientContext Text Text Text (Maybe DeviceIdentity)
+instance ToJSON ClientContext where
+ toJSON = Object . clientContextFields . Just
+
+parseClientContext :: Value -> Maybe ClientContext
+parseClientContext value@(Object _) = Just (ClientContext kind family platform identity)
+ where
+ kind = category ["native","browser","installed_webapp"] (metadataValue "client_kind" value)
+ family = category ["desktop","phone","tablet"] (metadataValue "client_device_family" value)
+ platform = category clientOSCategories (metadataValue "client_os" value)
+ identity = if kind=="native" then parseDeviceIdentity (metadataValue "source_device_id" value) (metadataValue "source_device_id_source" value) else Nothing
+parseClientContext _ = Nothing
+
+clientContextFields :: Maybe ClientContext -> Object
+clientContextFields context = case context of
+ Nothing -> clientContextFields (Just (ClientContext "unknown" "unknown" "unknown" Nothing))
+ Just (ClientContext kind family platform identity) -> KM.union (deviceFields "source_" identity) (KM.fromList
+  [("client_kind",String kind),("client_device_family",String family),("client_os",String platform)])
 
 clientOSCategories :: [Text]
 clientOSCategories = ["windows","macos","linux","android","ios","ipados"]
 
-requestMetadata :: RequestTransport -> Value -> Object
-requestMetadata transport value = KM.insert "request_transport" (String name) (clientMetadata value)
+requestMetadata :: RequestTransport -> Maybe ClientContext -> Object
+requestMetadata transport value = KM.insert "request_transport" (String name) (clientContextFields value)
  where name = case transport of Direct -> "direct"; Remote -> "remote"; UnknownTransport -> "unknown"
 
-pairedMetadata :: Value -> Object
-pairedMetadata info = KM.fromList [("paired_client_kind",String kind),("paired_os",String pairedOS)]
- where
- client = metadataValue "client" info
- reported = case client of
-  String "Sapiens4 desktop" -> "native"
-  String "Sapiens4 Home Screen app" -> "installed_webapp"
-  String "Sapiens4 browser" -> "browser"
-  _ -> "unknown"
- permitted = reported=="native" || metadataValue "usage_reporting" info==Bool True
- kind = if permitted then reported else "unknown"
- platform = case metadataValue "platform" info of String text -> T.toLower (T.takeWhile (/=' ') text); _ -> ""
- normalized = case platform of "darwin" -> "macos"; "mingw32" -> "windows"; value -> value
- pairedOS = if permitted then category clientOSCategories (String normalized) else "unknown"
-
-queueLimit, batchDelayMicros, requestTimeoutMicros :: Int
+queueLimit, batchDelayMicros, requestTimeoutMicros, deviceContextReserveBytes :: Int
 queueLimit = 100
 batchDelayMicros = 10 * 1000000
 requestTimeoutMicros = 10 * 1000000
+deviceContextReserveBytes = 256
 heartbeatInterval :: NominalDiffTime
 heartbeatInterval = 60 * 60
 
@@ -124,7 +124,7 @@ data Pending = Pending { pendingAt :: Integer, pendingValue :: Value }
 data Telemetry = Telemetry
  { savedSettings :: MVar Saved, settingsPath :: Maybe FilePath, senderStatus :: TVar SenderStatus
  , consent :: TVar Bool, pendingEvents :: TVar (Seq.Seq Pending), senderThread :: Async ()
- , hostContext :: Value, origin :: Maybe Request, manager :: Manager }
+ , hostContext :: Value, nativeDevice :: TVar (Maybe (Maybe DeviceIdentity)), origin :: Maybe Request, manager :: Manager }
 
 readSaved :: FilePath -> IO Saved
 readSaved path = do
@@ -168,10 +168,11 @@ openTelemetryWith http runtime choice = do
  active <- newTVarIO (maybe on (const False) choice)
  state <- newTVarIO status
  queue <- newTVarIO Seq.empty
- let context = object ["app_version" .= showVersion version,"host_os" .= os,"host_arch" .= arch,"runtime_kind" .= (if runtime==Desktop then "desktop" else "headless" :: Text)]
+ device <- newTVarIO Nothing
+ let context = object ["app_version" .= showVersion version,"host_os" .= nativeOS,"host_arch" .= arch,"runtime_kind" .= (if runtime==Desktop then "desktop" else "headless" :: Text)]
  holder <- newEmptyMVar
  bracketOnError (asyncWithUnmask (\unmask -> unmask (readMVar holder >>= sender))) cancel $ \worker -> do
-  let telemetry = Telemetry saved file state active queue worker context request http
+  let telemetry = Telemetry saved file state active queue worker context device request http
   forM_ choice (void . setConsent telemetry)
   putMVar holder telemetry
   pure telemetry
@@ -183,6 +184,34 @@ closeTelemetry telemetry = do
 
 enabled :: Telemetry -> IO Bool
 enabled telemetry = atomically $ (&&) <$> readTVar (consent telemetry) <*> ((==Running) <$> readTVar (senderStatus telemetry))
+
+cachedNativeDevice :: Telemetry -> IO (Maybe DeviceIdentity)
+cachedNativeDevice telemetry = atomically $ do
+ active <- readTVar (consent telemetry)
+ status <- readTVar (senderStatus telemetry)
+ identity <- readTVar (nativeDevice telemetry)
+ pure (if active && status==Running then identity >>= id else Nothing)
+
+nativeClientContext :: Telemetry -> IO (Maybe ClientContext)
+nativeClientContext telemetry = atomically $ do
+ active <- readTVar (consent telemetry)
+ status <- readTVar (senderStatus telemetry)
+ identity <- readTVar (nativeDevice telemetry)
+ pure (if active && status==Running then Just (ClientContext "native" "desktop" nativeOS (identity >>= id)) else Nothing)
+
+localClientContext :: Telemetry -> Value -> IO (Maybe ClientContext)
+localClientContext telemetry value = case parseClientContext value of
+ Just (ClientContext "native" _ _ _) -> nativeClientContext telemetry
+ context -> do
+  active <- enabled telemetry
+  pure (if active then context else Nothing)
+
+batchContext :: Telemetry -> IO Value
+batchContext telemetry = do
+ identity <- cachedNativeDevice telemetry
+ pure $ case hostContext telemetry of
+  Object fields -> Object (KM.union (deviceFields "host_" identity) fields)
+  value -> value
 
 disable :: Telemetry -> Text -> IO ()
 disable telemetry reason = atomically $ do
@@ -233,26 +262,26 @@ emitAt telemetry time event corpora fields = do
  when on $ do
   ident <- UUID.toText <$> UUID.nextRandom
   tick <- toInteger <$> getMonotonicTimeNSec
+  context <- batchContext telemetry
   let common = KM.fromList [("event_id",toJSON ident),("event_type",toJSON (eventName event)),("occurred_at",toJSON time)]
       row = Object $ KM.union common $ KM.union (maybe KM.empty (KM.singleton "corpora_id" . String) corpora) fields
-  when (BL.length (encode (batchEnvelope (hostContext telemetry) [row]))<=fromIntegral requestByteLimit) $ atomically $ do
+  when (BL.length (encode (batchEnvelope context [row]))<=fromIntegral (requestByteLimit-deviceContextReserveBytes)) $ atomically $ do
    active <- readTVar (consent telemetry)
    status <- readTVar (senderStatus telemetry)
    queue <- readTVar (pendingEvents telemetry)
    when (active && status==Running && Seq.length queue<queueLimit) (writeTVar (pendingEvents telemetry) (queue Seq.|> Pending tick row))
 
-uiHeartbeat :: Telemetry -> Value -> IO ()
-uiHeartbeat telemetry value = case value of
+uiHeartbeat :: Telemetry -> Maybe Text -> Value -> IO ()
+uiHeartbeat telemetry corpora value = case value of
  Object fields | KM.lookup "ui_visible" fields==Just (Bool True) && BL.length (encode value)<=8192 -> do
   time <- case KM.lookup "occurred_at" fields >>= \v -> case fromJSON v of Success time -> Just time; Error _ -> Nothing of
    Just time -> pure time
    Nothing -> getCurrentTime
-  let common = clientMetadata value
-      selected = KM.filterWithKey (\key v -> key `elem` allowed && case v of String _ -> True; _ -> False) fields
+  let common = clientContextFields (parseClientContext value)
+      selected = case metadataValue "corpora_id" value of String identity -> UUID.toText <$> UUID.fromText identity; _ -> Nothing
       categories = KM.fromList [("ui_mode",String (category ["local","remote_control"] (metadataValue "ui_mode" value))),("target_location",String (category ["local","remote"] (metadataValue "target_location" value)))]
-  emitAt telemetry time UIHeartbeat Nothing (KM.union common (KM.union categories selected))
+  emitAt telemetry time UIHeartbeat (corpora `mplus` selected) (KM.union common categories)
  _ -> pure ()
- where allowed = ["client_user_agent","client_os_version_ua"]
 
 selectBatch :: Value -> Seq.Seq Pending -> ([Value], Seq.Seq Pending)
 selectBatch context queue = (map pendingValue (toList taken),rest)
@@ -273,6 +302,7 @@ nextBatch telemetry = do
   check (active && status==Running && not (Seq.null queue))
   pure (Seq.index queue 0)
  now <- toInteger <$> getMonotonicTimeNSec
+ context <- batchContext telemetry
  timer <- registerDelay (fromInteger (max 0 (toInteger batchDelayMicros - (now-pendingAt first) `div` 1000)))
  batch <- atomically $ do
   queue <- readTVar (pendingEvents telemetry)
@@ -282,7 +312,7 @@ nextBatch telemetry = do
   if not active || status/=Running || Seq.null queue || pendingAt (Seq.index queue 0)/=pendingAt first then pure Nothing
   else do
    check (Seq.length queue>=batchLimit || elapsed)
-   let (taken,rest) = selectBatch (hostContext telemetry) queue
+   let (taken,rest) = selectBatch context queue
    writeTVar (pendingEvents telemetry) rest
    pure (Just taken)
  maybe (nextBatch telemetry) pure batch
@@ -328,11 +358,19 @@ credentialsFor telemetry = do
 
 sender :: Telemetry -> IO ()
 sender telemetry = (forever $ do
+  atomically $ do
+   active <- readTVar (consent telemetry)
+   status <- readTVar (senderStatus telemetry)
+   check (active && status==Running)
+  permitted <- refreshConsent telemetry
+  cached <- readTVarIO (nativeDevice telemetry)
+  when (permitted && cached==Nothing) $ readNativeDevice >>= atomically . writeTVar (nativeDevice telemetry) . Just
   batch <- nextBatch telemetry
   active <- refreshConsent telemetry
   credentials <- if active then credentialsFor telemetry else pure Nothing
   forM_ credentials $ \auth -> do
-   result <- post telemetry eventsPath (Just auth) (batchEnvelope (hostContext telemetry) batch)
+   context <- batchContext telemetry
+   result <- post telemetry eventsPath (Just auth) (batchEnvelope context batch)
    when (case result of Rejected -> True; _ -> False) (disable telemetry "Telemetry credentials or version were rejected until restart"))
  `catch` \(e::SomeException) -> case fromException e :: Maybe SomeAsyncException of
   Just _ -> throwIO e

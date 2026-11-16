@@ -100,7 +100,8 @@ registryRoute registry identity method path input = do
    client <- case M.lookup identity cache of
     Just value -> pure value
     Nothing -> do
-     value <- newClient (get (get saved "remotes") identity)
+     reporter <- readIORef (serviceTelemetry (registryService registry))
+     value <- newClient (get (get saved "remotes") identity) >>= \client -> pure client {clientTelemetry=reporter}
      modifyIORef' (registryClients registry) (M.insert identity value)
      pure value
    pure (RemoteTarget client)
@@ -109,6 +110,12 @@ registryRoute registry identity method path input = do
    (service,bridge,_) <- local registry identity
    pure (LocalTarget service bridge)
  require ("/api/" `T.isPrefixOf` path && not ("/api/host" `T.isPrefixOf` path) && not (T.any (=='%') $ T.takeWhile (/='?') path) && not (".." `T.isInfixOf` path) && not (T.any (=='\\') path)) 400 "Invalid corpora API path"
+ prepared <- forM input $ \value -> case (target,method,T.splitOn "/" (T.takeWhile (/='?') path)) of
+  (LocalTarget _ _,"POST",["","api","agents",_,"messages"]) -> do
+   reporter <- readIORef (serviceTelemetry (registryService registry))
+   context <- maybe (pure Nothing) (\telemetry -> Telemetry.localClientContext telemetry (get value "client_context")) reporter
+   pure (put "client_context" (toJSON context) value)
+  _ -> pure value
  if "/api/remote" `T.isPrefixOf` path then case target of
   RemoteTarget _ -> failure 403 "Pairing approval is available on the host only"
   LocalTarget _ bridge -> do
@@ -117,9 +124,9 @@ registryRoute registry identity method path input = do
     else failure 404 "Not found"
    pure (200,encode value,"application/json")
  else case target of
-  LocalTarget service _ -> Service.dispatch Telemetry.Direct service method path input
+  LocalTarget service _ -> Service.dispatch Telemetry.Direct service method path prepared
   RemoteTarget client -> do
-   result@(status,body,_) <- clientRequest client method path input
+   result@(status,body,_) <- clientRequest client method path prepared
    registryLock registry $ do
     saved <- readIORef (registrySaved registry)
     clients <- readIORef (registryClients registry)
@@ -203,7 +210,8 @@ canApprovePairing closed pending = not closed && maybe False (not . pairCancelle
 
 beginPair :: Registry -> Value -> IO Value
 beginPair registry input = do
- client <- invitation input
+ reporter <- readIORef (serviceTelemetry (registryService registry))
+ client <- invitation input >>= \value -> pure value {clientTelemetry=reporter}
  identity <- newId
  config <- readMVar (clientConfig client)
  code <- confirmationCode (get input "desktop") (get config "public") (at input "room")

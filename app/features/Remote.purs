@@ -25,6 +25,7 @@ import Libs4.Browser as B
 import Sapiens.Data as D
 import Sapiens.Browser as Browser
 import Sapiens.Domain as X
+import Sapiens.Telemetry as Telemetry
 
 protocol :: String
 protocol = "sapiens-remote-box-v1"
@@ -297,7 +298,8 @@ authenticate client pairing metadataAllowed = do
   env <- liftEffect Platform.environment
   let payload = if pairing then D.json {kind: "pair", secret: D.get "secret" session} else D.json {kind: "request", op: "resume"}
       info = D.put "usage_reporting" (D.json metadataAllowed) (deviceInfo env)
-  result <- request client (if pairing then 180000 else 15000) $ D.put "device_info" info payload
+      context = if metadataAllowed then Telemetry.requestMetadata env else D.null
+  result <- request client (if pairing then 180000 else 15000) $ D.put "telemetry_context" context $ D.put "device_info" info payload
   let corpora = D.get "corpora" result
       previous = D.str $ D.at ["corpora","id"] session
   unless (D.b "paired" result && D.s "name" corpora /= "" && CU.length (D.s "name" corpora) <= 200 && D.matches "^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$" (D.s "id" corpora) && (previous == "" || previous == D.s "id" corpora)) $ throwError $ error "Corpora identity changed. Connect again."
