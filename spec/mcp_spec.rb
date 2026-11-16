@@ -23,7 +23,7 @@ RSpec.describe 'MCP server for other AI tools', :host do
 
   let(:corpora) { host.state.dig('corpora', 'id') }
 
-  it 'lets another AI find the corpora and its Sapis, hand a Sapi work and read the reply' do
+  it 'lets another AI find the corpora and its Sapis, hand a Sapi work, wait for the reply and pause the corpora' do
     tools, listed, sapis, sent, unknown = session(['tools/list', {}], tool('corpora'), tool('sapis', corpora: corpora),
       tool('send', corpora: corpora, sapi: chief, text: 'Run the regression tests.'), tool('send', corpora: corpora, sapi: 'no-such-sapi', text: 'Hi'))
     expect(tools['tools'].map { |item| item['name'] }).to eq(%w[corpora sapis chat send lifecycle])
@@ -36,9 +36,6 @@ RSpec.describe 'MCP server for other AI tools', :host do
     expect(body(chat).map { |row| row.slice('id', 'input', 'status') }).to eq([turn.slice('id', 'input', 'status')])
     sent, waited = session(tool('send', corpora: corpora, sapi: chief, text: 'Reply when done.'), tool('chat', corpora: corpora, sapi: chief, limit: 1, wait: 30))
     expect(body(waited).map { |row| row.slice('id', 'status') }).to eq([{'id' => body(sent).fetch('id'), 'status' => 'done'}])
-  end
-
-  it 'lets another AI pause a corpora, which refuses new work until it is activated again' do
     paused, refused, active, sent = session(tool('lifecycle', corpora: corpora, action: 'pause'), tool('send', corpora: corpora, sapi: chief, text: 'Hi'),
       tool('lifecycle', corpora: corpora, action: 'activate'), tool('send', corpora: corpora, sapi: chief, text: 'Hi again'))
     expect(body(paused)).to include('status' => 'paused')
