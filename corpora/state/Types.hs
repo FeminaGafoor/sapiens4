@@ -6,6 +6,7 @@
 module Types (module Types, module Domain) where
 
 import Domain
+import qualified Telemetry
 
 import Control.Concurrent
 import Control.Concurrent.STM (TVar, atomically, modifyTVar')
@@ -73,7 +74,27 @@ instance ToJSON ModelSelection where
 
 data Run = Run { runOwner :: AgentId, runId :: RunId, runSlot :: Int, runCancel :: IORef Bool, runProcess :: MVar (Maybe ProcessHandle), runActivity :: IORef Value, runDeadline :: Word64, runModelConfig :: ModelSelection }
 data Service = Service { serviceRoot :: FilePath, repositoryRoot :: FilePath, serviceGuard :: MVar (), serviceFileLock :: FileLock, serviceStopping :: IORef Bool, serviceWorker :: MVar (Maybe (Async ())), serviceRuns :: MVar (Map RunId Run), serviceLease :: IORef (Maybe (AgentId, RunId)), serviceEndpoint :: IORef Text, servicePulse :: IORef Value, serviceActors :: MVar (Map ThreadId (Text,Maybe Text)), serviceDatabase :: MVar (Maybe Connection), serviceStates :: MVar (Map Text CachedAgentState)
- , serviceRevision :: TVar Integer, updateSubscribers :: TVar Int, snapshotFiles :: IORef (Set FilePath) }
+ , serviceRevision :: TVar Integer, updateSubscribers :: TVar Int, snapshotFiles :: IORef (Set FilePath)
+ , serviceTelemetry :: IORef (Maybe Telemetry.Telemetry), serviceTelemetryIdentity :: MVar (Maybe Text) }
+
+emitTelemetry :: Service -> Telemetry.Event -> IO ()
+emitTelemetry s event = do
+ time <- getCurrentTime
+ telemetry <- readIORef (serviceTelemetry s)
+ forM_ telemetry $ \reporter -> Telemetry.emitCorporaAt reporter time event identity KM.empty
+ where
+ identity = modifyMVar (serviceTelemetryIdentity s) $ \cached -> case cached of
+    Just ident -> pure (cached,ident)
+    Nothing -> do
+     let path=serviceRoot s </> "corpora-identity.json"
+     identity <- readJSON path empty
+     ident <- case UUID.fromText (at identity "telemetry_id") of
+      Just value -> pure (UUID.toText value)
+      Nothing -> do
+       value <- UUID.toText <$> UUID.nextRandom
+       writeJSON path (put "telemetry_id" (str value) identity)
+       pure value
+     pure (Just ident,ident)
 
 notifyChange :: Service -> IO ()
 notifyChange s = atomically $ modifyTVar' (serviceRevision s) (+1)

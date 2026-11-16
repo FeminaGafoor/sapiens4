@@ -1,6 +1,11 @@
 module HostServer where
 
 import Types
+import Population (corporaSettings)
+import qualified Telemetry
+import System.Environment (getArgs)
+import qualified Data.Aeson.KeyMap as KM
+import Data.Time (nominalDiffTimeToSeconds)
 import DataRoot
 import System.Environment (lookupEnv)
 import qualified Service as Service
@@ -19,7 +24,7 @@ import Control.Monad
 import qualified Data.ByteString as B
 import Data.IORef
 import qualified Data.Map.Strict as M
-import Data.Aeson (encode)
+import Data.Aeson (encode,Value(..))
 import System.Directory (getModificationTime)
 import Network.Wai.Handler.WebSockets (websocketsOr)
 import qualified Network.WebSockets as WS
@@ -50,22 +55,30 @@ startHost root requested managed = do
  startHostWith (if managed || mode==Just "existing" || mode==Nothing && exists then AttachExisting else StartNew) root requested managed
 
 startHostWith :: StorageChoice -> FilePath -> Int -> Bool -> IO Host
-startHostWith choice root requested managed = do
+startHostWith = startHostUsing Nothing
+
+startHostUsing :: Maybe Telemetry.Telemetry -> StorageChoice -> FilePath -> Int -> Bool -> IO Host
+startHostUsing inherited choice root requested managed = do
+ args <- getArgs
+ desktopPid <- lookupEnv "SAPIENS_DESKTOP_PID"
+ let desktop = "--desktop" `elem` args || desktopPid/=Nothing
+ reporter <- if managed then pure inherited else Just <$> Telemetry.openTelemetry (if desktop then Telemetry.Desktop else Telemetry.Headless)
  mode <- lookupEnv "SAPIENS_STORAGE_MODE"
  let report phase = when (not managed && mode `elem` [Just "new",Just "existing"]) (putStrLn phase)
  report openingStorage
- service <- Service.openService choice root
+ service <- Service.openService choice root `onException` unless managed (mapM_ Telemetry.closeTelemetry reporter)
+ writeIORef (serviceTelemetry service) reporter
  flip onException (Service.closeService service) $ do
-  report openedStorage >> start service
+  report openedStorage >> start reporter desktop service
  where
- start service = do
+ start reporter desktop service = do
   unless managed (recoverRelays root)
   (socket,port) <- listenLoopback requested
   flip onException (Socket.close socket) $ do
    Service.attachEndpoint service ("http://127.0.0.1:"<>T.pack (show port))
    bridge <- newBridge service
    let child selection path = do
-        host <- startHostWith selection path 0 True
+        host <- startHostUsing reporter selection path 0 True
         pure (hostService host,hostBridge host,hostStop host)
    registry <- if managed then pure Nothing else Just <$> newRegistry service bridge child
    onboarding <- if managed then pure Nothing else Just <$> O.openOnboarding (repositoryRoot service)
@@ -75,13 +88,20 @@ startHostWith choice root requested managed = do
    worker <- async $ withAsync (watchSnapshotFiles service) $ \watcher -> link watcher >> runSettingsSocket settings socket (application service bridge registry onboarding port)
    void (race (wait worker) (takeMVar ready))
    Service.startService service
-   -- Stop transcription and its network request before closing the database it uses.
+   when (not managed && choice==StartNew) (emitTelemetry service Telemetry.CorporaCreated)
+   when (not managed && desktop) $ forM_ reporter $ \telemetry -> Telemetry.emit telemetry Telemetry.AppOpened Nothing KM.empty
+   heartbeat <- if managed then pure Nothing else Just <$> async (forever $ do
+    threadDelay (floor (nominalDiffTimeToSeconds Telemetry.heartbeatInterval * 1000000))
+    active <- corporaSettings service
+    when (corporaStatus active==Active) $ forM_ reporter $ \telemetry -> Telemetry.emit telemetry Telemetry.SchedulerHeartbeat Nothing KM.empty)
    stopTranscriber <- startTranscriber service
    stopped <- newMVar False
    let stop = modifyMVar_ stopped $ \done -> if done then pure True else do
         mapM_ O.closeOnboarding onboarding
         mapM_ closeRegistry registry
         closeBridge bridge
+        mapM_ cancel heartbeat
+        unless managed (mapM_ Telemetry.closeTelemetry reporter)
         readMVar shutdown >>= id
         stopTranscriber
         -- Children can retain Windows socket handles until their work is stopped.
@@ -157,6 +177,19 @@ httpApplication service bridge registry onboarding port req respond = respond =<
   when write (require (not stopping) 503 "Host is shutting down")
   case (method,T.splitOn "/" path) of
    ("GET",["","api","host","computer"]) -> maybe (failure 404 "Local setup unavailable") (fmap (jsonResponse 200) . O.computerView) onboarding
+   ("GET",["","api","host","telemetry"]) -> do
+    reporter <- readIORef (serviceTelemetry service)
+    jsonResponse 200 <$> maybe (pure (obj [("enabled",Bool False),("available",Bool False)])) Telemetry.consentView reporter
+   ("PUT",["","api","host","telemetry"]) -> do
+    reporter <- readIORef (serviceTelemetry service) >>= maybe (failure 503 "Telemetry configuration unavailable") pure
+    on <- case get data_ "enabled" of Bool value -> pure value; _ -> failure 400 "Expected enabled boolean"
+    saved <- Telemetry.setConsent reporter on
+    either (failure 500) pure saved
+    jsonResponse 200 <$> Telemetry.consentView reporter
+   ("POST",["","api","host","telemetry","heartbeat"]) -> do
+    reporter <- readIORef (serviceTelemetry service)
+    mapM_ (`Telemetry.uiHeartbeat` data_) reporter
+    pure (jsonResponse 202 empty)
    ("POST",["","api","host","computer"]) -> maybe (failure 404 "Local setup unavailable") (fmap (jsonResponse 200) . flip O.computerAction data_) onboarding
    ("GET",["","api","host","onboarding"]) -> maybe (failure 404 "Local setup unavailable") (fmap (jsonResponse 200) . O.onboardingView) onboarding
    ("GET",["","api","host"]) -> jsonResponse 200 <$> registryRecords r

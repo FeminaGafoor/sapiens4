@@ -2,6 +2,7 @@
 module Registry where
 
 import Types
+import qualified Telemetry
 import DataRoot
 import System.FileLock (unlockFile)
 import qualified Service as Service
@@ -169,6 +170,7 @@ registryCreate registry input = do
    writeJSON (registryPath registry) updated
    writeIORef (registrySaved registry) updated
    modifyIORef' (registryLocals registry) (M.insert identity child)
+  emitTelemetry service Telemetry.CorporaCreated
   pure $ put "location" (str "Local") metadata
 
 data Pairing = Pairing Text Text PairingProgress

@@ -1,6 +1,7 @@
 module Bridge where
 
 import Types
+import qualified Telemetry
 import qualified Service as Service
 import Crypto
 import Receipt (legacyJSON)
@@ -135,6 +136,7 @@ approvePairing b input = modifyMVar (bridgeConfig b) $ \config -> do
  accept <- replyFrame paired (approvalRequest approval) (obj [("paired",Bool True),("corpora",identity)])
  let updated = put "accept" accept paired
  saveConfig b updated
+ emitTelemetry (bridgeService b) Telemetry.RemotePaired
  pure (updated,obj [("approved",Bool True)])
 deleteRoom :: Value -> IO Bool
 deleteRoom config = (request (at config "relay") ("/api/rooms/"<>at config "room") (at config "token") "DELETE" Nothing >> pure True)

@@ -1,7 +1,7 @@
 module Sapiens.Remote where
 
 import Prelude
-import Sapiens.Environment (Environment)
+import Sapiens.Environment (Environment, clientDetails)
 import Sapiens.Platform as Platform
 import Control.Promise (toAffE)
 import Data.Argonaut.Core (Json, toArray)
@@ -114,20 +114,9 @@ confirmation session = do
 
 deviceInfo :: Environment -> Json
 deviceInfo env =
-  let ua = env.userAgent
-      ipad = D.matches "iPad" ua || (D.matches "Macintosh" ua && env.touchPoints > 1.0)
-      name = if ipad then "iPad" else if D.matches "iPhone" ua then "iPhone" else if D.matches "Android" ua then "Android device" else if D.matches "Windows" ua then "Windows PC" else if D.matches "Macintosh" ua then "Mac" else if D.matches "Linux" ua then "Linux device" else "Remote device"
-      versionPattern = "(?:CPU (?:iPhone )?OS|iPhone OS|Android|Windows NT|Mac OS X) ([0-9_.]+)"
-      version = if D.matches versionPattern ua then " " <> D.replace "_" "." (D.replace ("^.*?" <> versionPattern <> ".*$") "$1" ua) else ""
-      platform = case name of
-        "iPad" -> "iPadOS"
-        "iPhone" -> "iOS"
-        "Android device" -> "Android"
-        "Windows PC" -> "Windows"
-        "Mac" -> "macOS"
-        "Linux device" -> "Linux"
-        _ -> "Unknown platform"
-  in D.json {name, platform: platform <> version, client: if env.installed then "Sapiens4 Home Screen app" else "Sapiens4 browser"}
+  let info = clientDetails env
+      platform = if info.os == "unknown" then "Unknown platform" else info.os
+  in D.json {name:info.name,platform:platform <> (if info.version == "" then "" else " " <> info.version),client:if env.installed then "Sapiens4 Home Screen app" else "Sapiens4 browser"}
 
 create :: Json -> Aff Transport
 create source = do

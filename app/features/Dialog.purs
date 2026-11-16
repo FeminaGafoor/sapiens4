@@ -89,7 +89,16 @@ dialogTitle d
 
 body :: M.Model -> M.Dialog -> V.Html
 body m d = case d.kind of
-  M.AppMenu -> V.node "nav" [V.label "Corpora menu"] [V.button "app-menu-row" "Workspace & settings" $ OpenDialog M.WorkspaceSettings F.NoRecord,V.button "app-menu-row" "Shared computer" $ OpenDialog M.Computer F.NoRecord]
+  M.AppMenu -> V.node "nav" [V.label "Corpora menu"]
+    [V.button "app-menu-row" "Workspace & settings" $ OpenDialog M.WorkspaceSettings F.NoRecord
+    ,V.button "app-menu-row" "Shared computer" $ OpenDialog M.Computer F.NoRecord
+    ,V.node "fieldset" []
+      [V.textNode "legend" [] "Optional usage reporting"
+      ,V.p "" "Share usage counts and app/device context. No conversations, prompts, files, paths or account details are included."
+      ,V.when (not $ M.remote m) $ V.node "label" [] [V.node "input" [V.attr "type" "checkbox",V.bool "checked" m.telemetryEnabled,V.check TelemetryConsent] [],V.text " Allow reporting for this app and its corpora"]
+      ,V.when (not m.env.native) $ V.node "label" [] [V.node "input" [V.attr "type" "checkbox",V.bool "checked" m.browserTelemetryEnabled,V.check BrowserTelemetryConsent] [],V.text " Include this browser's visible UI heartbeat"]
+      ,V.when (M.remote m && not m.telemetryEnabled) $ V.p "" "Reporting also requires consent in the host app."
+      ,V.when (m.telemetryError /= "") $ V.p "" m.telemetryError]]
   M.WorkspaceSettings -> V.div "workspace-settings"
     [V.node "nav" [V.label "Workspace settings"]
       [settingsLink "Models" "Provider, model and per-Sapi choices." M.Models

@@ -24,6 +24,7 @@ import System.FileLock
 import System.FilePath
 import System.Info
 import Types
+import qualified Telemetry
 import DataRoot
 import qualified Computer
 import qualified Store as DB
@@ -66,7 +67,9 @@ openService choice path = do
       revision <- newTVarIO 0
       subscribers <- newTVarIO 0
       files <- newIORef Set.empty
-      let s=Service root repo guard lock stopping worker runs lease endpoint pulse actors database states revision subscribers files
+      telemetry <- newIORef Nothing
+      telemetryIdentity <- newMVar Nothing
+      let s=Service root repo guard lock stopping worker runs lease endpoint pulse actors database states revision subscribers files telemetry telemetryIdentity
       DB.initialize s
       migrateWorkspaces s
       rows <- DB.agents s
@@ -202,6 +205,13 @@ dispatch s method target body = locked s $ do
  let json code action = do value<-action; when write (notifyChange s); pure (code,encode value,"application/json; charset=utf-8")
      owner kind a=if kind=="groups" then void (G.getGroup s a False) else void (DB.agent s a)
  case (method,parts) of
+  ("GET",["api","telemetry"]) -> json 200 $ do
+   telemetry <- readIORef (serviceTelemetry s)
+   maybe (pure (obj [("enabled",Bool False),("available",Bool False)])) Telemetry.consentView telemetry
+  ("POST",["api","telemetry","heartbeat"]) -> json 202 $ do
+   telemetry <- readIORef (serviceTelemetry s)
+   forM_ telemetry $ \reporter -> Telemetry.uiHeartbeat reporter d
+   pure (obj [("accepted",Bool True)])
   ("GET",["api","model-settings"]) -> json 200 (toJSON <$> readModelSettings s)
   ("GET",["api","providers"]) -> json 200 (Provider.providersView (repositoryRoot s))
   ("GET",["api","health"]) -> json 200 (pure (obj [("status",str "ok"),("provider",str "codex")]))
