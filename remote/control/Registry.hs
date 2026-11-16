@@ -14,6 +14,7 @@ import Control.Concurrent
 import Control.Exception
 import Control.Monad
 import Data.Aeson hiding (pairs)
+import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString.Lazy as BL
 import Data.IORef
 import Data.List (find, nub)
@@ -116,7 +117,7 @@ registryRoute registry identity method path input = do
     else failure 404 "Not found"
    pure (200,encode value,"application/json")
  else case target of
-  LocalTarget service _ -> Service.dispatch service method path input
+  LocalTarget service _ -> Service.dispatch Telemetry.Direct service method path input
   RemoteTarget client -> do
    result@(status,body,_) <- clientRequest client method path input
    registryLock registry $ do
@@ -170,7 +171,7 @@ registryCreate registry input = do
    writeJSON (registryPath registry) updated
    writeIORef (registrySaved registry) updated
    modifyIORef' (registryLocals registry) (M.insert identity child)
-  emitTelemetry service Telemetry.CorporaCreated
+  emitTelemetry service Telemetry.CorporaCreated KM.empty
   pure $ put "location" (str "Local") metadata
 
 data Pairing = Pairing Text Text PairingProgress

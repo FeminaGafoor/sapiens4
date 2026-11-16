@@ -2,6 +2,7 @@ module Telemetry
  ( Telemetry, RuntimeKind(..), Event(..), openTelemetry, openTelemetryWith, closeTelemetry
  , enabled, setConsent, consentView, emit, emitAt, heartbeatInterval, uiHeartbeat
  , startupConsentOption, startupConsentArguments
+ , RequestTransport(..), requestMetadata, pairedMetadata
  ) where
 
 import Control.Concurrent.Async
@@ -39,6 +40,7 @@ import System.Timeout (timeout)
 import TelemetryWire
 
 data RuntimeKind = Desktop | Headless deriving Eq
+data RequestTransport = Direct | Remote | UnknownTransport
 data Event = AppOpened | CorporaCreated | RequestAccepted | RemotePaired | SchedulerHeartbeat | UIHeartbeat
  deriving Eq
 eventName :: Event -> Text
@@ -49,6 +51,43 @@ eventName event = case event of
  RemotePaired -> "remote_paired"
  SchedulerHeartbeat -> "scheduler_heartbeat"
  UIHeartbeat -> "ui_heartbeat"
+
+metadataValue :: Key -> Value -> Value
+metadataValue key (Object fields) = maybe Null id (KM.lookup key fields)
+metadataValue _ _ = Null
+
+category :: [Text] -> Value -> Text
+category allowed (String value) | value `elem` allowed = value
+category _ _ = "unknown"
+
+clientMetadata :: Value -> Object
+clientMetadata value = KM.fromList
+ [(key,String (category allowed (metadataValue key value))) | (key,allowed) <-
+  [("client_kind",["native","browser","installed_webapp"])
+  ,("client_device_family",["desktop","phone","tablet"])
+  ,("client_os",clientOSCategories)]]
+
+clientOSCategories :: [Text]
+clientOSCategories = ["windows","macos","linux","android","ios","ipados"]
+
+requestMetadata :: RequestTransport -> Value -> Object
+requestMetadata transport value = KM.insert "request_transport" (String name) (clientMetadata value)
+ where name = case transport of Direct -> "direct"; Remote -> "remote"; UnknownTransport -> "unknown"
+
+pairedMetadata :: Value -> Object
+pairedMetadata info = KM.fromList [("paired_client_kind",String kind),("paired_os",String pairedOS)]
+ where
+ client = metadataValue "client" info
+ reported = case client of
+  String "Sapiens4 desktop" -> "native"
+  String "Sapiens4 Home Screen app" -> "installed_webapp"
+  String "Sapiens4 browser" -> "browser"
+  _ -> "unknown"
+ permitted = reported=="native" || metadataValue "usage_reporting" info==Bool True
+ kind = if permitted then reported else "unknown"
+ platform = case metadataValue "platform" info of String text -> T.toLower (T.takeWhile (/=' ') text); _ -> ""
+ normalized = case platform of "darwin" -> "macos"; "mingw32" -> "windows"; value -> value
+ pairedOS = if permitted then category clientOSCategories (String normalized) else "unknown"
 
 queueLimit, batchDelayMicros, requestTimeoutMicros :: Int
 queueLimit = 100
@@ -208,9 +247,12 @@ uiHeartbeat telemetry value = case value of
   time <- case KM.lookup "occurred_at" fields >>= \v -> case fromJSON v of Success time -> Just time; Error _ -> Nothing of
    Just time -> pure time
    Nothing -> getCurrentTime
-  emitAt telemetry time UIHeartbeat Nothing (KM.filterWithKey (\key _ -> key `elem` allowed) fields)
+  let common = clientMetadata value
+      selected = KM.filterWithKey (\key v -> key `elem` allowed && case v of String _ -> True; _ -> False) fields
+      categories = KM.fromList [("ui_mode",String (category ["local","remote_control"] (metadataValue "ui_mode" value))),("target_location",String (category ["local","remote"] (metadataValue "target_location" value)))]
+  emitAt telemetry time UIHeartbeat Nothing (KM.union common (KM.union categories selected))
  _ -> pure ()
- where allowed = ["client_user_agent","client_kind","client_device_family","client_os","client_os_version_ua","client_touch","ui_mode","ui_visible","ui_width","ui_height"]
+ where allowed = ["client_user_agent","client_os_version_ua"]
 
 selectBatch :: Value -> Seq.Seq Pending -> ([Value], Seq.Seq Pending)
 selectBatch context queue = (map pendingValue (toList taken),rest)

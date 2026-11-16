@@ -77,11 +77,11 @@ data Service = Service { serviceRoot :: FilePath, repositoryRoot :: FilePath, se
  , serviceRevision :: TVar Integer, updateSubscribers :: TVar Int, snapshotFiles :: IORef (Set FilePath)
  , serviceTelemetry :: IORef (Maybe Telemetry.Telemetry), serviceCorporaId :: Text }
 
-emitTelemetry :: Service -> Telemetry.Event -> IO ()
-emitTelemetry s event = do
+emitTelemetry :: Service -> Telemetry.Event -> Object -> IO ()
+emitTelemetry s event fields = do
  time <- getCurrentTime
  telemetry <- readIORef (serviceTelemetry s)
- forM_ telemetry $ \reporter -> Telemetry.emitAt reporter time event (Just (serviceCorporaId s)) KM.empty
+ forM_ telemetry $ \reporter -> Telemetry.emitAt reporter time event (Just (serviceCorporaId s)) fields
 
 notifyChange :: Service -> IO ()
 notifyChange s = atomically $ modifyTVar' (serviceRevision s) (+1)

@@ -191,13 +191,13 @@ savePreferences s d = do
  let current=merge prefs (if has d "attachment_drafts" then put "attachment_drafts" (obj drafts) d else d)
  DB.saveSingleton s DB.Preferences current
  pure (obj [("saved",Bool True),("preferences",current)])
-dispatch :: Service -> Text -> Text -> Maybe Value -> IO (Int,BL.ByteString,Text)
-dispatch s "PUT" "/api/model-settings" body = do
+dispatch :: Telemetry.RequestTransport -> Service -> Text -> Text -> Maybe Value -> IO (Int,BL.ByteString,Text)
+dispatch _ s "PUT" "/api/model-settings" body = do
  requested <- decodeValue 400 (fromMaybe Null body)
  Provider.validateModelSettingsDraft s requested
  saved <- locked s (saveModelSettings s requested)
  pure (200,encode saved,"application/json; charset=utf-8")
-dispatch s method target body = locked s $ do
+dispatch transport s method target body = locked s $ do
  let (path,query)=T.breakOn "?" target; parts=filter (not . T.null) (T.splitOn "/" path); write=method `elem` ["POST","PUT"]; d=fromMaybe Null body
  when write $ require (case d of Object _->True; _->False) 400 "Expected a JSON object"
  cfg <- corporaSettings s
@@ -241,7 +241,7 @@ dispatch s method target body = locked s $ do
   ("POST",["api","groups",gid,"calls",rid,action]) -> json 200 (GC.actionGroup s gid rid action)
   ("POST",["api","agents"]) -> json 201 $ do row<-createAgent s d; Mgt.prepare s (at row "id"); pure row
   ("PUT",["api","agents",a]) -> json 200 (updateAgent s a d)
-  ("POST",["api","agents",a,"messages"]) -> json 202 (E.submitTurn s a d)
+  ("POST",["api","agents",a,"messages"]) -> json 202 (E.submitTurn transport s a d)
   ("POST",["api","agents",a,"control"]) -> json 200 (withActor s a Nothing (Mgt.control s a d))
   ("POST",["api","agents",a,"turns",tid,action]) -> json 200 (E.turnAction s a tid action)
   ("PUT",["api","preferences"]) -> json 200 (savePreferences s d)

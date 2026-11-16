@@ -88,7 +88,7 @@ startHostUsing inherited consent choice root requested managed = mask $ \restore
    worker <- async $ withAsync (watchSnapshotFiles service) $ \watcher -> link watcher >> runSettingsSocket settings socket (application service bridge registry onboarding port)
    void (race (wait worker) (takeMVar ready))
    Service.startService service
-   when (not managed && choice==StartNew) (emitTelemetry service Telemetry.CorporaCreated)
+   when (not managed && choice==StartNew) (emitTelemetry service Telemetry.CorporaCreated KM.empty)
    when (not managed && desktop) $ forM_ reporter $ \telemetry -> Telemetry.emit telemetry Telemetry.AppOpened Nothing KM.empty
    heartbeat <- if managed then pure Nothing else Just <$> async (forever $ do
     threadDelay (floor (nominalDiffTimeToSeconds Telemetry.heartbeatInterval * 1000000))
@@ -219,5 +219,5 @@ httpApplication service bridge registry onboarding port req respond = respond =<
       _ -> failure 404 "Not found"
     pure (jsonResponse (if "/pair" `T.isSuffixOf` path then 201 else 200) value)
    else do
-    (code,raw,mime) <- Service.dispatch service method target body
+    (code,raw,mime) <- Service.dispatch Telemetry.Direct service method target body
     pure (response code raw mime))
