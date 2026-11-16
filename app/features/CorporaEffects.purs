@@ -24,7 +24,6 @@ import Sapiens.Effects as E
 import Sapiens.Model as M
 import Sapiens.Update as U
 import Sapiens.Remote as R
-import Sapiens.Telemetry as Telemetry
 
 handle :: C.Runtime -> E.Dispatch -> Action -> E.UI Boolean
 handle runtime dispatch action = case action of
@@ -77,7 +76,8 @@ handle runtime dispatch action = case action of
                   Left failure -> receivePair d.identity $ Left failure
                   Right value -> do
                     pairCode d.identity value ""
-                    paired <- H.liftAff $ try $ R.authenticate transport true (Telemetry.deviceConsent m.browserTelemetryEnabled m.env)
+                    permitted <- H.gets _.browserTelemetryEnabled
+                    paired <- H.liftAff $ try $ R.authenticate transport true permitted
                     current <- H.get
                     if (_.identity <$> current.dialog) /= Just d.identity then liftEffect $ R.close transport else case paired of
                       Left failure -> receivePair d.identity $ Left failure

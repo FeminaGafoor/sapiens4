@@ -1,6 +1,7 @@
 module Client where
 
 import Types
+import qualified Telemetry
 import Crypto
 import Transport
 import Control.Concurrent.MVar
@@ -19,9 +20,9 @@ import System.Environment
 
 
 data ClientTransport = Disconnected | Connected Text SocketClient
-data Client = Client { clientConfig :: MVar Value, clientSocket :: MVar ClientTransport, clientGuard :: MVar (), clientRevoked :: IORef Bool }
+data Client = Client { clientConfig :: MVar Value, clientSocket :: MVar ClientTransport, clientGuard :: MVar (), clientRevoked :: IORef Bool, clientTelemetry :: Maybe Telemetry.Telemetry }
 newClient :: Value -> IO Client
-newClient config = Client <$> newMVar config <*> newMVar Disconnected <*> newMVar () <*> newIORef False
+newClient config = Client <$> newMVar config <*> newMVar Disconnected <*> newMVar () <*> newIORef False <*> pure Nothing
 closeClient :: Client -> IO ()
 closeClient c = modifyMVar_ (clientSocket c) $ \transport -> do
  case transport of Disconnected -> pure (); Connected _ socket -> closeSocket socket
@@ -40,8 +41,14 @@ exchange c payload duration = withMVar (clientGuard c) $ \_ -> do
  ident <- newId
  time <- seconds
  hostname <- maybe "" T.pack <$> lookupEnv "HOSTNAME"
- let body = merge (obj [("id",str ident),("expires",toJSON (time+duration)),("corpora_id",get (get config "corpora") "id"),("connection_id",str connection),
-             ("device_info",obj [("name",str hostname),("platform",str (T.pack os)),("client",str "Sapiens4 desktop")])]) payload
+ outgoing <- case (at payload "method",T.splitOn "/" (T.takeWhile (/='?') (at payload "path"))) of
+  ("POST",["","api","agents",_,"messages"]) -> do
+   source <- maybe (pure Nothing) (\reporter -> Telemetry.localClientContext reporter (get (get payload "data") "client_context")) (clientTelemetry c)
+   pure (put "data" (put "client_context" (toJSON source) (get payload "data")) payload)
+  _ -> pure payload
+ context <- if at payload "kind"=="pair" then maybe (pure Nothing) Telemetry.nativeClientContext (clientTelemetry c) else pure Nothing
+ let body = merge (obj ([("id",str ident),("expires",toJSON (time+duration)),("corpora_id",get (get config "corpora") "id"),("connection_id",str connection),
+             ("device_info",obj [("name",str hostname),("platform",str (T.pack os)),("client",str "Sapiens4 desktop")])] ++ [("telemetry_context",toJSON context) | at payload "kind"=="pair"])) outgoing
  frame <- pack (get config "private") (get config "desktop") (at config "room") PhoneToDesktop body
  let transport action = action `catch` \(APIError _ message) -> ioError (userError $ T.unpack message)
      unreachable (errorValue::SomeException) = case fromException errorValue :: Maybe SomeAsyncException of

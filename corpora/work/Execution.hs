@@ -92,8 +92,8 @@ submitTurn transport s a d = do
      pure i
    DB.message s i input attachments
    let counts = [(K.fromText (kind<>"_attachment_count"),toJSON (length (filter ((==kind) . (`at` "kind")) attachments))) | kind <- ["voice","image","document","link","filepath"]]
-       fields = KM.fromList ([("flow",toJSON flow),("is_clarification",Bool (isJust workload)),("selected_provider",toJSON (providerName (selectionProvider selected))),("selected_model",toJSON (selectionModel selected)),("selected_effort",toJSON (selectionEffort selected))] ++ counts)
-   emitTelemetry s Telemetry.RequestAccepted (KM.union (Telemetry.requestMetadata transport (get d "client_context")) fields)
+       fields = KM.fromList ([("agent_id",toJSON (AgentId a)),("flow",toJSON flow),("is_clarification",Bool (isJust workload)),("selected_provider",toJSON (providerName (selectionProvider selected))),("selected_model",toJSON (selectionModel selected)),("selected_effort",toJSON (selectionEffort selected))] ++ counts)
+   emitTelemetry s Telemetry.RequestAccepted (KM.union (Telemetry.requestMetadata transport (Telemetry.parseClientContext (get d "client_context"))) fields)
    DB.forgetDrafts s a attachments
    DB.project s a
    trimConversation s a
