@@ -10,8 +10,12 @@ RSpec.describe 'Model settings', :desktop do
 
   def choose(field, moves, expected)
     desktop.press(field)
-    moves.abs.times { desktop.key(moves.positive? ? 'down' : 'up') }
-    desktop.key('return')
+    if Desktop.linux?
+      desktop.press(expected, role: 'AXGroup')
+    else
+      moves.abs.times { desktop.key(moves.positive? ? 'down' : 'up') }
+      desktop.key('return')
+    end
     desktop.value(field, expected)
   end
 
