@@ -57,6 +57,10 @@ if(matchMedia('(prefers-color-scheme:dark)').matches) document.documentElement.d
       </div>
     </div>
     <p class="setup-note">Upgrading from an earlier launcher? Choose the folder that contains corpora-identity.json.</p>
+    <div class="telemetry-consent">
+      <label><input id="telemetry-consent" type="checkbox" onchange="telemetryChoice=this.checked">Share basic usage statistics</label>
+      <details class="telemetry-info"><summary aria-label="About usage statistics">ⓘ</summary><span class="telemetry-tooltip" role="tooltip">Shares usage counts and app/device context. No conversations, prompts, files, paths or account details.</span></details>
+    </div>
     <p id="error" role="alert"></p>
   </section>
 </div>
@@ -65,7 +69,10 @@ if(matchMedia('(prefers-color-scheme:dark)').matches) document.documentElement.d
 </footer>
 </main>
 <script>
-let storageChoice='new', storageDirectory='', storageBusy=false;
+let storageChoice='new', storageDirectory='', storageBusy=false, telemetryChoice=null;
+function setTelemetryConsent(enabled) {
+ document.getElementById('telemetry-consent').checked=enabled;
+}
 function postStorage(message) {
  if(window.webkit?.messageHandlers?.browser) window.webkit.messageHandlers.browser.postMessage(message);
  else window.chrome?.webview?.postMessage(message);
@@ -73,6 +80,7 @@ function postStorage(message) {
 function updateStorage() {
  document.querySelectorAll('.setup-choice').forEach((button,index)=>button.setAttribute('aria-pressed',String((index===0)===(storageChoice==='new'))));
  document.querySelectorAll('button').forEach(button=>button.disabled=storageBusy);
+ document.getElementById('telemetry-consent').disabled=storageBusy;
  document.getElementById('get-started').disabled=storageBusy || (storageChoice==='existing' && !storageDirectory);
  const selected=storageChoice==='existing' && !!storageDirectory;
  document.getElementById('storage-existing').dataset.change=String(selected);
@@ -104,7 +112,7 @@ function continueSetup(event) {
  if(storageBusy) return;
  if(storageChoice!=='existing' || storageDirectory) {
   storageLoading();
-  postStorage({storage:storageChoice,directory:storageDirectory});
+  postStorage({storage:storageChoice,directory:storageDirectory,telemetry:telemetryChoice});
  }
 }
 function showStorageSetup() {

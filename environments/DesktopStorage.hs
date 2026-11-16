@@ -1,23 +1,47 @@
-module DesktopStorage (WorkspaceSignal(..), saveWhenReady, awaitServerAddress, storageMode, preferenceScript, validPreference) where
+module DesktopStorage (WorkspaceSignal(..), saveWhenReady, awaitServerAddress, storageMode, preferenceScript, validPreference, bootstrapConsentScript, applyBootstrapConsent) where
 
-import Control.Exception (SomeException, try)
-import Control.Monad (forM_, guard)
+import Control.Exception (SomeException, IOException, try, displayException)
+import Control.Concurrent (forkIO)
+import Control.Monad (forM_, guard, void, unless)
 import Data.IORef
-import Data.Aeson (Value, encode, decodeStrict)
+import Data.Aeson (Value(..), encode, decodeStrict, object, (.=))
 import qualified Data.ByteString.Lazy as BL
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.Text.IO as TIO
 import qualified Data.UUID.V4 as UUID
-import DataRoot (StorageChoice(..), saveDataDirectory, storageError, storageMessage, startupMessage, openingStorage, openedStorage, startupErrorPrefix)
+import DataRoot (StorageChoice(..), saveDataDirectory, storageError, storageMessage, startupMessage, openingStorage, openedStorage, startupErrorPrefix, configDirectory)
 import Data.List (stripPrefix)
 import Network.URI
-import System.IO (Handle, hGetLine, hIsEOF)
+import qualified Network.HTTP.Client as HTTP
+import Network.HTTP.Types.Status (statusCode)
+import System.IO (Handle, hGetLine, hIsEOF, hPutStrLn, stderr)
 import System.FilePath
 import System.Timeout (timeout)
+import Types (readJSON, get, boolean)
 
 data WorkspaceSignal = Navigated | WorkspaceReady deriving (Eq)
+
+bootstrapConsentScript :: IO Text
+bootstrapConsentScript = do
+  result <- try $ do
+    path <- (</> "telemetry.json") <$> configDirectory
+    boolean . (`get` "enabled") <$> readJSON path Null
+  let enabled = either (const False) id (result :: Either IOException Bool)
+  pure ("window.setTelemetryConsent?.(" <> TE.decodeUtf8 (BL.toStrict (encode enabled)) <> ")")
+
+applyBootstrapConsent :: Text -> Bool -> IO ()
+applyBootstrapConsent address enabled = void $ forkIO $ do
+  result <- try $ do
+    manager <- HTTP.newManager HTTP.defaultManagerSettings
+    request <- HTTP.parseRequest (T.unpack address)
+    response <- HTTP.httpNoBody request
+      { HTTP.path="/api/host/telemetry", HTTP.method="PUT"
+      , HTTP.requestHeaders=[("Content-Type","application/json"),("X-Sapiens-Local","1")]
+      , HTTP.requestBody=HTTP.RequestBodyLBS (encode (object ["enabled" .= enabled])) } manager
+    unless (statusCode (HTTP.responseStatus response)==200) (ioError (userError "Could not save usage reporting preference"))
+  forM_ (either Just (const Nothing) (result :: Either SomeException ())) (hPutStrLn stderr . displayException)
 
 saveWhenReady :: IORef (Maybe WorkspaceSignal) -> WorkspaceSignal -> IORef (Maybe a)
               -> (a -> FilePath) -> (String -> IO ()) -> (a -> IO ()) -> IO ()
