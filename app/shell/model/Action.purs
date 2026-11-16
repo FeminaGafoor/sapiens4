@@ -16,6 +16,9 @@ data Action
   | LoadRegistry
   | Finalize
   | Poll
+  | TelemetryTick
+  | TelemetryConsent Boolean
+  | BrowserTelemetryConsent Boolean
   | Select String
   | SetScope Scope
   | Navigate Activity

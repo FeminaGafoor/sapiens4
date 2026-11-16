@@ -4,6 +4,7 @@ module Main where
 import Types
 import DataRoot
 import HostServer
+import qualified Telemetry
 import Assets
 import BuildUI
 import Computer
@@ -89,7 +90,8 @@ repository = do
 hostMain :: FilePath -> [String] -> IO ()
 hostMain root args = do
  when ("--help" `elem` args || "-h" `elem` args) $ putStrLn "Usage: sapiens4 [--port PORT] [--data-dir DIRECTORY] [--open]" >> exitSuccess
- validated (validateOptions ["--port","--data-dir"] ["--open","--desktop"] args)
+ validated (validateOptions ["--port","--data-dir",Telemetry.startupConsentOption] ["--open","--desktop"] args)
+ consent <- traverse (either (failure 400 . T.pack) pure . eitherDecode . BL.pack) (optionValue Telemetry.startupConsentOption args)
  port <- validated (parseIntegerOption "--port" "4174" args)
  require (port>=0 && port<=65535) 400 "Port must be between 0 and 65535"
  directory <- case optionValue "--data-dir" args of
@@ -102,7 +104,7 @@ hostMain root args = do
     else defaultDataDirectory
  void (asset root "/")
  void (asset root "/workspace/app.js")
- bracket (startHost directory port False) hostStop $ \host -> do
+ bracket (startHost consent directory port False) hostStop $ \host -> do
   let url="http://127.0.0.1:"<>show (hostPort host)<>"/workspace/"
   putStrLn ("Sapiens4: "<>url<>"\nUI database: "<>directory</>"corpora.sqlite3")
   finished <- newEmptyMVar

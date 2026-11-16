@@ -1,0 +1,177 @@
+module Collector where
+
+import Control.Concurrent.MVar
+import Control.Exception
+import Control.Monad (unless)
+import Crypto.Hash (SHA256)
+import Crypto.MAC.HMAC (HMAC, hmac)
+import Data.Aeson
+import qualified Data.Aeson.KeyMap as KM
+import qualified Data.Aeson.Key as K
+import Data.Aeson.Types (parseEither)
+import qualified Data.ByteArray as BA
+import Data.ByteArray.Encoding (Base(Base16), convertToBase)
+import qualified Data.ByteString as B
+import qualified Data.ByteString.Base64 as Base64
+import qualified Data.ByteString.Char8 as BC
+import qualified Data.ByteString.Lazy as BL
+import qualified Data.Set as S
+import Data.Text (Text)
+import qualified Data.Text.Encoding as TE
+import Data.Time
+import qualified Data.UUID as UUID
+import qualified Data.UUID.V4 as UUID
+import qualified Data.Vector as V
+import Network.HTTP.Types
+import Network.Wai
+import qualified Parquet.HighLevel as P
+import qualified Parquet.Types as P
+import qualified Parquet.Write as P
+import System.Directory
+import System.FilePath
+import System.IO
+import TelemetryWire
+
+data Config = Config
+ { bindAddress :: String, listenPort :: Int, outputDirectory :: FilePath
+ , flushRows :: Int, flushBytes :: Int, flushColumns :: Int, flushAgeSeconds :: NominalDiffTime
+ , blockedInstallations :: S.Set Text, blockedVersions :: S.Set Text }
+ deriving Show
+
+defaultFlushRows, defaultFlushBytes, defaultFlushColumns :: Int
+defaultFlushRows = 1000
+defaultFlushBytes = 4 * 1024 * 1024
+defaultFlushColumns = 1024
+defaultFlushAge :: NominalDiffTime
+defaultFlushAge = 60
+instance FromJSON Config where
+ parseJSON = withObject "collector config" $ \o -> do
+  config <- Config <$> o .:? "bind" .!= "127.0.0.1" <*> o .:? "port" .!= 4181
+   <*> o .: "output_directory"
+   <*> o .:? "flush_rows" .!= defaultFlushRows <*> o .:? "flush_bytes" .!= defaultFlushBytes
+   <*> o .:? "flush_columns" .!= defaultFlushColumns
+   <*> (realToFrac <$> (o .:? "flush_age_seconds" .!= (realToFrac defaultFlushAge :: Double)))
+   <*> (S.fromList <$> o .:? "blocked_installations" .!= []) <*> (S.fromList <$> o .:? "blocked_versions" .!= [])
+  unless (listenPort config>0 && listenPort config<=65535 && flushRows config>=batchLimit && flushBytes config>=requestByteLimit && flushColumns config>=objectFieldLimit && flushAgeSeconds config>0) (fail "Invalid collector limits")
+  pure config
+
+type Row = Object
+data Buffer = Buffer { bufferedRows :: [Row], bufferedCount :: Int, bufferedBytes :: Int, bufferedColumns :: S.Set K.Key, firstRowAt :: Maybe UTCTime }
+emptyBuffer :: Buffer
+emptyBuffer = Buffer [] 0 0 S.empty Nothing
+data Collector = Collector { collectorConfig :: Config, collectorSecret :: B.ByteString, collectorBuffer :: MVar Buffer }
+
+newCollector :: Config -> B.ByteString -> IO Collector
+newCollector config secret = do
+ createDirectoryIfMissing True (outputDirectory config)
+ Collector config secret <$> newMVar emptyBuffer
+
+passwordFor :: B.ByteString -> Text -> B.ByteString
+passwordFor secret ident = convertToBase Base16 (hmac secret ("sapiens4 telemetry installation v1\0" <> TE.encodeUtf8 ident) :: HMAC SHA256)
+
+authenticate :: B.ByteString -> Maybe B.ByteString -> Maybe Text
+authenticate secret header = do
+ encoded <- header >>= B.stripPrefix "Basic "
+ decoded <- either (const Nothing) Just (Base64.decode encoded)
+ let (user,rest) = BC.break (==':') decoded
+ ident <- either (const Nothing) Just (TE.decodeUtf8' user)
+ parsed <- UUID.fromText ident
+ let canonical = UUID.toText parsed
+ if not (B.null rest) && ident==canonical && BA.constEq (B.drop 1 rest) (passwordFor secret ident) then Just ident else Nothing
+
+normalizeRows :: UTCTime -> Text -> Object -> [Object] -> [Row]
+normalizeRows received ident context = map (\row -> KM.union reserved (KM.union commonContext (KM.union row context)))
+ where
+ reserved = KM.fromList [("installation_id",String ident),("received_at",toJSON received)]
+ commonContext = KM.filterWithKey (\key _ -> key `elem` ["app_version","host_os","host_arch","runtime_kind"]) context
+
+cell :: Value -> Maybe B.ByteString
+cell Null = Nothing
+cell (String value) = Just (TE.encodeUtf8 value)
+cell value = Just (BL.toStrict (encode value))
+
+encodeRows :: [Row] -> B.ByteString
+encodeRows rows = P.encodeParquetMixed P.defaultWriteOptions {P.writeCompression=P.Uncompressed} schema [columns]
+ where
+ names = S.toAscList (S.unions (map (S.fromList . KM.keys) rows))
+ root = P.SchemaElement "schema" Nothing Nothing (Just (fromIntegral (length names))) Nothing Nothing Nothing Nothing
+ leaf name = P.SchemaElement (K.toText name) (Just P.Optional) (Just P.PTByteArray) Nothing (Just P.CTUtf8) (Just P.LTString) Nothing Nothing
+ schema = V.fromList (root : map leaf names)
+ columns = V.fromList [P.PCOptional (P.OptByteArray (V.fromList [KM.lookup name row >>= cell | row<-rows])) | name<-names]
+
+writeRows :: Config -> [Row] -> IO ()
+writeRows config rows = do
+ ident <- UUID.toString <$> UUID.nextRandom
+ let folder = outputDirectory config
+ bracketOnError (openBinaryTempFile folder ".telemetry.tmp") (\(path,handle) -> hClose handle `finally` removeFile path) $ \(path,handle) -> do
+  B.hPut handle (encodeRows rows)
+  hClose handle
+  renameFile path (folder </> ident <.> "parquet")
+
+due :: Config -> UTCTime -> Buffer -> Bool
+due config now buffer = bufferedCount buffer>=flushRows config || bufferedBytes buffer>=flushBytes config || maybe False ((>=flushAgeSeconds config) . diffUTCTime now) (firstRowAt buffer)
+
+flushBuffer :: Config -> Buffer -> IO Bool
+flushBuffer config buffer = if bufferedCount buffer==0 then pure True else do
+ result <- try (writeRows config (reverse (bufferedRows buffer)))
+ case result of
+  Left (errorValue::IOException) -> hPutStrLn stderr ("Telemetry Parquet write failed: "<>displayException errorValue) >> pure False
+  Right () -> pure True
+
+flushCollector :: Collector -> (Buffer -> Bool) -> IO ()
+flushCollector collector shouldFlush = modifyMVar_ (collectorBuffer collector) $ \buffer ->
+ if not (shouldFlush buffer) then pure buffer else do
+  saved <- flushBuffer (collectorConfig collector) buffer
+  pure (if saved then emptyBuffer else buffer)
+
+admit :: Collector -> UTCTime -> [Row] -> IO Bool
+admit collector now rows = modifyMVar (collectorBuffer collector) $ \prior -> do
+ let config = collectorConfig collector
+     bytes = sum [fromIntegral (BL.length (encode row)) | row<-rows]
+     count = length rows
+     names = S.unions (map (S.fromList . KM.keys) rows)
+     tooLarge = count>flushRows config || bytes>flushBytes config || S.size names>flushColumns config
+     overflow = bufferedCount prior+count>flushRows config || bufferedBytes prior+bytes>flushBytes config || S.size (S.union names (bufferedColumns prior))>flushColumns config
+     flush = flushBuffer config
+ ready <- if tooLarge then pure False else if overflow then flush prior else pure True
+ if not ready then pure (prior,False) else do
+  let base = if overflow then emptyBuffer else prior
+      appended = Buffer (reverse rows ++ bufferedRows base) (bufferedCount base+count) (bufferedBytes base+bytes) (S.union names (bufferedColumns base)) (case firstRowAt base of Nothing -> Just now; value -> value)
+  if due config now appended then do
+   saved <- flush appended
+   pure (if saved then emptyBuffer else appended,True)
+  else pure (appended,True)
+
+readBounded :: Request -> IO (Either () BL.ByteString)
+readBounded req = loop 0 []
+ where
+ loop count chunks = do
+  chunk <- getRequestBodyChunk req
+  let next = count+B.length chunk
+  if next>requestByteLimit then pure (Left ()) else if B.null chunk then pure (Right (BL.fromChunks (reverse chunks))) else loop next (chunk:chunks)
+
+collectorApplication :: Collector -> Application
+collectorApplication collector req respond = do
+ let reply status value = respond (responseLBS status [(hContentType,"application/json")] (encode value))
+     errorReply status reason = reply status (object ["error" .= (reason::Text)])
+     config = collectorConfig collector
+ if requestMethod req/="POST" then errorReply status405 "POST required"
+ else if rawPathInfo req==BC.pack enrollPath then do
+  ident <- UUID.toText <$> UUID.nextRandom
+  reply status201 (toJSON (Credentials ident (TE.decodeUtf8 (passwordFor (collectorSecret collector) ident))))
+ else if rawPathInfo req/=BC.pack eventsPath then errorReply status404 "Not found"
+ else case authenticate (collectorSecret collector) (lookup hAuthorization (requestHeaders req)) of
+  Nothing -> errorReply status401 "Invalid installation credentials"
+  Just ident | S.member ident (blockedInstallations config) -> errorReply status403 "Installation blocked"
+  Just ident -> do
+   body <- readBounded req
+   case body of
+    Left () -> errorReply status413 "Request too large"
+    Right raw -> case eitherDecode raw >>= parseEither envelope of
+     Left _ -> errorReply status400 "Invalid telemetry envelope"
+     Right (context,events) -> case KM.lookup "app_version" context of
+      Just (String version) | S.member version (blockedVersions config) -> errorReply status403 "Version blocked"
+      _ -> do
+       now <- getCurrentTime
+       accepted <- admit collector now (normalizeRows now ident context events)
+       if accepted then reply status202 (object ["accepted" .= length events]) else errorReply status503 "Telemetry buffer full"

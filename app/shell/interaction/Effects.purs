@@ -23,6 +23,7 @@ import Sapiens.Model as M
 import Sapiens.Navigation as N
 import Sapiens.Workspace as W
 import Sapiens.Update as U
+import Sapiens.Telemetry as Telemetry
 
 type UI = H.HalogenM M.Model Action () Void Aff
 type Dispatch = Action -> UI Unit
@@ -67,7 +68,13 @@ api :: C.Runtime -> M.Model -> String -> String -> Json -> Aff Json
 api runtime m path method body = do
   when ((M.busy m) || m.active == "") $ throwError $ error "Connecting…"
   when (not (M.online m) && method /= "GET") $ throwError $ error "Offline — read only."
-  C.request runtime (M.remote m) (M.activeRecord m) path method body
+  payload <- if method == "POST" && D.matches "^/api/agents/[^/]+/messages$" path then do
+    saved <- liftEffect $ B.storageRead Telemetry.browserConsentKey
+    pure $ if m.telemetryEnabled && Telemetry.deviceConsent (m.browserTelemetryEnabled && saved == "true") m.env
+      then D.put "client_context" (Telemetry.requestMetadata m.env) body
+      else D.remove "client_context" body
+    else pure body
+  C.request runtime (M.remote m) (M.activeRecord m) path method payload
 
 notify :: String -> UI Unit
 notify text = do
@@ -107,7 +114,7 @@ runUpdate runtime dispatch action = do
     U.ConnectRecord record -> do
       current <- H.get
       liftEffect $ Updates.stop runtime.updates
-      refresh runtime dispatch current $ C.authenticate runtime (M.remote current) record *> C.request runtime (M.remote current) record "/api/state" "GET" D.null
+      refresh runtime dispatch current $ C.authenticate runtime (M.remote current) (Telemetry.deviceConsent current.browserTelemetryEnabled current.env) record *> C.request runtime (M.remote current) record "/api/state" "GET" D.null
     U.ChangeLifecycle command -> attempt (C.reconcile runtime (M.remote requested) requested.records requested.active *> C.lifecycle runtime (M.remote requested) (M.activeRecord requested) (X.lifecycleName command)) $
       runUpdate runtime dispatch <<< U.LifecycleReceived requested.epoch <<< either (Left <<< message) (Right <<< X.corpora)
     U.Dispatch next -> dispatch next

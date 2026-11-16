@@ -29,11 +29,14 @@ executable sapiens-domain
   ghc-options: -O2 -Wall -Werror
 
 common host
-  hs-source-dirs: corpora, corpora/state, corpora/work, corpora/work/schedule, corpora/host, remote/relay, remote/control, remote/protocol, build
+  hs-source-dirs: corpora, corpora/state, corpora/work, corpora/work/schedule, corpora/host, corpora/telemetry, remote/relay, remote/control, remote/protocol, build
   other-modules:
     Command,
     Domain,
     RuntimePaths,
+    Telemetry,
+    TelemetryWire,
+    Paths_sapiens_domain,
     DataRoot,
     Assets,
     BuildUI,
@@ -88,10 +91,13 @@ executable sapiens-linux
 
 executable sapiens-macos
   import: runtime
-  hs-source-dirs: environments/macos, environments, corpora/state
+  hs-source-dirs: environments/macos, environments, corpora/state, corpora/telemetry
   other-modules:
     Domain,
     RuntimePaths,
+    Telemetry,
+    TelemetryWire,
+    Paths_sapiens_domain,
     DataRoot,
     DesktopStorage,
     Types,
@@ -112,6 +118,9 @@ common windows-host
   other-modules:
     Domain,
     RuntimePaths,
+    Telemetry,
+    TelemetryWire,
+    Paths_sapiens_domain,
     DataRoot,
     DesktopStorage,
     Types,
@@ -128,7 +137,7 @@ common windows-host
 
 executable sapiens-windows
   import: windows-host
-  hs-source-dirs: environments/windows, environments, corpora/state
+  hs-source-dirs: environments/windows, environments, corpora/state, corpora/telemetry
   main-is: WindowsMain.hs
   if os(windows)
     ld-options: .build/haskell/windows-resources.o
@@ -136,7 +145,7 @@ executable sapiens-windows
 
 executable sapiens-windows-probe
   import: windows-host
-  hs-source-dirs: spec/support, environments/windows, environments, corpora/state
+  hs-source-dirs: spec/support, environments/windows, environments, corpora/state, corpora/telemetry
   main-is: WindowsProbeMain.hs
 
 executable sapiens-provider

@@ -24,6 +24,7 @@ import System.FileLock
 import System.FilePath
 import System.Info
 import Types
+import qualified Telemetry
 import DataRoot
 import qualified Computer
 import qualified Store as DB
@@ -51,7 +52,8 @@ openService choice path = do
       unless exists $ do i<-UUID.toText <$> UUID.nextRandom; writeJSON identityPath (obj [("version",num 1),("corpora_id",str i)])
       identity <- readJSON identityPath empty
       require (get identity "version"==num 1 && maybe False ((==at identity "corpora_id") . UUID.toText) (UUID.fromText (at identity "corpora_id"))) 409 "Invalid CORPORA identity. Restore corpora-identity.json from backup."
- prepareIdentity `onException` unlockFile lock
+      pure (at identity "corpora_id")
+ corporaId <- prepareIdentity `onException` unlockFile lock
  database <- (DB.openDatabase root >>= newMVar . Just) `onException` unlockFile lock
  let initialize = do
       guard <- newMVar ()
@@ -66,7 +68,8 @@ openService choice path = do
       revision <- newTVarIO 0
       subscribers <- newTVarIO 0
       files <- newIORef Set.empty
-      let s=Service root repo guard lock stopping worker runs lease endpoint pulse actors database states revision subscribers files
+      telemetry <- newIORef Nothing
+      let s=Service root repo guard lock stopping worker runs lease endpoint pulse actors database states revision subscribers files telemetry corporaId
       DB.initialize s
       migrateWorkspaces s
       rows <- DB.agents s
@@ -188,13 +191,13 @@ savePreferences s d = do
  let current=merge prefs (if has d "attachment_drafts" then put "attachment_drafts" (obj drafts) d else d)
  DB.saveSingleton s DB.Preferences current
  pure (obj [("saved",Bool True),("preferences",current)])
-dispatch :: Service -> Text -> Text -> Maybe Value -> IO (Int,BL.ByteString,Text)
-dispatch s "PUT" "/api/model-settings" body = do
+dispatch :: Telemetry.RequestTransport -> Service -> Text -> Text -> Maybe Value -> IO (Int,BL.ByteString,Text)
+dispatch _ s "PUT" "/api/model-settings" body = do
  requested <- decodeValue 400 (fromMaybe Null body)
  Provider.validateModelSettingsDraft s requested
  saved <- locked s (saveModelSettings s requested)
  pure (200,encode saved,"application/json; charset=utf-8")
-dispatch s method target body = locked s $ do
+dispatch transport s method target body = locked s $ do
  let (path,query)=T.breakOn "?" target; parts=filter (not . T.null) (T.splitOn "/" path); write=method `elem` ["POST","PUT"]; d=fromMaybe Null body
  when write $ require (case d of Object _->True; _->False) 400 "Expected a JSON object"
  cfg <- corporaSettings s
@@ -202,6 +205,13 @@ dispatch s method target body = locked s $ do
  let json code action = do value<-action; when write (notifyChange s); pure (code,encode value,"application/json; charset=utf-8")
      owner kind a=if kind=="groups" then void (G.getGroup s a False) else void (DB.agent s a)
  case (method,parts) of
+  ("GET",["api","telemetry"]) -> json 200 $ do
+   telemetry <- readIORef (serviceTelemetry s)
+   maybe (pure (obj [("enabled",Bool False),("available",Bool False)])) Telemetry.consentView telemetry
+  ("POST",["api","telemetry","heartbeat"]) -> json 202 $ do
+   telemetry <- readIORef (serviceTelemetry s)
+   forM_ telemetry $ \reporter -> Telemetry.uiHeartbeat reporter d
+   pure (obj [("accepted",Bool True)])
   ("GET",["api","model-settings"]) -> json 200 (toJSON <$> readModelSettings s)
   ("GET",["api","providers"]) -> json 200 (Provider.providersView (repositoryRoot s))
   ("GET",["api","health"]) -> json 200 (pure (obj [("status",str "ok"),("provider",str "codex")]))
@@ -231,7 +241,7 @@ dispatch s method target body = locked s $ do
   ("POST",["api","groups",gid,"calls",rid,action]) -> json 200 (GC.actionGroup s gid rid action)
   ("POST",["api","agents"]) -> json 201 $ do row<-createAgent s d; Mgt.prepare s (at row "id"); pure row
   ("PUT",["api","agents",a]) -> json 200 (updateAgent s a d)
-  ("POST",["api","agents",a,"messages"]) -> json 202 (E.submitTurn s a d)
+  ("POST",["api","agents",a,"messages"]) -> json 202 (E.submitTurn transport s a d)
   ("POST",["api","agents",a,"control"]) -> json 200 (withActor s a Nothing (Mgt.control s a d))
   ("POST",["api","agents",a,"turns",tid,action]) -> json 200 (E.turnAction s a tid action)
   ("PUT",["api","preferences"]) -> json 200 (savePreferences s d)

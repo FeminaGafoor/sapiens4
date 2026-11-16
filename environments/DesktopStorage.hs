@@ -1,23 +1,33 @@
-module DesktopStorage (WorkspaceSignal(..), saveWhenReady, awaitServerAddress, storageMode, preferenceScript, validPreference) where
+module DesktopStorage (WorkspaceSignal(..), saveWhenReady, awaitServerAddress, storageMode, preferenceScript, validPreference, bootstrapConsentScript, startupConsentArguments) where
 
-import Control.Exception (SomeException, try)
+import Control.Exception (SomeException, IOException, try)
 import Control.Monad (forM_, guard)
 import Data.IORef
-import Data.Aeson (Value, encode, decodeStrict)
+import Data.Aeson (Value(..), encode, decodeStrict)
 import qualified Data.ByteString.Lazy as BL
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.Text.IO as TIO
 import qualified Data.UUID.V4 as UUID
-import DataRoot (StorageChoice(..), saveDataDirectory, storageError, storageMessage, startupMessage, openingStorage, openedStorage, startupErrorPrefix)
+import DataRoot (StorageChoice(..), saveDataDirectory, storageError, storageMessage, startupMessage, openingStorage, openedStorage, startupErrorPrefix, configDirectory)
 import Data.List (stripPrefix)
 import Network.URI
 import System.IO (Handle, hGetLine, hIsEOF)
 import System.FilePath
 import System.Timeout (timeout)
+import Types (readJSON, get, boolean)
+import Telemetry (startupConsentArguments)
 
 data WorkspaceSignal = Navigated | WorkspaceReady deriving (Eq)
+
+bootstrapConsentScript :: IO Text
+bootstrapConsentScript = do
+  result <- try $ do
+    path <- (</> "telemetry.json") <$> configDirectory
+    boolean . (`get` "enabled") <$> readJSON path Null
+  let enabled = either (const False) id (result :: Either IOException Bool)
+  pure ("window.setTelemetryConsent?.(" <> TE.decodeUtf8 (BL.toStrict (encode enabled)) <> ")")
 
 saveWhenReady :: IORef (Maybe WorkspaceSignal) -> WorkspaceSignal -> IORef (Maybe a)
               -> (a -> FilePath) -> (String -> IO ()) -> (a -> IO ()) -> IO ()

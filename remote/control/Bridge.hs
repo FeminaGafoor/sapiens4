@@ -1,6 +1,7 @@
 module Bridge where
 
 import Types
+import qualified Telemetry
 import qualified Service as Service
 import Crypto
 import Receipt (legacyJSON)
@@ -135,6 +136,7 @@ approvePairing b input = modifyMVar (bridgeConfig b) $ \config -> do
  accept <- replyFrame paired (approvalRequest approval) (obj [("paired",Bool True),("corpora",identity)])
  let updated = put "accept" accept paired
  saveConfig b updated
+ emitTelemetry (bridgeService b) Telemetry.RemotePaired (Telemetry.pairedMetadata (get paired "device_info"))
  pure (updated,obj [("approved",Bool True)])
 deleteRoom :: Value -> IO Bool
 deleteRoom config = (request (at config "relay") ("/api/rooms/"<>at config "room") (at config "token") "DELETE" Nothing >> pure True)
@@ -149,7 +151,7 @@ revokeBridge b notify = do
 closeBridge :: Bridge -> IO ()
 closeBridge b = readMVar (bridgeThread b) >>= mapM_ cancel
 cleanDeviceInfo :: Value -> Value
-cleanDeviceInfo value = obj [(k,str (T.take 200 (T.strip (T.filter isPrint s)))) | k <- ["name","platform","client"], String s <- [get value k]]
+cleanDeviceInfo value = obj ([(k,str (T.take 200 (T.strip (T.filter isPrint s)))) | k <- ["name","platform","client"], String s <- [get value k]] ++ [("usage_reporting",Bool (get value "usage_reporting"==Bool True))])
 connectionUpdate :: Double -> S.Set Text -> Value -> Value -> (Bool,Text,Value)
 connectionUpdate time connections config message = (changed,connection,final)
  where
@@ -180,7 +182,7 @@ remoteRequest message = do
 executeRemote :: Bridge -> Value -> IO Value
 executeRemote b message = do
  RemoteRequest method target input <- validated (remoteRequest message)
- (status,body,mime) <- Service.dispatch (bridgeService b) method target input
+ (status,body,mime) <- Service.dispatch Telemetry.Remote (bridgeService b) method target input
   `catch` \(APIError status messageText) -> pure (status,encode (obj [("error",str messageText)]),"application/json")
  let isJSON = "application/json" `T.isPrefixOf` mime
  pure (obj [("status",num status),("body",if isJSON then fromMaybeValue (decode body) else str (b64 (BL.toStrict body))),("mime",str mime),("binary",Bool (not isJSON))])

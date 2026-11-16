@@ -272,7 +272,8 @@ desktopSession memory probe = do
                 Right identity -> do
                   writeIORef preferenceScript (Just identity)
                   navigate view url
-          startSelected requestedChoice directory = mask $ \unmask -> do
+          startSelected = startSelectedWithConsent Nothing
+          startSelectedWithConsent consent requestedChoice directory = mask $ \unmask -> do
             busy <- atomicModifyIORef' starting (\value -> (True,value))
             unless busy $ do
               modifyIORef' storageAttempt (+1)
@@ -286,13 +287,14 @@ desktopSession memory probe = do
                   let selected = host {dataDirectory=selectedDirectory}
                   guestScript <- B.readFile (runtimeDirectory host </> ".build/web/guest.js")
                   when (B.all (`elem` (" \t\r\n" :: String)) guestScript) $ ioError $ userError "The packaged guest.js is empty. Reinstall the complete Sapiens4 app."
-                  url <- startHost choice selected
+                  url <- startHost consent choice selected
                   post $ installStorage selected url `catch` (\(e :: SomeException) -> recoverStartup $ storageMessage e)
               writeIORef workerRef (Just worker)
           chooseStorage message = do
+            let consent = case field "telemetry" message of Bool enabled -> Just enabled; _ -> Nothing
             busy <- readIORef starting
             unless busy $ case field "storage" message of
-              String "new" -> startSelected (Just StartNew) (dataDirectory host)
+              String "new" -> startSelectedWithConsent consent (Just StartNew) (dataDirectory host)
               String "pick" -> do
                 picking <- atomicModifyIORef' starting (\value -> (True,value))
                 unless picking $ do
@@ -303,7 +305,7 @@ desktopSession memory probe = do
                       Right selected -> storageScript ("window.storagePicked?.(" ++ T.unpack (TE.decodeUtf8 $ L.toStrict $ encode selected) ++ ")")
               String "existing" -> do
                 let directory=string (field "directory" message)
-                if isAbsolute directory then startSelected Nothing directory
+                if isAbsolute directory then startSelectedWithConsent consent Nothing directory
                   else storageError "Choose a folder before continuing."
               _ -> pure ()
           loaded attempt onLoaded result = do
@@ -355,6 +357,7 @@ desktopSession memory probe = do
                   void $ showWindow label 0
                   current <- getString (core view) 4
                   if bootstrapSource current then do
+                    DesktopStorage.bootstrapConsentScript >>= storageScript . T.unpack
                     atomicModifyIORef' workerRef (\old -> (Nothing,old)) >>= mapM_ cancel
                     recovered <- atomicModifyIORef' recoveryError (\value -> (Nothing,value))
                     writeIORef starting False

@@ -24,6 +24,14 @@ import Sapiens.Work as W
 nameHelp :: String
 nameHelp = "Start with A–Z. Letters, numbers, and - _ . : # + | ( ) & $ ^ are allowed. No spaces."
 
+telemetryConsent :: String -> String -> Boolean -> (Boolean -> Action) -> V.Html
+telemetryConsent scope marker checked action = V.div "telemetry-consent"
+  [V.node "label" [] [V.node "input" [V.attr "type" "checkbox",V.label $ "Share basic usage statistics for " <> scope,V.bool "checked" checked,V.check action] [],V.text "Share basic usage statistics"]
+  ,V.node "details" [V.cls "telemetry-info"]
+    [V.textNode "summary" [V.label "About usage statistics"] "ⓘ"
+    ,V.textNode "span" [V.cls "telemetry-tooltip",V.attr "role" "tooltip"] "Shares usage counts and app/device context. No conversations, prompts, files, paths or account details."]
+  ,V.when (marker /= "") $ V.textNode "small" [] marker]
+
 make :: M.DialogKind -> F.Context -> M.Model -> M.Dialog
 make kind record m = {kind,title,record,fields,content,status:M.Editing,identity:m.sequence+1}
   where
@@ -89,7 +97,12 @@ dialogTitle d
 
 body :: M.Model -> M.Dialog -> V.Html
 body m d = case d.kind of
-  M.AppMenu -> V.node "nav" [V.label "Corpora menu"] [V.button "app-menu-row" "Workspace & settings" $ OpenDialog M.WorkspaceSettings F.NoRecord,V.button "app-menu-row" "Shared computer" $ OpenDialog M.Computer F.NoRecord]
+  M.AppMenu -> V.node "nav" [V.label "Corpora menu"]
+    [V.button "app-menu-row" "Workspace & settings" $ OpenDialog M.WorkspaceSettings F.NoRecord
+    ,V.button "app-menu-row" "Shared computer" $ OpenDialog M.Computer F.NoRecord
+    ,V.when (not $ M.remote m) $ telemetryConsent "host app" (if m.env.native then "" else "App") m.telemetryEnabled TelemetryConsent
+    ,V.when (not m.env.native) $ telemetryConsent "this browser" (if M.remote m then "" else "Browser") m.browserTelemetryEnabled BrowserTelemetryConsent
+    ,V.when (m.telemetryError /= "") $ V.p "" m.telemetryError]
   M.WorkspaceSettings -> V.div "workspace-settings"
     [V.node "nav" [V.label "Workspace settings"]
       [settingsLink "Models" "Provider, model and per-Sapi choices." M.Models

@@ -1,7 +1,7 @@
 module Sapiens.Remote where
 
 import Prelude
-import Sapiens.Environment (Environment)
+import Sapiens.Environment (Environment, clientDetails)
 import Sapiens.Platform as Platform
 import Control.Promise (toAffE)
 import Data.Argonaut.Core (Json, toArray)
@@ -114,20 +114,9 @@ confirmation session = do
 
 deviceInfo :: Environment -> Json
 deviceInfo env =
-  let ua = env.userAgent
-      ipad = D.matches "iPad" ua || (D.matches "Macintosh" ua && env.touchPoints > 1.0)
-      name = if ipad then "iPad" else if D.matches "iPhone" ua then "iPhone" else if D.matches "Android" ua then "Android device" else if D.matches "Windows" ua then "Windows PC" else if D.matches "Macintosh" ua then "Mac" else if D.matches "Linux" ua then "Linux device" else "Remote device"
-      versionPattern = "(?:CPU (?:iPhone )?OS|iPhone OS|Android|Windows NT|Mac OS X) ([0-9_.]+)"
-      version = if D.matches versionPattern ua then " " <> D.replace "_" "." (D.replace ("^.*?" <> versionPattern <> ".*$") "$1" ua) else ""
-      platform = case name of
-        "iPad" -> "iPadOS"
-        "iPhone" -> "iOS"
-        "Android device" -> "Android"
-        "Windows PC" -> "Windows"
-        "Mac" -> "macOS"
-        "Linux device" -> "Linux"
-        _ -> "Unknown platform"
-  in D.json {name, platform: platform <> version, client: if env.installed then "Sapiens4 Home Screen app" else "Sapiens4 browser"}
+  let info = clientDetails env
+      platform = if info.os == "unknown" then "Unknown platform" else info.os
+  in D.json {name:info.name,platform:platform <> (if info.version == "" then "" else " " <> info.version),client:if env.native then "Sapiens4 desktop" else if env.installed then "Sapiens4 Home Screen app" else "Sapiens4 browser"}
 
 create :: Json -> Aff Transport
 create source = do
@@ -302,10 +291,13 @@ request client timeout payload = do
         Ref.modify_ (O.delete id) client.pending
     pure $ effectCanceler $ Ref.modify_ (O.delete id) client.pending
 
-authenticate :: Transport -> Boolean -> Aff Json
-authenticate client pairing = do
+authenticate :: Transport -> Boolean -> Boolean -> Aff Json
+authenticate client pairing metadataAllowed = do
   session <- liftEffect $ Ref.read client.session
-  result <- request client (if pairing then 180000 else 15000) $ if pairing then D.json {kind: "pair", secret: D.get "secret" session} else D.json {kind: "request", op: "resume"}
+  env <- liftEffect Platform.environment
+  let payload = if pairing then D.json {kind: "pair", secret: D.get "secret" session} else D.json {kind: "request", op: "resume"}
+      info = D.put "usage_reporting" (D.json metadataAllowed) (deviceInfo env)
+  result <- request client (if pairing then 180000 else 15000) $ D.put "device_info" info payload
   let corpora = D.get "corpora" result
       previous = D.str $ D.at ["corpora","id"] session
   unless (D.b "paired" result && D.s "name" corpora /= "" && CU.length (D.s "name" corpora) <= 200 && D.matches "^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$" (D.s "id" corpora) && (previous == "" || previous == D.s "id" corpora)) $ throwError $ error "Corpora identity changed. Connect again."

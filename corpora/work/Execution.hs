@@ -8,6 +8,8 @@ import Control.Concurrent.Async
 import Control.Exception
 import Control.Monad
 import Data.Aeson hiding (pairs)
+import qualified Data.Aeson.Key as K
+import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString.Lazy as BL
 import Data.IORef
 import Data.List (find,nub)
@@ -20,6 +22,7 @@ import qualified Data.Text as T
 import GHC.Clock
 import System.Directory
 import Types
+import qualified Telemetry
 import qualified Store as DB
 import Population
 import Workspace
@@ -59,14 +62,15 @@ trimConversation s a = do
  let Retention final archives = retainConversation state
  forM_ archives $ \(ConversationArchive field rows) -> newId >>= \i -> writeJSON (archivePath s a (field<>"/"<>i)) (arr rows)
  when (final/=state) (decodeValue 500 final >>= saveState s a)
-submitTurn :: Service -> Text -> Value -> IO Value
-submitTurn s a d = do
+submitTurn :: Telemetry.RequestTransport -> Service -> Text -> Value -> IO Value
+submitTurn transport s a d = do
  input <- either (failure 400) pure (messageText (get d "text"))
  let flowValue=get d "flow" `fallback` str "chat"
  attachments <- resolveAttachments s a (get d "attachments" `fallback` arr []) True
  require (not (T.null input) || not (null attachments)) 400 "Write a message or attach a file"
  flow <- decodeValue 400 flowValue
- runModelSettings s a >>= void . providerFor s
+ selected <- runModelSettings s a
+ void (providerFor s selected)
  when (flow==Computer) $ blindly s >>= doesFileExist >>= \built -> require built 503 "Computer helper is missing. Reinstall Sapiens to repair it."
  stopped <- readIORef (serviceStopping s)
  require (not stopped) 503 "Server is shutting down"
@@ -87,6 +91,9 @@ submitTurn s a d = do
      agentState s a >>= saveState s a . enqueueTurn (RunId i) flow message time
      pure i
    DB.message s i input attachments
+   let counts = [(K.fromText (kind<>"_attachment_count"),toJSON (length (filter ((==kind) . (`at` "kind")) attachments))) | kind <- ["voice","image","document","link","filepath"]]
+       fields = KM.fromList ([("flow",toJSON flow),("is_clarification",Bool (isJust workload)),("selected_provider",toJSON (providerName (selectionProvider selected))),("selected_model",toJSON (selectionModel selected)),("selected_effort",toJSON (selectionEffort selected))] ++ counts)
+   emitTelemetry s Telemetry.RequestAccepted (KM.union (Telemetry.requestMetadata transport (get d "client_context")) fields)
    DB.forgetDrafts s a attachments
    DB.project s a
    trimConversation s a
