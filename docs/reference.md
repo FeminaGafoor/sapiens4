@@ -101,5 +101,4 @@ a supplied Origin must match the loopback Host. Common entrypoints:
 | GET / PUT | `/api/decision-prompts`, `/api/decision-prompts/<node>` | Inspect/edit templates |
 
 Group notes, messages, attachments, tasks and calls use `/api/groups/<id>`.
-Updates require the relevant revision. [RSpec scenarios](../spec) exercise the
-public contracts; see [Testing](testing.md) to run them.
+Updates require the relevant revision.

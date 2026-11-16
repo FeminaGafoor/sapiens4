@@ -14,17 +14,13 @@ main :: IO ()
 main = do
  args <- getArgs
  root <- getCurrentDirectory >>= buildPath
- -- Source releases omit test helpers; development checkouts build the probes.
- helpers <- filterM (doesFileExist . (root </>) . snd)
-  ([("sapiens-peer","spec/support/Peer.hs")] ++
-   if os=="mingw32" then [("sapiens-windows-probe","spec/support/WindowsProbeMain.hs"),("sapiens-provider","spec/support/WindowsProviderMain.hs")] else [])
  let project = root </> "submodules/libs4/haskell"
      cache = project </> ".cabal"
      build = project </> ".build"
      suffix = if os=="mingw32" then ".exe" else ""
      desktop = os=="linux" && "--desktop" `elem` args
      buildFlags = ["--flags=" ++ if desktop then "linux-desktop" else "-linux-desktop"]
-     targets = ["sapiens4","sapiens-domain"] ++ map fst helpers ++ if os=="darwin" then ["sapiens-macos"] else if os=="mingw32" then ["sapiens-windows"] else ["sapiens-linux" | desktop]
+     targets = ["sapiens4","sapiens-domain"] ++ if os=="darwin" then ["sapiens-macos"] else if os=="mingw32" then ["sapiens-windows"] else ["sapiens-linux" | desktop]
  setEnv "CABAL_DIR" cache
  createDirectoryIfMissing True cache
  index <- doesFileExist (cache </> "packages/hackage.haskell.org/01-index.tar")
