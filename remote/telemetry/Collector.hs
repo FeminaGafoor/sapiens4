@@ -111,6 +111,19 @@ writeRows config rows = do
 due :: Config -> UTCTime -> Buffer -> Bool
 due config now buffer = bufferedCount buffer>=flushRows config || bufferedBytes buffer>=flushBytes config || maybe False ((>=flushAgeSeconds config) . diffUTCTime now) (firstRowAt buffer)
 
+flushBuffer :: Config -> Buffer -> IO Bool
+flushBuffer config buffer = if bufferedCount buffer==0 then pure True else do
+ result <- try (writeRows config (reverse (bufferedRows buffer)))
+ case result of
+  Left (errorValue::IOException) -> hPutStrLn stderr ("Telemetry Parquet write failed: "<>displayException errorValue) >> pure False
+  Right () -> pure True
+
+flushCollector :: Collector -> (Buffer -> Bool) -> IO ()
+flushCollector collector shouldFlush = modifyMVar_ (collectorBuffer collector) $ \buffer ->
+ if not (shouldFlush buffer) then pure buffer else do
+  saved <- flushBuffer (collectorConfig collector) buffer
+  pure (if saved then emptyBuffer else buffer)
+
 admit :: Collector -> UTCTime -> [Row] -> IO Bool
 admit collector now rows = modifyMVar (collectorBuffer collector) $ \prior -> do
  let config = collectorConfig collector
@@ -119,11 +132,7 @@ admit collector now rows = modifyMVar (collectorBuffer collector) $ \prior -> do
      names = S.unions (map (S.fromList . KM.keys) rows)
      tooLarge = count>flushRows config || bytes>flushBytes config || S.size names>flushColumns config
      overflow = bufferedCount prior+count>flushRows config || bufferedBytes prior+bytes>flushBytes config || S.size (S.union names (bufferedColumns prior))>flushColumns config
-     flush buffer = if bufferedCount buffer==0 then pure True else do
-      result <- try (writeRows config (reverse (bufferedRows buffer)))
-      case result of
-       Left (errorValue::IOException) -> hPutStrLn stderr ("Telemetry Parquet write failed: "<>displayException errorValue) >> pure False
-       Right () -> pure True
+     flush = flushBuffer config
  ready <- if tooLarge then pure False else if overflow then flush prior else pure True
  if not ready then pure (prior,False) else do
   let base = if overflow then emptyBuffer else prior

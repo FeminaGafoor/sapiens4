@@ -12,6 +12,8 @@ common collector
     containers, vector, time, directory, filepath, uuid, crypton >=2.2.6 && <2.3,
     ram, base64-bytestring, wai, warp, http-types, wireform-parquet ==0.1.0.0
   other-modules: Collector, TelemetryWire
+  if !os(windows)
+    build-depends: unix
 
 executable sapiens-telemetry
   import: collector

@@ -1,12 +1,22 @@
+{-# LANGUAGE CPP #-}
 module Main where
 
 import Collector
+import Control.Concurrent (forkIOWithUnmask, killThread, threadDelay)
+import Control.Exception (bracket, finally)
+import Control.Monad (forever, void)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as BC
 import Data.Aeson (eitherDecodeFileStrict)
 import Data.String (fromString)
+import Data.Time (getCurrentTime)
 import Network.Wai.Handler.Warp
 import System.Environment (getArgs, getEnv)
+#ifndef mingw32_HOST_OS
+import System.Posix.Signals (installHandler, sigTERM, sigINT, Handler(Catch))
+#else
+import qualified GHC.ConsoleHandler as Console
+#endif
 
 main :: IO ()
 main = do
@@ -16,4 +26,19 @@ main = do
  secret <- BC.pack <$> getEnv "SAPIENS_TELEMETRY_SECRET"
  if B.length secret < 32 then fail "SAPIENS_TELEMETRY_SECRET must contain at least 32 bytes" else pure ()
  collector <- newCollector config secret
- runSettings (setHost (fromString (bindAddress config)) $ setPort (listenPort config) defaultSettings) (collectorApplication collector)
+ let settings = setInstallShutdownHandler installShutdown $ setGracefulShutdownTimeout (Just 5) $ setHost (fromString (bindAddress config)) $ setPort (listenPort config) defaultSettings
+     flushExpired = forever $ do
+      threadDelay 1000000
+      now <- getCurrentTime
+      flushCollector collector (due config now)
+ (bracket (forkIOWithUnmask (\unmask -> unmask flushExpired)) killThread $ \_ -> runSettings settings (collectorApplication collector))
+  `finally` flushCollector collector (const True)
+
+installShutdown :: IO () -> IO ()
+installShutdown action = do
+#ifndef mingw32_HOST_OS
+ void (installHandler sigTERM (Catch action) Nothing)
+ void (installHandler sigINT (Catch action) Nothing)
+#else
+ void (Console.installHandler (Console.Catch (const action)))
+#endif

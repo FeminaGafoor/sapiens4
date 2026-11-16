@@ -58,18 +58,18 @@ startHostWith :: Maybe Bool -> StorageChoice -> FilePath -> Int -> Bool -> IO Ho
 startHostWith = startHostUsing Nothing
 
 startHostUsing :: Maybe Telemetry.Telemetry -> Maybe Bool -> StorageChoice -> FilePath -> Int -> Bool -> IO Host
-startHostUsing inherited consent choice root requested managed = do
+startHostUsing inherited consent choice root requested managed = mask $ \restore -> do
  args <- getArgs
  desktopPid <- lookupEnv "SAPIENS_DESKTOP_PID"
  let desktop = "--desktop" `elem` args || desktopPid/=Nothing
  reporter <- if managed then pure inherited else Just <$> Telemetry.openTelemetry (if desktop then Telemetry.Desktop else Telemetry.Headless) consent
- mode <- lookupEnv "SAPIENS_STORAGE_MODE"
- let report phase = when (not managed && mode `elem` [Just "new",Just "existing"]) (putStrLn phase)
- report openingStorage
- service <- Service.openService choice root `onException` unless managed (mapM_ Telemetry.closeTelemetry reporter)
- writeIORef (serviceTelemetry service) reporter
- flip onException (Service.closeService service) $ do
-  report openedStorage >> start reporter desktop service
+ flip onException (unless managed (mapM_ Telemetry.closeTelemetry reporter)) $ restore $ do
+  mode <- lookupEnv "SAPIENS_STORAGE_MODE"
+  let report phase = when (not managed && mode `elem` [Just "new",Just "existing"]) (putStrLn phase)
+  report openingStorage
+  bracketOnError (Service.openService choice root) Service.closeService $ \service -> do
+   writeIORef (serviceTelemetry service) reporter
+   report openedStorage >> start reporter desktop service
  where
  start reporter desktop service = do
   unless managed (recoverRelays root)
