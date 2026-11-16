@@ -52,7 +52,8 @@ openService choice path = do
       unless exists $ do i<-UUID.toText <$> UUID.nextRandom; writeJSON identityPath (obj [("version",num 1),("corpora_id",str i)])
       identity <- readJSON identityPath empty
       require (get identity "version"==num 1 && maybe False ((==at identity "corpora_id") . UUID.toText) (UUID.fromText (at identity "corpora_id"))) 409 "Invalid CORPORA identity. Restore corpora-identity.json from backup."
- prepareIdentity `onException` unlockFile lock
+      pure (at identity "corpora_id")
+ corporaId <- prepareIdentity `onException` unlockFile lock
  database <- (DB.openDatabase root >>= newMVar . Just) `onException` unlockFile lock
  let initialize = do
       guard <- newMVar ()
@@ -68,8 +69,7 @@ openService choice path = do
       subscribers <- newTVarIO 0
       files <- newIORef Set.empty
       telemetry <- newIORef Nothing
-      telemetryIdentity <- newMVar Nothing
-      let s=Service root repo guard lock stopping worker runs lease endpoint pulse actors database states revision subscribers files telemetry telemetryIdentity
+      let s=Service root repo guard lock stopping worker runs lease endpoint pulse actors database states revision subscribers files telemetry corporaId
       DB.initialize s
       migrateWorkspaces s
       rows <- DB.agents s

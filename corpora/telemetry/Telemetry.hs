@@ -1,6 +1,6 @@
 module Telemetry
  ( Telemetry, RuntimeKind(..), Event(..), openTelemetry, openTelemetryWith, closeTelemetry
- , enabled, setConsent, consentView, emit, emitAt, emitCorporaAt, heartbeatInterval, uiHeartbeat
+ , enabled, setConsent, consentView, emit, emitAt, heartbeatInterval, uiHeartbeat
  , startupConsentOption, startupConsentArguments
  ) where
 
@@ -81,7 +81,7 @@ instance FromJSON Saved where
   pure (Saved on credentials)) value
 
 data SenderStatus = Running | Disabled Text | Closed deriving Eq
-data Pending = Pending { pendingAt :: Integer, pendingValue :: Value, pendingCorpora :: Maybe (IO Text) }
+data Pending = Pending { pendingAt :: Integer, pendingValue :: Value }
 data Telemetry = Telemetry
  { savedSettings :: MVar Saved, settingsPath :: Maybe FilePath, senderStatus :: TVar SenderStatus
  , consent :: TVar Bool, pendingEvents :: TVar (Seq.Seq Pending), senderThread :: Async ()
@@ -179,24 +179,18 @@ emit :: Telemetry -> Event -> Maybe Text -> Object -> IO ()
 emit telemetry event corpora fields = getCurrentTime >>= \time -> emitAt telemetry time event corpora fields
 
 emitAt :: Telemetry -> UTCTime -> Event -> Maybe Text -> Object -> IO ()
-emitAt telemetry time event corpora = capture telemetry time event (pure <$> corpora)
-
-emitCorporaAt :: Telemetry -> UTCTime -> Event -> IO Text -> Object -> IO ()
-emitCorporaAt telemetry time event corpora = capture telemetry time event (Just corpora)
-
-capture :: Telemetry -> UTCTime -> Event -> Maybe (IO Text) -> Object -> IO ()
-capture telemetry time event corpora fields = do
+emitAt telemetry time event corpora fields = do
  on <- enabled telemetry
  when on $ do
   ident <- UUID.toText <$> UUID.nextRandom
   tick <- toInteger <$> getMonotonicTimeNSec
   let common = KM.fromList [("event_id",toJSON ident),("event_type",toJSON (eventName event)),("occurred_at",toJSON time)]
-      row = Object $ KM.union common $ KM.union (maybe KM.empty (const (KM.singleton "corpora_id" (toJSON (UUID.toText UUID.nil)))) corpora) fields
+      row = Object $ KM.union common $ KM.union (maybe KM.empty (KM.singleton "corpora_id" . String) corpora) fields
   atomically $ do
    active <- readTVar (consent telemetry)
    status <- readTVar (senderStatus telemetry)
    queue <- readTVar (pendingEvents telemetry)
-   when (active && status==Running && Seq.length queue<queueLimit && BL.length (encode (batchEnvelope telemetry [row]))<=fromIntegral requestByteLimit) (writeTVar (pendingEvents telemetry) (queue Seq.|> Pending tick row corpora))
+   when (active && status==Running && Seq.length queue<queueLimit && BL.length (encode (batchEnvelope telemetry [row]))<=fromIntegral requestByteLimit) (writeTVar (pendingEvents telemetry) (queue Seq.|> Pending tick row))
 
 uiHeartbeat :: Telemetry -> Value -> IO ()
 uiHeartbeat telemetry value = case value of
@@ -234,12 +228,8 @@ nextBatch telemetry = do
        count = length (fitting [] (toList (Seq.take batchLimit queue)))
        (taken,rest) = Seq.splitAt count queue
    writeTVar (pendingEvents telemetry) rest
-   pure (Just (toList taken))
- case batch of
-  Nothing -> nextBatch telemetry
-  Just pending -> forM pending $ \event -> case (pendingCorpora event,pendingValue event) of
-   (Just identity,Object fields) -> do ident<-identity; pure (Object (KM.insert "corpora_id" (String ident) fields))
-   _ -> pure (pendingValue event)
+   pure (Just (map pendingValue (toList taken)))
+ maybe (nextBatch telemetry) pure batch
 
 data Delivery = Unavailable | Rejected | Received Value
 post :: Telemetry -> String -> Maybe Credentials -> Value -> IO Delivery
