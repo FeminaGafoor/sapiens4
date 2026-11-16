@@ -1,0 +1,5 @@
+{
+  "output_directory": "/var/lib/sapiens-telemetry/events",
+  "blocked_installations": [],
+  "blocked_versions": []
+}
