@@ -1,6 +1,7 @@
 module Telemetry
  ( Telemetry, RuntimeKind(..), Event(..), openTelemetry, openTelemetryWith, closeTelemetry
  , enabled, setConsent, consentView, emit, emitAt, emitCorporaAt, heartbeatInterval, uiHeartbeat
+ , startupConsentOption, startupConsentArguments
  ) where
 
 import Control.Concurrent.Async
@@ -59,6 +60,12 @@ heartbeatInterval = 60 * 60
 defaultTelemetryOrigin :: String
 defaultTelemetryOrigin = "https://telemetry.sapiens4.ai"
 
+startupConsentOption :: String
+startupConsentOption = "--telemetry-consent"
+
+startupConsentArguments :: Maybe Bool -> [String]
+startupConsentArguments = maybe [] (\choice -> [startupConsentOption,BC.unpack (BL.toStrict (encode choice))])
+
 batchEnvelope :: Telemetry -> [Value] -> Value
 batchEnvelope telemetry batch = object ["context" .= hostContext telemetry,"events" .= batch]
 
@@ -97,11 +104,11 @@ writeSaved path value = do
    hClose handle
    renameFile temporary path
 
-openTelemetry :: RuntimeKind -> IO Telemetry
-openTelemetry runtime = newManager tlsManagerSettings >>= \http -> openTelemetryWith http runtime
+openTelemetry :: RuntimeKind -> Maybe Bool -> IO Telemetry
+openTelemetry runtime choice = newManager tlsManagerSettings >>= \http -> openTelemetryWith http runtime choice
 
-openTelemetryWith :: Manager -> RuntimeKind -> IO Telemetry
-openTelemetryWith http runtime = do
+openTelemetryWith :: Manager -> RuntimeKind -> Maybe Bool -> IO Telemetry
+openTelemetryWith http runtime choice = do
  loaded <- try $ do
   path <- (</> "telemetry.json") <$> configDirectory
   value <- readSaved path
@@ -112,13 +119,14 @@ openTelemetryWith http runtime = do
       Right (file,value,endpoint) -> (Just file,value,Running,Just endpoint)
      Saved on _ = initial
  saved <- newMVar initial
- active <- newTVarIO on
+ active <- newTVarIO (maybe on (const False) choice)
  state <- newTVarIO status
  queue <- newTVarIO Seq.empty
  let context = object ["app_version" .= showVersion version,"host_os" .= os,"host_arch" .= arch,"runtime_kind" .= (if runtime==Desktop then "desktop" else "headless" :: Text)]
  holder <- newEmptyMVar
  worker <- async (readMVar holder >>= sender)
  let telemetry = Telemetry saved path state active queue worker context endpoint http
+ forM_ choice (void . setConsent telemetry)
  putMVar holder telemetry
  pure telemetry
 

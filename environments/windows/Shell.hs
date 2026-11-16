@@ -287,8 +287,7 @@ desktopSession memory probe = do
                   let selected = host {dataDirectory=selectedDirectory}
                   guestScript <- B.readFile (runtimeDirectory host </> ".build/web/guest.js")
                   when (B.all (`elem` (" \t\r\n" :: String)) guestScript) $ ioError $ userError "The packaged guest.js is empty. Reinstall the complete Sapiens4 app."
-                  url <- startHost choice selected
-                  forM_ consent (DesktopStorage.applyBootstrapConsent (T.pack url))
+                  url <- startHost consent choice selected
                   post $ installStorage selected url `catch` (\(e :: SomeException) -> recoverStartup $ storageMessage e)
               writeIORef workerRef (Just worker)
           chooseStorage message = do

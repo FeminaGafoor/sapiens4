@@ -48,21 +48,21 @@ listenLoopback port = Socket.withSocketsDo $ do
   Socket.listen sock 128
   Socket.SockAddrInet assigned _ <- Socket.getSocketName sock
   pure (sock,fromIntegral assigned)
-startHost :: FilePath -> Int -> Bool -> IO Host
-startHost root requested managed = do
+startHost :: Maybe Bool -> FilePath -> Int -> Bool -> IO Host
+startHost consent root requested managed = do
  mode <- lookupEnv "SAPIENS_STORAGE_MODE"
  exists <- doesFileExist (root </> "corpora-identity.json")
- startHostWith (if managed || mode==Just "existing" || mode==Nothing && exists then AttachExisting else StartNew) root requested managed
+ startHostWith consent (if managed || mode==Just "existing" || mode==Nothing && exists then AttachExisting else StartNew) root requested managed
 
-startHostWith :: StorageChoice -> FilePath -> Int -> Bool -> IO Host
+startHostWith :: Maybe Bool -> StorageChoice -> FilePath -> Int -> Bool -> IO Host
 startHostWith = startHostUsing Nothing
 
-startHostUsing :: Maybe Telemetry.Telemetry -> StorageChoice -> FilePath -> Int -> Bool -> IO Host
-startHostUsing inherited choice root requested managed = do
+startHostUsing :: Maybe Telemetry.Telemetry -> Maybe Bool -> StorageChoice -> FilePath -> Int -> Bool -> IO Host
+startHostUsing inherited consent choice root requested managed = do
  args <- getArgs
  desktopPid <- lookupEnv "SAPIENS_DESKTOP_PID"
  let desktop = "--desktop" `elem` args || desktopPid/=Nothing
- reporter <- if managed then pure inherited else Just <$> Telemetry.openTelemetry (if desktop then Telemetry.Desktop else Telemetry.Headless)
+ reporter <- if managed then pure inherited else Just <$> Telemetry.openTelemetry (if desktop then Telemetry.Desktop else Telemetry.Headless) consent
  mode <- lookupEnv "SAPIENS_STORAGE_MODE"
  let report phase = when (not managed && mode `elem` [Just "new",Just "existing"]) (putStrLn phase)
  report openingStorage
@@ -78,7 +78,7 @@ startHostUsing inherited choice root requested managed = do
    Service.attachEndpoint service ("http://127.0.0.1:"<>T.pack (show port))
    bridge <- newBridge service
    let child selection path = do
-        host <- startHostUsing reporter selection path 0 True
+        host <- startHostUsing reporter Nothing selection path 0 True
         pure (hostService host,hostBridge host,hostStop host)
    registry <- if managed then pure Nothing else Just <$> newRegistry service bridge child
    onboarding <- if managed then pure Nothing else Just <$> O.openOnboarding (repositoryRoot service)
