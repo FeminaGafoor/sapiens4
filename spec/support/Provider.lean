@@ -7,6 +7,11 @@ def runFixtureProvider (args : List String) : IO UInt32 := do
     IO.println "codex-cli 0.158.0"
     return 0
   let prompt ← (← IO.getStdin).readToEnd
+  if let some folder ← IO.getEnv "SAPIENS_TEST_PROMPTS" then
+    let directory := System.FilePath.mk folder
+    IO.FS.createDirAll directory
+    let name := s!"{← IO.Process.getPID}-{← IO.monoNanosNow}"
+    IO.FS.writeFile (directory / name) prompt
   let reply := if prompt.contains "decision at node Assessing" then
     (json% {event: "FitsSpecialization", mode: "Repl", reply: "The review is ready.",
       reason: "The request fits my role.", evidence: ["The review request"]}).compress

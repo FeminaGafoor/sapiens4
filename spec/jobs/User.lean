@@ -8,15 +8,8 @@ def resumeConversationAfterRestart : IO Unit := IO.FS.withTempDir fun directory 
   let draft := "Remember the accessibility review."
   let (owner, turnId) ← withHost directory fun host => do
     let owner ← host.agent "Reviewer"
-    let submitted ← host.api "POST" ("/api/agents/" ++ owner ++ "/messages")
-      (json% {text: $(question)}) 202
-    let turnId ← IO.ofExcept <| stringField submitted "id"
-    discard <| untilSome "a completed review" do
-      let turns ← IO.ofExcept <| (← host.state).getObjVal? "turns"
-      let turn ← IO.ofExcept <| uniqueRecord turns "id" (toJson turnId)
-      let status ← IO.ofExcept <| stringField turn "status"
-      if status == "failed" then throw <| IO.userError "Provider failed the review"
-      return if status == "done" then some turn else none
+    let turn ← host.completedMessage owner question
+    let turnId ← IO.ofExcept <| stringField turn "id"
     discard <| host.api "PUT" "/api/preferences"
       (json% {selected: $(owner), drafts: $(Json.mkObj [(owner, toJson draft)])})
     return (owner, turnId)

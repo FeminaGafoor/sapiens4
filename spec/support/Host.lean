@@ -1,4 +1,4 @@
-import pure.Observations
+import pure.Privacy
 
 open Lean System
 namespace Spec
@@ -25,8 +25,8 @@ structure Host where
   url : String
   directory : FilePath
 
-def fixtureEnvironment : IO (Array (String × Option String)) := do
-  return #[("SAPIENS_CODEX_BINARY", (← IO.appPath).toString),
+def fixtureEnvironment (directory : FilePath) : IO (Array (String × Option String)) := do
+  return #[("SAPIENS_TEST_PROMPTS", (directory / "fixture-prompts").toString), ("SAPIENS_CODEX_BINARY", (← IO.appPath).toString),
     ("SAPIENS_REPOSITORY", (← repoRoot).toString), ("SAPIENS_WHISPER_URL", "http://127.0.0.1:9")]
 
 def withHost (directory : FilePath) (use : Host → IO α) : IO α := do
@@ -34,9 +34,9 @@ def withHost (directory : FilePath) (use : Host → IO α) : IO α := do
   let child ← IO.Process.spawn {
     cmd := (binary root "sapiens4").toString
     args := #["--desktop", "--port", "0", "--data-dir", directory.toString]
-    cwd := root, env := ← fixtureEnvironment, stdin := .piped, stdout := .piped }
+    cwd := root, env := ← fixtureEnvironment directory, stdin := .piped, stdout := .piped }
   try
-    let greeting ← IO.asTask child.stdout.getLine
+    let greeting ← IO.asTask child.stdout.getLine .dedicated
     let line ← untilSome "host startup" do
       if ← IO.hasFinished greeting then return some (← IO.ofExcept greeting.get)
       return none
@@ -57,10 +57,6 @@ def withHost (directory : FilePath) (use : Host → IO α) : IO α := do
         discard child.wait
     catch _ => pure ()
     throw error
-
-structure Reply where
-  status : Nat
-  body : String
 
 def request (url method path : String) (payload : Option Json := none)
     (headers : Array String := #["Content-Type: application/json", "X-Sapiens-Local: 1"]) : IO Reply := do
@@ -91,5 +87,16 @@ def Host.agent (host : Host) (name : String) : IO String := do
 
 def Host.control (host : Host) (owner : String) (command : Json) (expected := 200) :=
   host.api "POST" ("/api/agents/" ++ owner ++ "/control") command expected
+
+def Host.completedMessage (host : Host) (owner message : String) : IO Json := do
+  let submitted ← host.api "POST" ("/api/agents/" ++ owner ++ "/messages") (json% {text: $(message)}) 202
+  let turnId ← IO.ofExcept <| submitted.getObjVal? "id"
+  untilSome "the submitted message to finish" do
+    let turns ← IO.ofExcept <| (← host.state).getObjVal? "turns"
+    let turn ← IO.ofExcept <| uniqueRecord turns "id" turnId
+    match ← IO.ofExcept <| stringField turn "status" with
+    | "done" => return some turn
+    | "failed" | "interrupted" | "cancelled" => throw <| IO.userError "Submitted message did not complete"
+    | _ => return none
 
 end Spec
