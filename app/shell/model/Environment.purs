@@ -34,5 +34,5 @@ clientDetails env =
         "Linux device" -> "Linux"
         _ -> "unknown"
       pattern = "(?:CPU (?:iPhone )?OS|iPhone OS|Android|Windows NT|Mac OS X) ([0-9_.]+)"
-  in {name,os,family:if ipad || (D.matches "Android" ua && not phone) then "tablet" else if phone then "phone" else "desktop"
+  in {name,os,family:if os == "unknown" then "unknown" else if ipad || (D.matches "Android" ua && not phone) then "tablet" else if phone then "phone" else "desktop"
      ,version:if D.matches pattern ua then D.replace "_" "." (D.replace ("^.*?" <> pattern <> ".*$") "$1" ua) else ""}

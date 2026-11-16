@@ -88,8 +88,8 @@ registry runtime remote origin = if remote then do
     data_ <- json "/api/host" "GET" D.null
     pure {records:map (\r -> (X.corpora r) {key=D.s "id" r}) (D.rows "corpora" data_),localAvailable:D.b "local_available" data_}
 
-authenticate :: Runtime -> Boolean -> X.Corpora -> Aff Unit
-authenticate runtime remote record = when remote $ client runtime record >>= \transport -> void $ R.authenticate transport false
+authenticate :: Runtime -> Boolean -> Boolean -> X.Corpora -> Aff Unit
+authenticate runtime remote metadataAllowed record = when remote $ client runtime record >>= \transport -> void $ R.authenticate transport false metadataAllowed
 
 decorate :: String -> Json -> Effect Json
 decorate key snapshot = do
