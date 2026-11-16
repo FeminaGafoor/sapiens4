@@ -13,11 +13,11 @@ services:
     <<: *collector
     user: "${TELEMETRY_DEV_USER:-10001:10001}"
     cpus: 0.5
-    env_file: /etc/telemetry-simple/dev/secret.env
+    env_file: /etc/telemetry/dev/secret.env
     ports: ["127.0.0.1:4181:4181"]
     volumes:
       - type: bind
-        source: /etc/telemetry-simple/dev/docker.json
+        source: /etc/telemetry/dev/docker.json
         target: /etc/telemetry/config.json
         read_only: true
         bind:
@@ -31,11 +31,11 @@ services:
     <<: *collector
     user: "${TELEMETRY_PROD_USER:?Set TELEMETRY_PROD_USER}"
     cpus: 1
-    env_file: /etc/telemetry-simple/prod/secret.env
+    env_file: /etc/telemetry/prod/secret.env
     ports: ["127.0.0.1:4183:4183"]
     volumes:
       - type: bind
-        source: /etc/telemetry-simple/prod/docker.json
+        source: /etc/telemetry/prod/docker.json
         target: /etc/telemetry/config.json
         read_only: true
         bind:
