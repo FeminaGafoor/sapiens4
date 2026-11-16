@@ -281,11 +281,12 @@ instance FromJSON ProviderModel where
 instance ToJSON ProviderModel where
  toJSON m = obj [("model",str (modelName m)),("displayName",str (modelLabel m)),("efforts",toJSON (modelEfforts m)),("defaultReasoningEffort",str (modelDefaultEffort m)),("isDefault",Bool (modelIsDefault m))]
 
-data EventFormat = CodexJson | ClaudeStream
+data EventFormat = CodexJson | ClaudeStream | AgyStream
 instance FromJSON EventFormat where
  parseJSON = withText "Provider event format" $ \format -> case format of
   "codex-json" -> pure CodexJson
   "claude-stream" -> pure ClaudeStream
+  "agy-stream" -> pure AgyStream
   _ -> fail "Unknown provider event format"
 
 data Provider = Provider

@@ -1,6 +1,6 @@
 {
  "default":{"provider":"codex","model":"gpt-6-astra","effort":"medium"},
- "upcoming":{"gemini":"Gemini CLI","kimi":"Kimi Code"},
+ "upcoming":{"kimi":"Kimi Code"},
  "providers":[
   {
    "id":"codex",
@@ -48,6 +48,22 @@
     {"model":"claude-opus-4-6","displayName":"Opus 4.6","efforts":["low","medium","high","max"],"defaultReasoningEffort":"","isDefault":false},
     {"model":"claude-sonnet-4-6","displayName":"Sonnet 4.6","efforts":["low","medium","high","max"],"defaultReasoningEffort":"","isDefault":false},
     {"model":"claude-haiku-4-5-20251001","displayName":"Haiku 4.5","efforts":[],"defaultReasoningEffort":"","isDefault":false}
+   ]},
+  {
+   "id":"gemini",
+   "name":"Gemini",
+   "binary":"agy",
+   "paths":["~/.local/bin/agy"],
+   "login":"agy",
+   "status":["models"],
+   "run":["--output-format","stream-json","--model","{model}","--dangerously-skip-permissions","{effort-args}"],
+   "effort":["--effort","{effort}"],
+   "events":"agy-stream",
+   "recommended":{"provider":"gemini","model":"gemini-3.8-flash-high","effort":""},
+   "models":[
+    {"model":"gemini-3.8-flash-high","displayName":"Gemini 3.8 Flash (High)","efforts":[],"defaultReasoningEffort":"","isDefault":true},
+    {"model":"gemini-3.8-flash-medium","displayName":"Gemini 3.8 Flash (Medium)","efforts":[],"defaultReasoningEffort":"","isDefault":false},
+    {"model":"gemini-3.8-flash-low","displayName":"Gemini 3.8 Flash (Low)","efforts":[],"defaultReasoningEffort":"","isDefault":false}
    ]}
  ]
 }

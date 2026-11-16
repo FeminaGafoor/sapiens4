@@ -156,6 +156,7 @@ events :: EventFormat -> Value -> IO [ProviderEvent]
 events format = case format of
  CodexJson -> fmap (:[]) . decodeValue 500
  ClaudeStream -> claudeEvents
+ AgyStream -> agyEvents
 
 claudeEvents :: Value -> IO [ProviderEvent]
 claudeEvents value = case at value "type" of
@@ -168,6 +169,17 @@ claudeEvents value = case at value "type" of
  "assistant" -> pure [ToolStarted (at tool "id") (at tool "name") | tool <- items (get value "message") "content",at tool "type" == "tool_use"]
  "user" -> pure [ToolCompleted (at tool "tool_use_id") "Tool completed" | tool <- items (get value "message") "content",at tool "type" == "tool_result"]
  _ -> pure []
+
+agyEvents :: Value -> IO [ProviderEvent]
+agyEvents value = case at value "event" of
+ "init" -> (\session -> [SessionStarted session]) <$> field 502 value "conversation_id"
+ "result" | at final "status" == "SUCCESS" -> (\response -> [AgentMessage response]) <$> field 502 final "response"
+          | otherwise -> pure [ProviderFailed value]
+ "step_update" | at stepInfo "step_type" == "tool" -> pure [(if at stepInfo "state" == "ACTIVE" then ToolStarted else ToolCompleted) (T.pack (show (int (get stepInfo "step_index")))) (at stepInfo "tool_name")]
+ _ -> pure []
+ where
+ final = get value "result"
+ stepInfo = get value "step_update"
 
 killTree :: ProcessHandle -> IO ()
 killTree ph = do
