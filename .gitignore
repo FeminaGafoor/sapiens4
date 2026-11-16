@@ -39,3 +39,5 @@ spec/support/windows/bin/
 spec/support/windows/obj/
 spec/support/windows_accessibility/bin/
 spec/support/windows_accessibility/obj/
+
+spec/.lake/
