@@ -151,7 +151,7 @@ revokeBridge b notify = do
 closeBridge :: Bridge -> IO ()
 closeBridge b = readMVar (bridgeThread b) >>= mapM_ cancel
 cleanDeviceInfo :: Value -> Value
-cleanDeviceInfo value = obj ([(k,str (T.take 200 (T.strip (T.filter isPrint s)))) | k <- ["name","platform","client"], String s <- [get value k]] ++ [("usage_reporting",Bool (get value "usage_reporting"==Bool True))])
+cleanDeviceInfo value = obj [(k,str (T.take 200 (T.strip (T.filter isPrint s)))) | k <- ["name","platform","client"], String s <- [get value k]]
 connectionUpdate :: Double -> S.Set Text -> Value -> Value -> (Bool,Text,Value)
 connectionUpdate time connections config message = (changed,connection,final)
  where

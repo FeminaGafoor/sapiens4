@@ -210,7 +210,7 @@ dispatch transport s method target body = locked s $ do
    maybe (pure (obj [("enabled",Bool False),("available",Bool False)])) Telemetry.consentView telemetry
   ("POST",["api","telemetry","heartbeat"]) -> json 202 $ do
    telemetry <- readIORef (serviceTelemetry s)
-   forM_ telemetry $ \reporter -> Telemetry.uiHeartbeat reporter (Just (serviceCorporaId s)) d
+   forM_ telemetry $ \reporter -> Telemetry.uiHeartbeat reporter (Just (serviceCorporaId s)) (Telemetry.parseClientContext d) d
    pure (obj [("accepted",Bool True)])
   ("GET",["api","model-settings"]) -> json 200 (toJSON <$> readModelSettings s)
   ("GET",["api","providers"]) -> json 200 (Provider.providersView (repositoryRoot s))

@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP #-}
 module Main where
 
 import Collector
@@ -12,11 +11,7 @@ import Data.String (fromString)
 import Data.Time (getCurrentTime)
 import Network.Wai.Handler.Warp
 import System.Environment (getArgs, getEnv)
-#ifndef mingw32_HOST_OS
 import System.Posix.Signals (installHandler, sigTERM, sigINT, Handler(Catch))
-#else
-import qualified GHC.ConsoleHandler as Console
-#endif
 
 main :: IO ()
 main = do
@@ -36,9 +31,5 @@ main = do
 
 installShutdown :: IO () -> IO ()
 installShutdown action = do
-#ifndef mingw32_HOST_OS
  void (installHandler sigTERM (Catch action) Nothing)
  void (installHandler sigINT (Catch action) Nothing)
-#else
- void (Console.installHandler (Console.Catch (const action)))
-#endif

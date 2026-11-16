@@ -188,7 +188,7 @@ httpApplication service bridge registry onboarding port req respond = respond =<
     reporter <- readIORef (serviceTelemetry service)
     forM_ reporter $ \telemetry -> do
      context <- Telemetry.localClientContext telemetry data_
-     Telemetry.uiHeartbeat telemetry Nothing (merge data_ (Object (Telemetry.clientContextFields context)))
+     Telemetry.uiHeartbeat telemetry Nothing context data_
     pure (jsonResponse 202 empty)
    ("POST",["","api","host","computer"]) -> maybe (failure 404 "Local setup unavailable") (fmap (jsonResponse 200) . flip O.computerAction data_) onboarding
    ("GET",["","api","host","onboarding"]) -> maybe (failure 404 "Local setup unavailable") (fmap (jsonResponse 200) . O.onboardingView) onboarding

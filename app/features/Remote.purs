@@ -296,10 +296,9 @@ authenticate :: Transport -> Boolean -> Boolean -> Aff Json
 authenticate client pairing metadataAllowed = do
   session <- liftEffect $ Ref.read client.session
   env <- liftEffect Platform.environment
-  let payload = if pairing then D.json {kind: "pair", secret: D.get "secret" session} else D.json {kind: "request", op: "resume"}
-      info = D.put "usage_reporting" (D.json metadataAllowed) (deviceInfo env)
-      context = if metadataAllowed then Telemetry.requestMetadata env else D.null
-  result <- request client (if pairing then 180000 else 15000) $ D.put "telemetry_context" context $ D.put "device_info" info payload
+  permitted <- if pairing then liftEffect $ Telemetry.deviceConsent metadataAllowed env else pure false
+  let payload = if pairing then D.json {kind: "pair", secret: D.get "secret" session, telemetry_context:if permitted then Telemetry.requestMetadata env else D.null} else D.json {kind: "request", op: "resume"}
+  result <- request client (if pairing then 180000 else 15000) $ D.put "device_info" (deviceInfo env) payload
   let corpora = D.get "corpora" result
       previous = D.str $ D.at ["corpora","id"] session
   unless (D.b "paired" result && D.s "name" corpora /= "" && CU.length (D.s "name" corpora) <= 200 && D.matches "^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$" (D.s "id" corpora) && (previous == "" || previous == D.s "id" corpora)) $ throwError $ error "Corpora identity changed. Connect again."

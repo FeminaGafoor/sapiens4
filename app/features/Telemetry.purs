@@ -2,6 +2,7 @@ module Sapiens.Telemetry where
 
 import Prelude
 import Data.Argonaut.Core (Json)
+import Effect (Effect)
 import Sapiens.Data as D
 import Sapiens.Environment (Environment, clientDetails)
 import Sapiens.Domain as X
@@ -15,10 +16,10 @@ statusPollMillis :: Number
 statusPollMillis = 60000.0
 
 heartbeatDue :: Boolean -> Boolean -> Number -> Number -> Number -> Environment -> Boolean
-heartbeatDue hostConsent browserConsent interval previous now env = hostConsent && deviceConsent browserConsent env && not env.hidden && interval > 0.0 && (previous == 0.0 || now-previous >= interval)
+heartbeatDue hostConsent sourceConsent interval previous now env = hostConsent && sourceConsent && not env.hidden && interval > 0.0 && (previous == 0.0 || now-previous >= interval)
 
-deviceConsent :: Boolean -> Environment -> Boolean
-deviceConsent browserConsent env = env.native || browserConsent
+deviceConsent :: Boolean -> Environment -> Effect Boolean
+deviceConsent browserConsent env = if env.native then pure true else map (\saved -> browserConsent && saved == "true") (B.storageRead browserConsentKey)
 
 requestMetadata :: Environment -> Json
 requestMetadata env =

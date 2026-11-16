@@ -243,7 +243,8 @@ handle runtime input = session input
     env <- liftEffect Platform.environment
     now <- liftEffect B.now
     previous <- liftEffect $ Ref.read runtime.telemetryHeartbeat
-    when (Telemetry.heartbeatDue m.telemetryEnabled m.browserTelemetryEnabled m.telemetryInterval previous now env && (not (M.remote m) || (m.active /= "" && M.online m))) do
+    permitted <- liftEffect $ Telemetry.deviceConsent m.browserTelemetryEnabled env
+    when (Telemetry.heartbeatDue m.telemetryEnabled permitted m.telemetryInterval previous now env && (not (M.remote m) || (m.active /= "" && M.online m))) do
       liftEffect $ Ref.write now runtime.telemetryHeartbeat
       let fields = Telemetry.metadata (M.remote m) (M.activeRecord m) now env
       E.attempt (if M.remote m then E.api runtime m "/api/telemetry/heartbeat" "POST" fields else C.json "/api/host/telemetry/heartbeat" "POST" fields) (const $ pure unit)

@@ -69,8 +69,8 @@ api runtime m path method body = do
   when ((M.busy m) || m.active == "") $ throwError $ error "Connecting…"
   when (not (M.online m) && method /= "GET") $ throwError $ error "Offline — read only."
   payload <- if method == "POST" && D.matches "^/api/agents/[^/]+/messages$" path then do
-    saved <- liftEffect $ B.storageRead Telemetry.browserConsentKey
-    pure $ if m.telemetryEnabled && Telemetry.deviceConsent (m.browserTelemetryEnabled && saved == "true") m.env
+    permitted <- liftEffect $ Telemetry.deviceConsent m.browserTelemetryEnabled m.env
+    pure $ if m.telemetryEnabled && permitted
       then D.put "client_context" (Telemetry.requestMetadata m.env) body
       else D.remove "client_context" body
     else pure body
@@ -114,7 +114,7 @@ runUpdate runtime dispatch action = do
     U.ConnectRecord record -> do
       current <- H.get
       liftEffect $ Updates.stop runtime.updates
-      refresh runtime dispatch current $ C.authenticate runtime (M.remote current) (Telemetry.deviceConsent current.browserTelemetryEnabled current.env) record *> C.request runtime (M.remote current) record "/api/state" "GET" D.null
+      refresh runtime dispatch current $ C.authenticate runtime (M.remote current) current.browserTelemetryEnabled record *> C.request runtime (M.remote current) record "/api/state" "GET" D.null
     U.ChangeLifecycle command -> attempt (C.reconcile runtime (M.remote requested) requested.records requested.active *> C.lifecycle runtime (M.remote requested) (M.activeRecord requested) (X.lifecycleName command)) $
       runUpdate runtime dispatch <<< U.LifecycleReceived requested.epoch <<< either (Left <<< message) (Right <<< X.corpora)
     U.Dispatch next -> dispatch next
