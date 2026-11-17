@@ -2,7 +2,7 @@
 
 - Keep responsibilities together: `corpora` (state/work/host), `app`
   (shell/features/theme), `remote` (relay/control/protocol), `environments` (native).
-- Split architectural responsibilities into three meaningful parts when useful;
+- Recursively split architectural responsibilities into three meaningful parts;
   domain needs take precedence. Do not create empty wrappers.
 - State must not import Work or Host; Work must not import Host or native code.
 - Keep dependency pins in `submodules/libs4`, model prompts in `corpora/prompts`,
