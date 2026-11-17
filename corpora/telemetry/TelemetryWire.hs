@@ -8,8 +8,6 @@ import Data.Aeson.Types (Parser)
 import Data.Int (Int64)
 import Data.Text (Text)
 import qualified Data.Text as T
-import Data.Time (UTCTime)
-import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
 import qualified Data.UUID as UUID
 import qualified Data.Vector as V
 
@@ -22,9 +20,6 @@ batchLimit = 10
 requestByteLimit = 65536
 objectFieldLimit = 64
 fieldNameLimit = 128
-
-unixSeconds :: UTCTime -> Int64
-unixSeconds = floor . utcTimeToPOSIXSeconds
 
 data Credentials = Credentials { installationId :: Text, installationPassword :: Text }
  deriving (Eq, Show)

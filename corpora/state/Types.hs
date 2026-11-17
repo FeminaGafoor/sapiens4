@@ -79,9 +79,8 @@ data Service = Service { serviceRoot :: FilePath, repositoryRoot :: FilePath, se
 
 emitTelemetry :: Service -> Telemetry.Event -> Object -> IO ()
 emitTelemetry s event fields = do
- time <- getCurrentTime
  telemetry <- readIORef (serviceTelemetry s)
- forM_ telemetry $ \reporter -> Telemetry.emitAt reporter time event (Just (serviceCorporaId s)) fields
+ forM_ telemetry $ \reporter -> Telemetry.emit reporter event (Just (serviceCorporaId s)) fields
 
 notifyChange :: Service -> IO ()
 notifyChange s = atomically $ modifyTVar' (serviceRevision s) (+1)

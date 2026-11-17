@@ -22,8 +22,8 @@ import qualified Data.Sequence as Seq
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
-import Data.Time
-import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
+import Data.Time (NominalDiffTime)
+import Data.Time.Clock.POSIX (getPOSIXTime)
 import qualified Data.UUID as UUID
 import qualified Data.UUID.V4 as UUID
 import Data.Version (showVersion)
@@ -253,15 +253,15 @@ consentView telemetry = atomically $ do
  pure $ object ["enabled" .= on,"available" .= (status==Running),"heartbeat_interval_ms" .= (realToFrac heartbeatInterval * 1000 :: Double),"error" .= case status of Disabled reason -> reason; _ -> ""]
 
 emit :: Telemetry -> Event -> Maybe Text -> Object -> IO ()
-emit telemetry event corpora fields = getCurrentTime >>= \time -> emitAt telemetry time event corpora fields
+emit telemetry event corpora fields = floor <$> getPOSIXTime >>= \time -> emitAt telemetry time event corpora fields
 
-emitAt :: Telemetry -> UTCTime -> Event -> Maybe Text -> Object -> IO ()
+emitAt :: Telemetry -> Int64 -> Event -> Maybe Text -> Object -> IO ()
 emitAt telemetry time event corpora fields = do
  on <- enabled telemetry
  when on $ do
   ident <- UUID.toText <$> UUID.nextRandom
   tick <- toInteger <$> getMonotonicTimeNSec
-  let common = KM.fromList [("event_id",toJSON ident),("event_type",toJSON (eventName event)),("timestamp",toJSON (unixSeconds time))]
+  let common = KM.fromList [("event_id",toJSON ident),("event_type",toJSON (eventName event)),("timestamp",toJSON time)]
       row = Object $ KM.union common $ KM.union (maybe KM.empty (KM.singleton "corpora_id" . String) corpora) fields
       limit = (requestByteLimit - fromIntegral (BL.length (encode (batchEnvelope (hostContext telemetry) []))) - contextReserveBytes - batchLimit) `div` batchLimit
   when (BL.length (encode row)<=fromIntegral limit) $ atomically $ do
@@ -272,9 +272,9 @@ emitAt telemetry time event corpora fields = do
 uiHeartbeat :: Telemetry -> Maybe Text -> Maybe ClientContext -> Value -> IO ()
 uiHeartbeat telemetry corpora context value = case value of
  Object fields | KM.lookup "ui_visible" fields==Just (Bool True) && BL.length (encode value)<=8192 -> do
-  time <- case KM.lookup "timestamp" fields >>= \v -> case fromJSON v :: Result Int64 of Success seconds -> Just (posixSecondsToUTCTime (fromIntegral seconds)); Error _ -> Nothing of
+  time <- case KM.lookup "timestamp" fields >>= \v -> case fromJSON v :: Result Int64 of Success seconds -> Just seconds; Error _ -> Nothing of
    Just time -> pure time
-   Nothing -> getCurrentTime
+   Nothing -> floor <$> getPOSIXTime
   let common = clientContextFields context
       selected = case metadataValue "corpora_id" value of String identity -> UUID.toText <$> UUID.fromText identity; _ -> Nothing
       categories = KM.fromList [("ui_mode",String (category ["local","remote_control"] (metadataValue "ui_mode" value))),("target_location",String (category ["local","remote"] (metadataValue "target_location" value)))]

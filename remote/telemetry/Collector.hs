@@ -19,7 +19,8 @@ import qualified Data.ByteString.Lazy as BL
 import qualified Data.Set as S
 import Data.Text (Text)
 import qualified Data.Text.Encoding as TE
-import Data.Time
+import Data.Time (NominalDiffTime)
+import Data.Time.Clock.POSIX (POSIXTime, getPOSIXTime)
 import qualified Data.UUID as UUID
 import qualified Data.UUID.V4 as UUID
 import qualified Data.Vector as V
@@ -57,7 +58,7 @@ instance FromJSON Config where
   pure config
 
 type Row = Object
-data Buffer = Buffer { bufferedRows :: [Row], bufferedCount :: Int, bufferedBytes :: Int, bufferedColumns :: S.Set K.Key, firstRowAt :: Maybe UTCTime }
+data Buffer = Buffer { bufferedRows :: [Row], bufferedCount :: Int, bufferedBytes :: Int, bufferedColumns :: S.Set K.Key, firstRowAt :: Maybe POSIXTime }
 emptyBuffer :: Buffer
 emptyBuffer = Buffer [] 0 0 S.empty Nothing
 data Collector = Collector { collectorConfig :: Config, collectorSecret :: B.ByteString, collectorBuffer :: MVar Buffer }
@@ -80,10 +81,10 @@ authenticate secret header = do
  let canonical = UUID.toText parsed
  if not (B.null rest) && ident==canonical && BA.constEq (B.drop 1 rest) (passwordFor secret ident) then Just ident else Nothing
 
-normalizeRows :: UTCTime -> Text -> Object -> [Object] -> [Row]
+normalizeRows :: POSIXTime -> Text -> Object -> [Object] -> [Row]
 normalizeRows received ident context = map (\row -> KM.union reserved (KM.union commonContext (KM.union row context)))
  where
- reserved = KM.fromList [("installation_id",String ident),("received_at",toJSON (unixSeconds received))]
+ reserved = KM.fromList [("installation_id",String ident),("received_at",toJSON (floor received :: Int64))]
  commonContext = KM.filterWithKey (\key _ -> key `elem` ["app_version","host_os","host_arch","runtime_kind"]) context
 
 cell :: Value -> Maybe B.ByteString
@@ -120,8 +121,8 @@ writeRows config rows = do
   hClose handle
   renameFile path (folder </> ident <.> "parquet")
 
-due :: Config -> UTCTime -> Buffer -> Bool
-due config now buffer = bufferedCount buffer>=flushRows config || bufferedBytes buffer>=flushBytes config || maybe False ((>=flushAgeSeconds config) . diffUTCTime now) (firstRowAt buffer)
+due :: Config -> POSIXTime -> Buffer -> Bool
+due config now buffer = bufferedCount buffer>=flushRows config || bufferedBytes buffer>=flushBytes config || maybe False (\started -> now-started>=flushAgeSeconds config) (firstRowAt buffer)
 
 flushBuffer :: Config -> Buffer -> IO Bool
 flushBuffer config buffer = if bufferedCount buffer==0 then pure True else do
@@ -136,7 +137,7 @@ flushCollector collector shouldFlush = modifyMVar_ (collectorBuffer collector) $
   saved <- flushBuffer (collectorConfig collector) buffer
   pure (if saved then emptyBuffer else buffer)
 
-admit :: Collector -> UTCTime -> [Row] -> IO Bool
+admit :: Collector -> POSIXTime -> [Row] -> IO Bool
 admit collector now rows = modifyMVar (collectorBuffer collector) $ \prior -> do
  let config = collectorConfig collector
      bytes = sum [fromIntegral (BL.length (encode row)) | row<-rows]
@@ -186,6 +187,6 @@ collectorApplication collector req respond = do
       | otherwise -> case KM.lookup "app_version" context of
        Just (String version) | S.member version (blockedVersions config) -> errorReply status403 "Version blocked"
        _ -> do
-        now <- getCurrentTime
+        now <- getPOSIXTime
         accepted <- admit collector now (normalizeRows now ident context events)
         if accepted then reply status202 (object ["accepted" .= length events]) else errorReply status503 "Telemetry buffer full"
