@@ -58,7 +58,7 @@ if(matchMedia('(prefers-color-scheme:dark)').matches) document.documentElement.d
     </div>
     <p class="setup-note">Upgrading from an earlier launcher? Choose the folder that contains corpora-identity.json.</p>
     <div class="telemetry-consent">
-      <label><input id="telemetry-consent" type="checkbox" onchange="telemetryChoice=this.checked">Share basic usage statistics</label>
+      <label><input id="telemetry-consent" type="checkbox" checked onchange="telemetryChoice=this.checked">Share basic usage statistics</label>
       <details class="telemetry-info"><summary aria-label="About usage statistics">ⓘ</summary><span class="telemetry-tooltip" role="tooltip">Shares usage counts and app/device context. No conversations, prompts, files, paths or account details.</span></details>
     </div>
     <p id="error" role="alert"></p>
@@ -69,9 +69,10 @@ if(matchMedia('(prefers-color-scheme:dark)').matches) document.documentElement.d
 </footer>
 </main>
 <script>
-let storageChoice='new', storageDirectory='', storageBusy=false, telemetryChoice=null;
+let storageChoice='new', storageDirectory='', storageBusy=false, telemetryChoice=true;
 function setTelemetryConsent(enabled) {
  document.getElementById('telemetry-consent').checked=enabled;
+ telemetryChoice=enabled;
 }
 function postStorage(message) {
  if(window.webkit?.messageHandlers?.browser) window.webkit.messageHandlers.browser.postMessage(message);

@@ -3,7 +3,7 @@ module DesktopStorage (WorkspaceSignal(..), saveWhenReady, awaitServerAddress, s
 import Control.Exception (SomeException, IOException, try)
 import Control.Monad (forM_, guard)
 import Data.IORef
-import Data.Aeson (Value(..), encode, decodeStrict)
+import Data.Aeson (Value(..), encode, decodeStrict, object, (.=))
 import qualified Data.ByteString.Lazy as BL
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -25,7 +25,7 @@ bootstrapConsentScript :: IO Text
 bootstrapConsentScript = do
   result <- try $ do
     path <- (</> "telemetry.json") <$> configDirectory
-    boolean . (`get` "enabled") <$> readJSON path Null
+    boolean . (`get` "enabled") <$> readJSON path (object ["enabled" .= True])
   let enabled = either (const False) id (result :: Either IOException Bool)
   pure ("window.setTelemetryConsent?.(" <> TE.decodeUtf8 (BL.toStrict (encode enabled)) <> ")")
 
