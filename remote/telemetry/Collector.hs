@@ -19,8 +19,8 @@ import qualified Data.ByteString.Lazy as BL
 import qualified Data.Set as S
 import Data.Text (Text)
 import qualified Data.Text.Encoding as TE
-import Data.Time (NominalDiffTime)
-import Data.Time.Clock.POSIX (POSIXTime, getPOSIXTime)
+import Data.Time (NominalDiffTime, defaultTimeLocale, formatTime)
+import Data.Time.Clock.POSIX (POSIXTime, getPOSIXTime, posixSecondsToUTCTime)
 import qualified Data.UUID as UUID
 import qualified Data.UUID.V4 as UUID
 import qualified Data.Vector as V
@@ -32,6 +32,8 @@ import qualified Parquet.Write as P
 import System.Directory
 import System.FilePath
 import System.IO
+import System.IO.Error (isAlreadyExistsError)
+import System.Posix.Files (createLink)
 import TelemetryWire
 
 data Config = Config
@@ -65,7 +67,7 @@ data Collector = Collector { collectorConfig :: Config, collectorSecret :: B.Byt
 
 newCollector :: Config -> B.ByteString -> IO Collector
 newCollector config secret = do
- createDirectoryIfMissing True (outputDirectory config)
+ createDirectoryIfMissing True (outputDirectory config </> "logs")
  Collector config secret <$> newMVar emptyBuffer
 
 passwordFor :: B.ByteString -> Text -> B.ByteString
@@ -114,12 +116,18 @@ encodeRows rows = P.encodeParquetMixed P.defaultWriteOptions {P.writeCompression
 
 writeRows :: Config -> [Row] -> IO ()
 writeRows config rows = do
- ident <- UUID.toString <$> UUID.nextRandom
- let folder = outputDirectory config
+ name <- formatTime defaultTimeLocale "telemetry-%Y-%m-%d-%H-%s" . posixSecondsToUTCTime <$> getPOSIXTime
+ let folder = outputDirectory config </> "logs"
  bracketOnError (openBinaryTempFile folder ".telemetry.tmp") (\(path,handle) -> hClose handle `finally` removeFile path) $ \(path,handle) -> do
   B.hPut handle (encodeRows rows)
   hClose handle
-  renameFile path (folder </> ident <.> "parquet")
+  let publish :: Int -> IO ()
+      publish index = do
+       let suffix = if index==0 then "" else "-"<>show index
+       createLink path (folder </> name<>suffix <.> "parquet") `catch` \(errorValue::IOException) ->
+        if isAlreadyExistsError errorValue then publish (index+1) else throwIO errorValue
+  publish 0
+  removeFile path
 
 due :: Config -> POSIXTime -> Buffer -> Bool
 due config now buffer = bufferedCount buffer>=flushRows config || bufferedBytes buffer>=flushBytes config || maybe False (\started -> now-started>=flushAgeSeconds config) (firstRowAt buffer)
