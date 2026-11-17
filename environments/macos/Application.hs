@@ -68,6 +68,7 @@ check application = do
 
 startServer :: Application -> Maybe Bool -> StorageChoice -> FilePath -> FilePath -> IO (ServerProcess, Text)
 startServer application consent choice runtime destination = do
+    requireTerms
     configRoot <- configDirectory
     let binary = runtime </> ".build/bin/sapiens4"
     present <- doesFileExist binary
@@ -276,7 +277,7 @@ installMethods application = do
         unless (fixture application || closing) $ do
             path <- obj0 view "URL" >>= (\u -> textProp u "path")
             when (path==T.pack (bootstrapPath application)) $ do
-                bootstrapConsentScript >>= script view
+                bootstrapTermsScript >>= script view
                 loaded <- atomicModifyIORef' (localLoaded application) (\old -> (True,old))
                 writeIORef (recovering application) False
                 problem <- atomicModifyIORef' (recoveryError application) (\old -> (Nothing,old))
@@ -284,12 +285,14 @@ installMethods application = do
                 forM_ problem (showStorageError application)
                 when (loaded && isNothing problem) $ script view "window.showStorageSetup?.()"
                 unless (loaded || isJust problem) $ do
-                    explicit <- lookupEnv "SAPIENS_DATA_DIR"
-                    selection <- try (startupDataDirectory explicit)
-                    case selection of
-                        Left (e :: IOException) -> showStorageError application (T.pack (storageMessage e))
-                        Right Nothing -> script view "window.showStorageSetup?.()"
-                        Right (Just directory) -> startSelected application (Just AttachExisting) directory
+                    accepted <- termsAccepted
+                    if not accepted then script view "window.showStorageSetup?.()" else do
+                        explicit <- lookupEnv "SAPIENS_DATA_DIR"
+                        selection <- try (startupDataDirectory explicit)
+                        case selection of
+                            Left (e :: IOException) -> showStorageError application (T.pack (storageMessage e))
+                            Right Nothing -> script view "window.showStorageSetup?.()"
+                            Right (Just directory) -> startSelected application (Just AttachExisting) directory
             sh <- withBrowser (readIORef . shell)
             readyAddress <- readIORef (address application)
             trusted <- obj0 view "URL" >>= (\u -> withBrowser (sameOrigin u . origin))
@@ -503,19 +506,26 @@ receiveMessage application message = do
         when (sourceView==sh && mainFrame && scheme=="file" && path==T.pack (bootstrapPath application)) $ do
             raw <- obj0 message "body" >>= jsonObject
             forM_ raw $ \input -> do
-              let consent = case field "telemetry" input of Bool enabled -> Just enabled; _ -> Nothing
-              case text (field "storage" input) of
-                "new" -> (defaultDataDirectory >>= startSelectedWithConsent application consent (Just StartNew))
-                    `catch` \(e :: IOException) -> showStorageError application (T.pack (storageMessage e))
-                "pick" -> do
-                    busy <- atomicModifyIORef' (starting application) (\old -> (True,old))
-                    unless busy $ do
-                        selected <- chooseDataDirectory `finally` writeIORef (starting application) False
-                        script sh ("window.storagePicked?.(" <> jsonText (maybe Null (String . T.pack) selected) <> ")")
-                "existing" -> do
-                    let directory=T.unpack (text (field "directory" input))
-                    if isAbsolute directory then startSelectedWithConsent application consent Nothing directory
-                      else showStorageError application "Choose a folder before continuing."
+              let operation=text (field "storage" input)
+              case operation of
+                "document" -> forM_ (legalDocument (text (field "document" input))) $ \file -> do
+                    target <- fileURL (T.pack (runtime application </> file))
+                    workspace <- cls "NSWorkspace" >>= \c -> obj0 c "sharedWorkspace"
+                    void (obj1 workspace "openURL:" target)
+                _ | operation `elem` ["new","pick","existing"] -> (do
+                    acceptTerms input
+                    case operation of
+                        "new" -> defaultDataDirectory >>= startSelected application (Just StartNew)
+                        "pick" -> do
+                            busy <- atomicModifyIORef' (starting application) (\old -> (True,old))
+                            unless busy $ do
+                                selected <- chooseDataDirectory `finally` writeIORef (starting application) False
+                                script sh ("window.storagePicked?.(" <> jsonText (maybe Null (String . T.pack) selected) <> ")")
+                        "existing" -> do
+                            let directory=T.unpack (text (field "directory" input))
+                            if isAbsolute directory then startSelected application Nothing directory
+                              else showStorageError application "Choose a folder before continuing."
+                        _ -> pure ()) `catch` \(e :: IOException) -> showStorageError application (T.pack (storageMessage e))
                 _ -> pure ()
 
 chooseDataDirectory :: IO (Maybe FilePath)

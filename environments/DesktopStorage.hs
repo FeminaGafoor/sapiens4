@@ -1,7 +1,7 @@
-module DesktopStorage (WorkspaceSignal(..), saveWhenReady, awaitServerAddress, storageMode, preferenceScript, validPreference, bootstrapConsentScript, startupConsentArguments) where
+module DesktopStorage (WorkspaceSignal(..), saveWhenReady, awaitServerAddress, storageMode, preferenceScript, validPreference, bootstrapTermsScript, termsVersion, termsAccepted, acceptTerms, requireTerms, legalDocument, startupConsentArguments) where
 
 import Control.Exception (SomeException, IOException, try)
-import Control.Monad (forM_, guard)
+import Control.Monad (forM_, guard, unless)
 import Data.IORef
 import Data.Aeson (Value(..), encode, decodeStrict, object, (.=))
 import qualified Data.ByteString.Lazy as BL
@@ -10,24 +10,57 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.Text.IO as TIO
 import qualified Data.UUID.V4 as UUID
-import DataRoot (StorageChoice(..), saveDataDirectory, storageError, storageMessage, startupMessage, openingStorage, openedStorage, startupErrorPrefix, configDirectory)
+import DataRoot (StorageChoice(..), saveDataDirectory, storageError, storageMessage, startupMessage, openingStorage, openedStorage, startupErrorPrefix, configDirectory, containedPath)
 import Data.List (stripPrefix)
+import Data.Int (Int64)
+import Data.Time.Clock.POSIX (getPOSIXTime)
 import Network.URI
 import System.IO (Handle, hGetLine, hIsEOF)
 import System.FilePath
 import System.Timeout (timeout)
-import Types (readJSON, get, boolean)
+import Types (readJSON, writeJSON, get)
 import Telemetry (startupConsentArguments)
 
 data WorkspaceSignal = Navigated | WorkspaceReady deriving (Eq)
 
-bootstrapConsentScript :: IO Text
-bootstrapConsentScript = do
+termsVersion :: Text
+termsVersion = "2026-11-18"
+
+termsPath :: IO FilePath
+termsPath = do
+  root <- configDirectory
+  containedPath root (root </> "terms.json")
+
+termsAccepted :: IO Bool
+termsAccepted = do
   result <- try $ do
-    path <- (</> "telemetry.json") <$> configDirectory
-    boolean . (`get` "enabled") <$> readJSON path (object ["enabled" .= True])
-  let enabled = either (const False) id (result :: Either IOException Bool)
-  pure ("window.setTelemetryConsent?.(" <> TE.decodeUtf8 (BL.toStrict (encode enabled)) <> ")")
+    value <- termsPath >>= \path -> readJSON path Null
+    pure (get value "accepted"==Bool True && get value "version"==String termsVersion)
+  pure (either (const False) id (result :: Either IOException Bool))
+
+acceptTerms :: Value -> IO ()
+acceptTerms input = do
+  unless (get input "terms_accepted"==Bool True && get input "terms_version"==String termsVersion) $
+    storageError "Accept the Terms of Service and Privacy Policy before continuing."
+  accepted <- termsAccepted
+  unless accepted $ do
+    path <- termsPath
+    time <- floor <$> getPOSIXTime :: IO Int64
+    writeJSON path (object ["accepted" .= True,"version" .= termsVersion,"accepted_at" .= time])
+
+requireTerms :: IO ()
+requireTerms = termsAccepted >>= \accepted -> unless accepted $
+  storageError "Accept the Terms of Service and Privacy Policy before continuing."
+
+bootstrapTermsScript :: IO Text
+bootstrapTermsScript = do
+  accepted <- termsAccepted
+  let json value = TE.decodeUtf8 (BL.toStrict (encode value))
+  pure ("window.setTermsState?.(" <> json accepted <> "," <> json termsVersion <> ")")
+
+legalDocument :: Text -> Maybe FilePath
+legalDocument name = lookup name
+  [("terms-of-service","app/shell/terms-of-service.html"),("privacy-policy","app/shell/privacy-policy.html")]
 
 saveWhenReady :: IORef (Maybe WorkspaceSignal) -> WorkspaceSignal -> IORef (Maybe a)
               -> (a -> FilePath) -> (String -> IO ()) -> (a -> IO ()) -> IO ()

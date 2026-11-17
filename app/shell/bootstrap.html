@@ -22,6 +22,12 @@ p{color:var(--sapi-muted);font-size:13px;line-height:1.6;margin:0 0 18px}
 .setup-choice-copy small{line-height:1.4}
 .setup-choice-arrow{color:var(--sapi-muted);font-size:21px}
 .setup-note{font-size:11px;margin:0;color:var(--sapi-muted)}
+.terms-consent label{align-items:flex-start}
+.terms-consent input{flex:none;margin-top:3px}
+.terms-consent a{color:var(--sapi-ink);text-underline-offset:2px}
+.terms-consent .telemetry-info{font-size:17px;line-height:1;cursor:help}
+.terms-consent .telemetry-tooltip{display:none}
+.terms-consent .telemetry-info:hover .telemetry-tooltip,.terms-consent .telemetry-info:focus-within .telemetry-tooltip{display:block}
 #error{color:var(--sapi-ink);white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;margin:10px 0 0}
 #error:empty{display:none}
 @media(max-height:440px){main{padding-top:14px;padding-bottom:14px}.setup-stage{padding:10px 0}h1{font-size:24px}}
@@ -42,47 +48,60 @@ if(matchMedia('(prefers-color-scheme:dark)').matches) document.documentElement.d
     <h1>Meet your Sapis.</h1>
     <p class="setup-intro">Your own team of AI coworkers. Think together, make things, and get work done on your computer.</p>
     <div class="setup-choice-list">
-      <button type="button" class="setup-choice" aria-label="Start fresh" aria-pressed="true" onclick="selectStorage('new')">
+      <button type="button" class="setup-choice" aria-label="Start fresh" aria-pressed="true" onclick="selectStorage('new')" disabled>
         <span class="setup-choice-symbol" aria-hidden="true">+</span>
         <span class="setup-choice-copy"><strong>Start fresh</strong><small>Use the default location for your Sapiens data.</small></span>
         <span class="setup-choice-arrow" aria-hidden="true">›</span>
       </button>
       <div class="setup-storage-option" id="storage-existing" data-change="false">
-        <button type="button" class="setup-choice" aria-label="Use another folder" aria-describedby="storage-directory" aria-pressed="false" onclick="selectStorage('existing')">
+        <button type="button" class="setup-choice" aria-label="Use another folder" aria-describedby="storage-directory" aria-pressed="false" onclick="selectStorage('existing')" disabled>
           <span class="setup-choice-symbol" aria-hidden="true">↗</span>
           <span class="setup-choice-copy"><strong>Use another folder</strong><small id="storage-directory">Open existing data or start in an empty folder.</small></span>
           <span class="setup-choice-arrow" aria-hidden="true">›</span>
         </button>
-        <button type="button" class="setup-storage-change" id="storage-change" aria-label="Choose another folder" onclick="pickStorage()" hidden>Change</button>
+        <button type="button" class="setup-storage-change" id="storage-change" aria-label="Choose another folder" onclick="pickStorage()" disabled hidden>Change</button>
       </div>
     </div>
     <p class="setup-note">Upgrading from an earlier launcher? Choose the folder that contains corpora-identity.json.</p>
-    <div class="telemetry-consent">
-      <label><input id="telemetry-consent" type="checkbox" checked onchange="telemetryChoice=this.checked">Share basic usage statistics</label>
-      <details class="telemetry-info"><summary aria-label="About usage statistics">ⓘ</summary><span class="telemetry-tooltip" role="tooltip">Shares usage counts and app/device context. No conversations, prompts, files, paths or account details.</span></details>
+    <div class="telemetry-consent terms-consent">
+      <label><input id="terms-consent" type="checkbox" onchange="updateStorage()"><span>I agree to the <a href="terms-of-service.html" target="_blank" rel="noopener" onclick="openLegal(event,'terms-of-service')">Terms of Service</a> and <a href="privacy-policy.html" target="_blank" rel="noopener" onclick="openLegal(event,'privacy-policy')">Privacy Policy</a>.</span></label>
+      <span class="telemetry-info" tabindex="0" aria-label="About the terms" aria-describedby="terms-tooltip">ⓘ<span id="terms-tooltip" class="telemetry-tooltip" role="tooltip">By continuing, you agree to Sapiens' Terms of Service and acknowledge its Privacy Policy.<br><br>Sapiens may collect limited usage data to improve the app, maintain reliability, and enhance your experience.</span></span>
     </div>
     <p id="error" role="alert"></p>
   </section>
 </div>
 <footer class="setup-footer">
-  <button class="button primary" id="get-started" type="button" onclick="continueSetup(event)">Continue</button>
+  <button class="button primary" id="get-started" type="button" onclick="continueSetup(event)" disabled>Continue</button>
 </footer>
 </main>
 <script>
-let storageChoice='new', storageDirectory='', storageBusy=false, telemetryChoice=true;
-function setTelemetryConsent(enabled) {
- document.getElementById('telemetry-consent').checked=enabled;
- telemetryChoice=enabled;
+let storageChoice='new', storageDirectory='', storageBusy=false, termsVersion='';
+function termsAccepted() {
+ return document.getElementById('terms-consent').checked;
+}
+function setTermsState(accepted, version) {
+ document.getElementById('terms-consent').checked=accepted;
+ termsVersion=version;
+ updateStorage();
 }
 function postStorage(message) {
+ message={...message,terms_accepted:termsAccepted(),terms_version:termsVersion};
  if(window.webkit?.messageHandlers?.browser) window.webkit.messageHandlers.browser.postMessage(message);
  else window.chrome?.webview?.postMessage(message);
 }
+function openLegal(event, document) {
+ event.stopPropagation();
+ if(window.webkit?.messageHandlers?.browser || window.chrome?.webview) {
+  event.preventDefault();
+  postStorage({storage:'document',document});
+ }
+}
 function updateStorage() {
  document.querySelectorAll('.setup-choice').forEach((button,index)=>button.setAttribute('aria-pressed',String((index===0)===(storageChoice==='new'))));
- document.querySelectorAll('button').forEach(button=>button.disabled=storageBusy);
- document.getElementById('telemetry-consent').disabled=storageBusy;
- document.getElementById('get-started').disabled=storageBusy || (storageChoice==='existing' && !storageDirectory);
+ const blocked=storageBusy || !termsAccepted() || !termsVersion;
+ document.querySelectorAll('button').forEach(button=>button.disabled=blocked);
+ document.getElementById('terms-consent').disabled=storageBusy;
+ document.getElementById('get-started').disabled=blocked || (storageChoice==='existing' && !storageDirectory);
  const selected=storageChoice==='existing' && !!storageDirectory;
  document.getElementById('storage-existing').dataset.change=String(selected);
  document.getElementById('storage-change').hidden=!selected;
@@ -92,13 +111,13 @@ function updateStorage() {
  path.title=storageDirectory;
 }
 function selectStorage(choice) {
- if(storageBusy) return;
+ if(storageBusy || !termsAccepted() || !termsVersion) return;
  if(choice==='existing' && !storageDirectory) { pickStorage(); return; }
  storageChoice=choice;
  updateStorage();
 }
 function pickStorage() {
- if(storageBusy) return;
+ if(storageBusy || !termsAccepted() || !termsVersion) return;
  storageBusy=true;
  updateStorage();
  postStorage({storage:'pick'});
@@ -110,13 +129,14 @@ function storagePicked(directory) {
 }
 function continueSetup(event) {
  if(event?.detail>1) return;
- if(storageBusy) return;
+ if(storageBusy || !termsAccepted() || !termsVersion) return;
  if(storageChoice!=='existing' || storageDirectory) {
   storageLoading();
-  postStorage({storage:storageChoice,directory:storageDirectory,telemetry:telemetryChoice});
+  postStorage({storage:storageChoice,directory:storageDirectory});
  }
 }
 function showStorageSetup() {
+ updateStorage();
  document.querySelector('main').hidden=false;
 }
 function storageError(message) {

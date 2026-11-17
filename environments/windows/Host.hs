@@ -2,7 +2,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 module Host (Host(..), prepareHost, startHost, closeHost, watchHost, desktopArgs) where
 
-import DesktopStorage (storageMode, awaitServerAddress, startupConsentArguments)
+import DesktopStorage (storageMode, awaitServerAddress, startupConsentArguments, requireTerms)
 import Control.Concurrent
 import Control.Concurrent.Async
 import Control.Exception
@@ -78,6 +78,7 @@ prepareHost args = do
 
 startHost :: Maybe Bool -> StorageChoice -> Host -> IO String
 startHost consent choice host = do
+  requireTerms
   let binary = runtimeDirectory host </> ".build/bin/sapiens4.exe"
   available <- doesFileExist binary
   unless available $ ioError $ userError $ "Haskell runtime is missing. Extract the complete Sapiens4 package: " ++ binary
