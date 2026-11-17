@@ -49,6 +49,7 @@ RSpec.describe 'Installed D1 distribution' do
   it 'reopens completed work after replacing the DMG app that quit during an active request', :macos do
     skip 'Set SAPIENS_TEST_DMG on macOS' unless RUBY_PLATFORM.include?('darwin') && ENV['SAPIENS_TEST_DMG']
     dmg = File.realpath(ENV.fetch('SAPIENS_TEST_DMG'))
+    previous_dmg = File.realpath(ENV.fetch('SAPIENS_TEST_PREVIOUS_DMG', dmg))
     provider = Host.new(start: false)
     Dir.mktmpdir('Sapiens installed ') do |dir|
       mount, app, data, config = %w[volume Sapiens4.app data config].map { |name| File.join(dir, name) }
@@ -64,21 +65,23 @@ RSpec.describe 'Installed D1 distribution' do
         'SAPIENS_DATA_DIR' => data, 'SAPIENS_CONFIG_DIR' => config, 'SAPIENS_RUNTIME_DIR' => nil,
         'SAPIENS_REPOSITORY' => nil, 'PATH' => '/usr/bin:/bin:/usr/sbin:/sbin')
       host = File.join(app, 'Contents/MacOS/Sapiens4')
-      install = lambda do
-        command('hdiutil', 'attach', '-readonly', '-nobrowse', '-mountpoint', mount, dmg)
+      install = lambda do |image|
+        command('hdiutil', 'attach', '-readonly', '-nobrowse', '-mountpoint', mount, image)
         begin
           command('ditto', File.join(mount, 'Sapiens4.app'), app)
         ensure
           command('hdiutil', 'detach', mount)
         end
       end
-      install.call
+      install.call(previous_dmg)
+      previous_version = command('/usr/libexec/PlistBuddy', '-c', 'Print :CFBundleVersion', File.join(app, 'Contents/Info.plist')).strip
       launch(host, env, dir) do |desktop, process|
         desktop.press('Start fresh')
         desktop.press('Continue')
         send_message(desktop, token)
         desktop.see('Contract test reply')
         expect(provider.calls.first.fetch('prompt')).to include(token)
+        RSpec.configuration.reporter.message("Install PASS: version #{previous_version}; completed fixture request")
         backend = Integer(command('pgrep', '-P', process.pid.to_s, '-x', 'sapiens4').strip)
         path = command('ps', '-p', backend.to_s, '-o', 'comm=').strip
         expect(File.realpath(path)).to eq(File.realpath(File.join(app, 'Contents/Resources/runtime/.build/bin/sapiens4')))
@@ -96,9 +99,12 @@ RSpec.describe 'Installed D1 distribution' do
         RSpec.configuration.reporter.message("Quit stopped host #{process.pid}, backend/CLI/child #{owned.inspect}")
       end
       FileUtils.remove_entry(app)
-      install.call
+      install.call(dmg)
+      installed_version = command('/usr/libexec/PlistBuddy', '-c', 'Print :CFBundleVersion', File.join(app, 'Contents/Info.plist')).strip
+      expect(Gem::Version.new(installed_version)).to be > Gem::Version.new(previous_version) if previous_dmg != dmg
       launch(host, env.merge('SAPIENS_DATA_DIR' => nil), dir) do |desktop, process|
         expect(desktop.see('Contract test reply')).to include(token)
+        RSpec.configuration.reporter.message("Replacement PASS: #{previous_version} -> #{installed_version}; reopened completed request")
         quit(desktop, process)
       end
       db = File.join(data, 'corpora.sqlite3')
@@ -108,6 +114,7 @@ RSpec.describe 'Installed D1 distribution' do
       expect(Digest::SHA256.file(db).hexdigest).to eq(saved)
       expect(File.read(marker)).to eq(token)
       expect(Digest::SHA256.file(binary).hexdigest).to eq(cli_hash)
+      RSpec.configuration.reporter.message('Uninstall PASS: app removed; database, config and provider executable retained')
       RSpec.configuration.reporter.message("Reopened request #{token}; removed app; retained database SHA-256 #{saved}")
     end
   ensure

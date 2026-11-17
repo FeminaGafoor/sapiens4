@@ -124,7 +124,7 @@ data Pending = Pending { pendingAt :: Integer, pendingValue :: Value }
 data Telemetry = Telemetry
  { savedSettings :: MVar Saved, settingsPath :: Maybe FilePath, senderStatus :: TVar SenderStatus
  , consent :: TVar Bool, pendingEvents :: TVar (Seq.Seq Pending), senderThread :: Async ()
- , hostContext :: Value, nativeDevice :: TVar (Maybe (Maybe DeviceIdentity)), origin :: Maybe Request, manager :: Manager }
+ , hostContext :: Value, nativeDevice :: TVar (Maybe (Maybe DeviceIdentity)), origin :: Maybe Request, manager :: IO Manager }
 
 readSaved :: FilePath -> IO Saved
 readSaved path = do
@@ -144,10 +144,13 @@ writeSaved path value = do
    renameFile temporary path
 
 openTelemetry :: RuntimeKind -> Maybe Bool -> IO Telemetry
-openTelemetry runtime choice = newManager tlsManagerSettings >>= \http -> openTelemetryWith http runtime choice
+openTelemetry = openTelemetryUsing (newManager tlsManagerSettings)
 
 openTelemetryWith :: Manager -> RuntimeKind -> Maybe Bool -> IO Telemetry
-openTelemetryWith http runtime choice = do
+openTelemetryWith http = openTelemetryUsing (pure http)
+
+openTelemetryUsing :: IO Manager -> RuntimeKind -> Maybe Bool -> IO Telemetry
+openTelemetryUsing create runtime choice = do
  loaded <- try $ do
   path <- (</> "telemetry.json") <$> configDirectory
   value <- readSaved path
@@ -169,6 +172,10 @@ openTelemetryWith http runtime choice = do
  state <- newTVarIO status
  queue <- newTVarIO Seq.empty
  device <- newTVarIO Nothing
+ connection <- newMVar Nothing
+ let http = modifyMVar connection $ \cached -> do
+      value <- maybe create pure cached
+      pure (Just value,value)
  let context = object ["app_version" .= showVersion version,"host_os" .= nativeOS,"host_arch" .= arch,"runtime_kind" .= (if runtime==Desktop then "desktop" else "headless" :: Text)]
  holder <- newEmptyMVar
  bracketOnError (asyncWithUnmask (\unmask -> unmask (readMVar holder >>= sender))) cancel $ \worker -> do
@@ -302,10 +309,12 @@ post telemetry route credentials value = case origin telemetry of
       outgoing = authorized request {path=BC.pack route,method="POST",requestBody=RequestBodyLBS (encode value),requestHeaders=[("Content-Type","application/json")],responseTimeout=responseTimeoutMicro requestTimeoutMicros,redirectCount=0,checkResponse = \_ _ -> pure ()}
   active <- enabled telemetry
   if not active then pure Unavailable else do
-   result <- timeout requestTimeoutMicros $ (withResponse outgoing (manager telemetry) $ \response -> do
-    body <- brReadSome (responseBody response) (fromIntegral requestByteLimit)
-    let code = statusCode (responseStatus response)
-    pure $ if code `elem` [401,403] then Rejected else if code>=200 && code<300 then Received (maybe Null id (decode body)) else Unavailable)
+   result <- timeout requestTimeoutMicros $ (do
+    http <- manager telemetry
+    withResponse outgoing http $ \response -> do
+     body <- brReadSome (responseBody response) (fromIntegral requestByteLimit)
+     let code = statusCode (responseStatus response)
+     pure $ if code `elem` [401,403] then Rejected else if code>=200 && code<300 then Received (maybe Null id (decode body)) else Unavailable)
     `catch` \(_::HttpException) -> pure Unavailable
    pure (maybe Unavailable id result)
 
