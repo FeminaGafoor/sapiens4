@@ -1,4 +1,4 @@
-module DesktopStorage (WorkspaceSignal(..), StorageAction(..), storageAction, saveWhenReady, awaitServerAddress, storageMode, preferenceScript, validPreference, bootstrapTermsScript, termsVersion, termsAccepted, acceptTerms, requireTerms, legalDocument) where
+module DesktopStorage (WorkspaceSignal(..), StorageAction(..), storageAction, saveWhenReady, awaitServerAddress, storageMode, preferenceScript, validPreference, bootstrapTermsScript, termsVersion, termsAccepted, acceptTerms, requireTerms, startupTelemetryArguments, legalDocument) where
 
 import Control.Exception (SomeException, IOException, try)
 import Control.Monad (forM_, guard, unless)
@@ -16,9 +16,11 @@ import Data.Int (Int64)
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Network.URI
 import System.IO (Handle, hGetLine, hIsEOF)
+import System.Directory (doesFileExist)
 import System.FilePath
 import System.Timeout (timeout)
 import Types (readJSON, writeJSON, get)
+import Telemetry (startupConsentOption)
 
 data WorkspaceSignal = Navigated | WorkspaceReady deriving (Eq)
 data StorageAction = StartFresh | ChooseFolder | UseFolder FilePath
@@ -58,6 +60,13 @@ acceptTerms input = do
 requireTerms :: IO ()
 requireTerms = termsAccepted >>= \accepted -> unless accepted $
   storageError "Accept the Terms of Service and Privacy Policy before continuing."
+
+startupTelemetryArguments :: IO [String]
+startupTelemetryArguments = do
+  requireTerms
+  path <- (</> "telemetry.json") <$> configDirectory
+  saved <- doesFileExist path
+  pure (if saved then [] else [startupConsentOption,"true"])
 
 bootstrapTermsScript :: IO Text
 bootstrapTermsScript = do

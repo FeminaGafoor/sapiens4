@@ -68,7 +68,7 @@ check application = do
 
 startServer :: Application -> StorageChoice -> FilePath -> FilePath -> IO (ServerProcess, Text)
 startServer application choice runtime destination = do
-    requireTerms
+    telemetryArguments <- startupTelemetryArguments
     configRoot <- configDirectory
     let binary = runtime </> ".build/bin/sapiens4"
     present <- doesFileExist binary
@@ -80,7 +80,7 @@ startServer application choice runtime destination = do
             ["/usr/bin","/bin","/usr/sbin","/sbin","/opt/homebrew/bin","/usr/local/bin"] ++
             filter isAbsolute (maybe [] splitSearchPath $ lookup "PATH" environment)
         overrides = [("PATH",toolPath),("SAPIENS_REPOSITORY",runtime),("SAPIENS_CONFIG_DIR",configRoot),("SAPIENS_DATA_DIR",destination),("SAPIENS_DESKTOP_PID",show pid),("SAPIENS_STORAGE_MODE",storageMode choice)]
-    let command = (proc binary ["--port","0","--data-dir",destination,"--desktop"])
+    let command = (proc binary (["--port","0","--data-dir",destination,"--desktop"] ++ telemetryArguments))
             { cwd = Just runtime, env = Just (overrides ++ filter ((`notElem` map fst overrides) . fst) environment) }
     launchServer application destination command
 
