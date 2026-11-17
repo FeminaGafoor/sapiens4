@@ -5,9 +5,11 @@ import Data.Aeson
 import qualified Data.Aeson.Key as K
 import qualified Data.Aeson.KeyMap as KM
 import Data.Aeson.Types (Parser)
+import Data.Int (Int64)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Time (UTCTime)
+import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
 import qualified Data.UUID as UUID
 import qualified Data.Vector as V
 
@@ -20,6 +22,9 @@ batchLimit = 10
 requestByteLimit = 65536
 objectFieldLimit = 64
 fieldNameLimit = 128
+
+unixSeconds :: UTCTime -> Int64
+unixSeconds = floor . utcTimeToPOSIXSeconds
 
 data Credentials = Credentials { installationId :: Text, installationPassword :: Text }
  deriving (Eq, Show)
@@ -54,5 +59,5 @@ envelope = withObject "telemetry envelope" $ \o -> do
   _ <- row .: "event_id" >>= uuidText
   kind <- row .: "event_type"
   unless (not (T.null kind) && T.length kind<=200) (fail "Invalid event_type")
-  _ <- row .: "occurred_at" :: Parser UTCTime
+  _ <- row .: "occurred_at" :: Parser Int64
   pure row

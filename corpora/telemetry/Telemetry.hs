@@ -17,11 +17,13 @@ import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as BC
 import Data.Foldable (toList)
+import Data.Int (Int64)
 import qualified Data.Sequence as Seq
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Data.Time
+import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
 import qualified Data.UUID as UUID
 import qualified Data.UUID.V4 as UUID
 import Data.Version (showVersion)
@@ -259,7 +261,7 @@ emitAt telemetry time event corpora fields = do
  when on $ do
   ident <- UUID.toText <$> UUID.nextRandom
   tick <- toInteger <$> getMonotonicTimeNSec
-  let common = KM.fromList [("event_id",toJSON ident),("event_type",toJSON (eventName event)),("occurred_at",toJSON time)]
+  let common = KM.fromList [("event_id",toJSON ident),("event_type",toJSON (eventName event)),("occurred_at",toJSON (unixSeconds time))]
       row = Object $ KM.union common $ KM.union (maybe KM.empty (KM.singleton "corpora_id" . String) corpora) fields
       limit = (requestByteLimit - fromIntegral (BL.length (encode (batchEnvelope (hostContext telemetry) []))) - deviceContextReserveBytes - batchLimit) `div` batchLimit
   when (BL.length (encode row)<=fromIntegral limit) $ atomically $ do
@@ -270,7 +272,7 @@ emitAt telemetry time event corpora fields = do
 uiHeartbeat :: Telemetry -> Maybe Text -> Maybe ClientContext -> Value -> IO ()
 uiHeartbeat telemetry corpora context value = case value of
  Object fields | KM.lookup "ui_visible" fields==Just (Bool True) && BL.length (encode value)<=8192 -> do
-  time <- case KM.lookup "occurred_at" fields >>= \v -> case fromJSON v of Success time -> Just time; Error _ -> Nothing of
+  time <- case KM.lookup "occurred_at" fields >>= \v -> case fromJSON v :: Result Int64 of Success seconds -> Just (posixSecondsToUTCTime (fromIntegral seconds)); Error _ -> Nothing of
    Just time -> pure time
    Nothing -> getCurrentTime
   let common = clientContextFields context

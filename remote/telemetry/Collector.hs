@@ -9,6 +9,7 @@ import Data.Aeson
 import qualified Data.Aeson.KeyMap as KM
 import qualified Data.Aeson.Key as K
 import Data.Aeson.Types (parseEither)
+import Data.Int (Int64)
 import qualified Data.ByteArray as BA
 import Data.ByteArray.Encoding (Base(Base16), convertToBase)
 import qualified Data.ByteString as B
@@ -82,7 +83,7 @@ authenticate secret header = do
 normalizeRows :: UTCTime -> Text -> Object -> [Object] -> [Row]
 normalizeRows received ident context = map (\row -> KM.union reserved (KM.union commonContext (KM.union row context)))
  where
- reserved = KM.fromList [("installation_id",String ident),("received_at",toJSON received)]
+ reserved = KM.fromList [("installation_id",String ident),("received_at",toJSON (unixSeconds received))]
  commonContext = KM.filterWithKey (\key _ -> key `elem` ["app_version","host_os","host_arch","runtime_kind"]) context
 
 cell :: Value -> Maybe B.ByteString
@@ -90,14 +91,25 @@ cell Null = Nothing
 cell (String value) = Just (TE.encodeUtf8 value)
 cell value = Just (BL.toStrict (encode value))
 
+timeCell :: Value -> Maybe Int64
+timeCell value = case fromJSON value of
+ Success seconds -> Just seconds
+ Error _ -> Nothing
+
 encodeRows :: [Row] -> B.ByteString
 encodeRows rows = P.encodeParquetMixed P.defaultWriteOptions {P.writeCompression=P.Uncompressed} schema [columns]
  where
  names = S.toAscList (S.unions (map (S.fromList . KM.keys) rows))
  root = P.SchemaElement "schema" Nothing Nothing (Just (fromIntegral (length names))) Nothing Nothing Nothing Nothing
- leaf name = P.SchemaElement (K.toText name) (Just P.Optional) (Just P.PTByteArray) Nothing (Just P.CTUtf8) (Just P.LTString) Nothing Nothing
+ isTime name = name `elem` ["occurred_at","received_at"]
+ leaf name = if isTime name
+  then P.SchemaElement (K.toText name) (Just P.Optional) (Just P.PTInt64) Nothing Nothing Nothing Nothing Nothing
+  else P.SchemaElement (K.toText name) (Just P.Optional) (Just P.PTByteArray) Nothing (Just P.CTUtf8) (Just P.LTString) Nothing Nothing
  schema = V.fromList (root : map leaf names)
- columns = V.fromList [P.PCOptional (P.OptByteArray (V.fromList [KM.lookup name row >>= cell | row<-rows])) | name<-names]
+ column name = if isTime name
+  then P.PCOptional (P.OptInt64 (V.fromList [KM.lookup name row >>= timeCell | row<-rows]))
+  else P.PCOptional (P.OptByteArray (V.fromList [KM.lookup name row >>= cell | row<-rows]))
+ columns = V.fromList (map column names)
 
 writeRows :: Config -> [Row] -> IO ()
 writeRows config rows = do

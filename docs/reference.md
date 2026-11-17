@@ -85,6 +85,22 @@ for pairing, revocation and relay deployment.
 
 ## HTTP API
 
+### Telemetry timestamps
+
+Telemetry uses signed 64-bit integer Unix timestamps in seconds since
+1970-01-01T00:00:00Z. The client generates `occurred_at`; the collector generates
+`received_at`. Both are stored as INT64 columns in new Parquet files. Browser
+heartbeats convert their millisecond clock to whole seconds before sending.
+
+The collector rejects string timestamps, fractional seconds and integers outside
+the signed 64-bit range with HTTP 400 for the entire batch. Rebuild and coordinate
+the collector and client rollout when adopting this format: older clients send
+ISO timestamps, and older collectors reject integer timestamps. Existing Parquet
+files retain their original string columns; historical queries must handle both
+formats when combining old and new files.
+
+### Local host
+
 The host binds to loopback. Writes require JSON and `X-Sapiens-Local: 1`;
 a supplied Origin must match the loopback Host. Common entrypoints:
 

@@ -7,6 +7,7 @@ import Sapiens.Data as D
 import Sapiens.Environment (Environment, clientDetails)
 import Sapiens.Domain as X
 import Data.String as S
+import Data.Number as N
 import Libs4.Browser as B
 
 browserConsentKey :: String
@@ -36,4 +37,4 @@ metadata remote corpora now env = D.merge (requestMetadata env) $ D.json
       X.Local -> "local"
       X.Remote -> "remote"
       _ -> "unknown"
-  , occurred_at:B.timestamp now }
+  , occurred_at:N.floor (now / 1000.0) }
