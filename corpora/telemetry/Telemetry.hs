@@ -53,7 +53,7 @@ eventName event = case event of
  CorporaCreated -> "corpora_created"
  RequestAccepted -> "request_accepted"
  RemotePaired -> "remote_paired"
- AppHeartbeat -> "app_heartbeat"
+ AppHeartbeat -> "pulse_id"
  UIHeartbeat -> "ui_heartbeat"
 
 metadataValue :: Key -> Value -> Value
