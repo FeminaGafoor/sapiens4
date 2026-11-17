@@ -17,6 +17,6 @@ Accessibility permission. Run desktop tests serially.
 Linux: build with `--desktop`, then `sh environments/linux/qualify.sh NEW_REPORT_DIRECTORY`.
 Windows: build the host and driver using their platform guides.
 
-Coverage excludes installer lifecycle, native guest isolation, legacy remote
-clients, altered/expired encrypted delivery, load, native onboarding, provider
+Coverage excludes installer lifecycle, native guest isolation, remote-client
+compatibility, altered/expired encrypted delivery, load, native onboarding, provider
 discovery, model-settings UI, full provider combinations, and Group scenarios.
