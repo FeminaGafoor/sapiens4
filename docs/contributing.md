@@ -10,7 +10,4 @@
 - Use lowercase directories and unique Haskell module names within each executable.
 - Run the [tests](testing.md). Do not commit generated bundles or dependency caches.
 
-Read the [license](../license/LICENSE.md). Before merge, each contributing rights
-holder must expressly accept the [CLA](../license/CONTRIBUTOR_LICENSE_AGREEMENT.md),
-identifying the contribution and agreement revision. Disclose third-party material
-and obtain required rights-holder authorization. Maintainers retain and verify acceptance.
+Read the [license](../license/LICENSE.md) and retain third-party notices.
