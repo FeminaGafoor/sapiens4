@@ -45,7 +45,7 @@ import TelemetryDevice
 
 data RuntimeKind = Desktop | Headless deriving Eq
 data RequestTransport = Direct | Remote | UnknownTransport
-data Event = AppStarted | CorporaCreated | RequestAccepted | RemotePaired | PulseId | UIHeartbeat
+data Event = AppStarted | CorporaCreated | RequestAccepted | RemotePaired | PulseId | UIHeartbeat | TelemetryConsentChanged
  deriving Eq
 eventName :: Event -> Text
 eventName event = case event of
@@ -55,6 +55,7 @@ eventName event = case event of
  RemotePaired -> "remote_paired"
  PulseId -> "pulse_id"
  UIHeartbeat -> "ui_heartbeat"
+ TelemetryConsentChanged -> "telemetry_consent_changed"
 
 metadataValue :: Key -> Value -> Value
 metadataValue key (Object fields) = maybe Null id (KM.lookup key fields)
@@ -126,7 +127,7 @@ data Pending = Pending { pendingAt :: Integer, pendingValue :: Value }
 data Telemetry = Telemetry
  { savedSettings :: MVar Saved, settingsPath :: Maybe FilePath, senderStatus :: TVar SenderStatus
  , consent :: TVar Bool, pendingEvents :: TVar (Seq.Seq Pending), senderThread :: Async ()
- , hostContext :: Value, nativeDevice :: TVar (Maybe (Maybe DeviceIdentity)), origin :: Maybe Request, manager :: IO Manager }
+ , hostContext :: Value, nativeDevice :: TVar (Maybe (Maybe DeviceIdentity)), origin :: Maybe Request, manager :: IO Manager, deliveryLock :: MVar () }
 
 readSaved :: FilePath -> IO Saved
 readSaved path = do
@@ -175,14 +176,15 @@ openTelemetryUsing create runtime choice = do
  queue <- newTVarIO Seq.empty
  device <- newTVarIO Nothing
  connection <- newMVar Nothing
+ delivery <- newMVar ()
  let http = modifyMVar connection $ \cached -> do
       value <- maybe create pure cached
       pure (Just value,value)
  let context = object ["app_version" .= showVersion version,"host_os" .= nativeOS,"host_arch" .= arch,"runtime_kind" .= (if runtime==Desktop then "desktop" else "headless" :: Text)]
  holder <- newEmptyMVar
  bracketOnError (asyncWithUnmask (\unmask -> unmask (readMVar holder >>= sender))) cancel $ \worker -> do
-  let telemetry = Telemetry saved file state active queue worker context device request http
-  forM_ choice (void . setConsent telemetry)
+  let telemetry = Telemetry saved file state active queue worker context device request http delivery
+  forM_ choice (void . saveConsent telemetry)
   putMVar holder telemetry
   pure telemetry
 
@@ -230,7 +232,25 @@ disable telemetry reason = atomically $ do
 
 setConsent :: Telemetry -> Bool -> IO (Either Text ())
 setConsent telemetry on = do
- result <- try $ modifyMVarMasked_ (savedSettings telemetry) $ \(Saved _ credentials) -> do
+ wasReporting <- enabled telemetry
+ saved <- saveConsent telemetry on
+ case saved of
+  Left reason -> pure (Left reason)
+  Right (changed,credentials) -> do
+   let fields = KM.singleton "enabled" (Bool on)
+   when changed $ (if on then emit telemetry TelemetryConsentChanged Nothing fields
+    else when wasReporting $ forM_ credentials $ \auth -> do
+     time <- floor <$> getPOSIXTime
+     row <- eventValue time TelemetryConsentChanged Nothing fields
+     context <- batchContext telemetry auth
+     void $ timeout 1000000 $ withMVar (deliveryLock telemetry) $ \_ ->
+      sendRequest telemetry eventsPath (Just auth) (batchEnvelope context [row]))
+    `catch` \(_::IOException) -> pure ()
+   pure (Right ())
+
+saveConsent :: Telemetry -> Bool -> IO (Either Text (Bool,Maybe Credentials))
+saveConsent telemetry on = do
+ result <- try $ modifyMVarMasked (savedSettings telemetry) $ \(Saved previous credentials) -> do
   unless on $ atomically $ writeTVar (consent telemetry) False >> writeTVar (pendingEvents telemetry) Seq.empty
   path <- maybe (ioError (userError "Telemetry configuration is unavailable until restart")) pure (settingsPath telemetry)
   let updated = Saved on credentials
@@ -238,13 +258,13 @@ setConsent telemetry on = do
   atomically $ do
    status <- readTVar (senderStatus telemetry)
    writeTVar (consent telemetry) (on && status/=Closed)
-  pure updated
+  pure (updated,(previous/=on,credentials))
  case result of
   Left (e::IOException) -> do
    let reason = T.pack (displayException e)
    disable telemetry reason
    pure (Left reason)
-  Right () -> pure (Right ())
+  Right changed -> pure (Right changed)
 
 consentView :: Telemetry -> IO Value
 consentView telemetry = atomically $ do
@@ -259,15 +279,19 @@ emitAt :: Telemetry -> Int64 -> Event -> Maybe Text -> Object -> IO ()
 emitAt telemetry time event corpora fields = do
  on <- enabled telemetry
  when on $ do
-  ident <- UUID.toText <$> UUID.nextRandom
+  row <- eventValue time event corpora fields
   tick <- toInteger <$> getMonotonicTimeNSec
-  let common = KM.fromList [("event_id",toJSON ident),("event_type",toJSON (eventName event)),("timestamp",toJSON time)]
-      row = Object $ KM.union common $ KM.union (maybe KM.empty (KM.singleton "corpora_id" . String) corpora) fields
-      limit = (requestByteLimit - fromIntegral (BL.length (encode (batchEnvelope (hostContext telemetry) []))) - contextReserveBytes - batchLimit) `div` batchLimit
+  let limit = (requestByteLimit - fromIntegral (BL.length (encode (batchEnvelope (hostContext telemetry) []))) - contextReserveBytes - batchLimit) `div` batchLimit
   when (BL.length (encode row)<=fromIntegral limit) $ atomically $ do
    active <- reporting telemetry
    queue <- readTVar (pendingEvents telemetry)
    when (active && Seq.length queue<queueLimit) (writeTVar (pendingEvents telemetry) (queue Seq.|> Pending tick row))
+
+eventValue :: Int64 -> Event -> Maybe Text -> Object -> IO Value
+eventValue time event corpora fields = do
+ ident <- UUID.toText <$> UUID.nextRandom
+ let common = KM.fromList [("event_id",toJSON ident),("event_type",toJSON (eventName event)),("timestamp",toJSON time)]
+ pure $ Object $ KM.union common $ KM.union (maybe KM.empty (KM.singleton "corpora_id" . String) corpora) fields
 
 uiHeartbeat :: Telemetry -> Maybe Text -> Maybe ClientContext -> Value -> IO ()
 uiHeartbeat telemetry corpora context value = case value of
@@ -304,21 +328,24 @@ nextBatch telemetry = do
 
 data Delivery = Unavailable | Rejected | Received Value
 post :: Telemetry -> String -> Maybe Credentials -> Value -> IO Delivery
-post telemetry route credentials value = case origin telemetry of
+post telemetry route credentials value = withMVar (deliveryLock telemetry) $ \_ -> do
+ active <- enabled telemetry
+ if active then sendRequest telemetry route credentials value else pure Unavailable
+
+sendRequest :: Telemetry -> String -> Maybe Credentials -> Value -> IO Delivery
+sendRequest telemetry route credentials value = case origin telemetry of
  Nothing -> pure Unavailable
  Just request -> do
   let authorized = maybe id (\(Credentials ident password) -> applyBasicAuth (TE.encodeUtf8 ident) (TE.encodeUtf8 password)) credentials
       outgoing = authorized request {path=BC.pack route,method="POST",requestBody=RequestBodyLBS (encode value),requestHeaders=[("Content-Type","application/json")],responseTimeout=responseTimeoutMicro requestTimeoutMicros,redirectCount=0,checkResponse = \_ _ -> pure ()}
-  active <- enabled telemetry
-  if not active then pure Unavailable else do
-   result <- timeout requestTimeoutMicros $ (do
+  result <- timeout requestTimeoutMicros $ (do
     http <- manager telemetry
     withResponse outgoing http $ \response -> do
      body <- brReadSome (responseBody response) (fromIntegral requestByteLimit)
      let code = statusCode (responseStatus response)
      pure $ if code `elem` [401,403] then Rejected else if code>=200 && code<300 then Received (maybe Null id (decode body)) else Unavailable)
     `catch` \(_::HttpException) -> pure Unavailable
-   pure (maybe Unavailable id result)
+  pure (maybe Unavailable id result)
 
 credentialsFor :: Telemetry -> IO (Maybe Credentials)
 credentialsFor telemetry = do
