@@ -66,5 +66,12 @@ profile, then add `--release`:
 Public builds require both credentials, sign nested code with Hardened Runtime,
 notarize and staple the final DMG, then verify the installed app copy with
 Gatekeeper and signature checks. Credentials are not stored in outputs.
-The installed-app acceptance case is `spec/installed_distribution_spec.rb`.\nIt requires `SAPIENS_TEST_DMG` to point to the image and an unlocked desktop\nwith Accessibility permission.
+Run the Lean desktop scenarios against an extracted, signed app bundle:
+
+```sh
+SAPIENS_TEST_MACOS_APP=/absolute/path/to/Sapiens4.app lake -d spec test -- desktop
+```
+
+Use an unlocked desktop with Accessibility permission. Installer upgrade and
+rollback are not covered by these scenarios; see [Testing](../../docs/testing.md).
 Native browser tabs, file picking and accessibility behavior retain their existing interfaces.

@@ -145,26 +145,3 @@ executable sapiens-windows
   if os(windows)
     ld-options: .build/haskell/windows-resources.o
     ghc-options: -optl-mwindows
-
-executable sapiens-windows-probe
-  import: windows-host
-  hs-source-dirs: spec/support, environments/windows, environments, corpora/state, corpora/telemetry
-  main-is: WindowsProbeMain.hs
-
-executable sapiens-provider
-  main-is: WindowsProviderMain.hs
-  hs-source-dirs: spec/support
-  default-language: Haskell2010
-  build-depends: base >=4.18 && <5, process
-  if !os(windows)
-    buildable: False
-
-executable sapiens-peer
-  main-is: Peer.hs
-  hs-source-dirs: spec/support
-  default-language: Haskell2010
-  ghc-options: -threaded -O1 -Wall
-  build-depends: base >=4.18 && <5, aeson, async, base64-bytestring, bytestring,
-    containers, network-uri, stm, text, websockets, wuss
-  extra-lib-dirs: submodules/libs4/haskell/sodium/src/libsodium/.libs
-  extra-libraries: sodium

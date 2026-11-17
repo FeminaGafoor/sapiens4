@@ -47,15 +47,8 @@ records revisions, binary hashes, logs and JSON results in a new directory.
 Desktop suites run serially against local fixtures. For a focused run, use:
 
 ```sh
-SAPIENS_TEST_LINUX_DESKTOP=1 SAPIENS_TEST_LINUX_AUTOMATION=1 \
-  sh environments/linux/virtual.sh ruby submodules/libs4/ruby/bundle.rb exec rspec spec/linux_automation_spec.rb spec/linux_browser_spec.rb
+(cd spec && sh ../environments/linux/virtual.sh lake test -- desktop)
 ```
-
-External browser tests additionally require Chromium and Firefox and
-`SAPIENS_TEST_LINUX_EXTERNAL_DESKTOP=1`. Executables can be selected with
-`SAPIENS_TEST_CHROMIUM_EXECUTABLE` and `SAPIENS_TEST_FIREFOX_EXECUTABLE`.
-`SAPIENS_TEST_SCALE=2 GDK_SCALE=2` enables integer scaling checks. Physical desktop,
-fractional/mixed-monitor scaling and managed-browser coverage remain pending.
 
 ## Debian package
 
@@ -67,6 +60,3 @@ sh environments/linux/package.sh .build/sapiens4.deb
 
 The script checks glibc compatibility and includes dependency notices. The package
 contains no GNOME extension or input helper and installs no background service.
-To test an extracted package, set `SAPIENS_TEST_LINUX_RUNTIME` to its `opt/sapiens4`
-directory. Package installation/upgrade tests require a disposable filesystem;
-see `spec/linux_package_spec.rb` for the explicit opt-in settings.
