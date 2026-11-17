@@ -101,7 +101,7 @@ encodeRows rows = P.encodeParquetMixed P.defaultWriteOptions {P.writeCompression
  where
  names = S.toAscList (S.unions (map (S.fromList . KM.keys) rows))
  root = P.SchemaElement "schema" Nothing Nothing (Just (fromIntegral (length names))) Nothing Nothing Nothing Nothing
- isTime name = name `elem` ["occurred_at","received_at"]
+ isTime name = name `elem` ["timestamp","received_at"]
  leaf name = if isTime name
   then P.SchemaElement (K.toText name) (Just P.Optional) (Just P.PTInt64) Nothing Nothing Nothing Nothing Nothing
   else P.SchemaElement (K.toText name) (Just P.Optional) (Just P.PTByteArray) Nothing (Just P.CTUtf8) (Just P.LTString) Nothing Nothing
@@ -181,9 +181,11 @@ collectorApplication collector req respond = do
     Left () -> errorReply status413 "Request too large"
     Right raw -> case eitherDecode raw >>= parseEither envelope of
      Left _ -> errorReply status400 "Invalid telemetry envelope"
-     Right (context,events) -> case KM.lookup "app_version" context of
-      Just (String version) | S.member version (blockedVersions config) -> errorReply status403 "Version blocked"
-      _ -> do
-       now <- getCurrentTime
-       accepted <- admit collector now (normalizeRows now ident context events)
-       if accepted then reply status202 (object ["accepted" .= length events]) else errorReply status503 "Telemetry buffer full"
+     Right (context,events)
+      | KM.lookup "installation_id" context/=Just (String ident) -> errorReply status403 "Installation ID does not match credentials"
+      | otherwise -> case KM.lookup "app_version" context of
+       Just (String version) | S.member version (blockedVersions config) -> errorReply status403 "Version blocked"
+       _ -> do
+        now <- getCurrentTime
+        accepted <- admit collector now (normalizeRows now ident context events)
+        if accepted then reply status202 (object ["accepted" .= length events]) else errorReply status503 "Telemetry buffer full"

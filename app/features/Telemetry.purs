@@ -37,4 +37,4 @@ metadata remote corpora now env = D.merge (requestMetadata env) $ D.json
       X.Local -> "local"
       X.Remote -> "remote"
       _ -> "unknown"
-  , occurred_at:N.floor (now / 1000.0) }
+  , timestamp:N.floor (now / 1000.0) }

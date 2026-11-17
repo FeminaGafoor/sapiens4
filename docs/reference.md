@@ -85,19 +85,31 @@ for pairing, revocation and relay deployment.
 
 ## HTTP API
 
-### Telemetry timestamps
+### Telemetry batches
+
+A batch requires `context` with `app_version` (a non-empty string of up to 200
+characters) and `installation_id` (a UUID matching the authenticated installation).
+It also requires an `events` array with 1–10 objects, each containing `event_id`
+(UUID), `event_type` (a non-empty string of up to 200 characters), and `timestamp`
+(signed 64-bit integer Unix seconds). Other context and event fields are optional;
+the application continues to include host and device metadata when available.
+
+Missing or invalid required fields reject the entire batch with HTTP 400. An
+installation ID that differs from the authenticated installation is rejected with
+HTTP 403. The collector derives the stored `installation_id` from authentication.
 
 Telemetry uses signed 64-bit integer Unix timestamps in seconds since
-1970-01-01T00:00:00Z. The client generates `occurred_at`; the collector generates
+1970-01-01T00:00:00Z. The client generates `timestamp`; the collector generates
 `received_at`. Both are stored as INT64 columns in new Parquet files. Browser
 heartbeats convert their millisecond clock to whole seconds before sending.
 
 The collector rejects string timestamps, fractional seconds and integers outside
 the signed 64-bit range with HTTP 400 for the entire batch. Rebuild and coordinate
 the collector and client rollout when adopting this format: older clients send
-ISO timestamps, and older collectors reject integer timestamps. Existing Parquet
-files retain their original string columns; historical queries must handle both
-formats when combining old and new files.
+`occurred_at` and omit `context.installation_id`; older collectors require
+`occurred_at` as an ISO timestamp. Existing Parquet files retain their original
+`occurred_at` and string columns; historical queries must handle both column names
+and formats when combining old and new files.
 
 ### Local host
 

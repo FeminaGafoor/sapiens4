@@ -90,11 +90,11 @@ requestMetadata :: RequestTransport -> Maybe ClientContext -> Object
 requestMetadata transport value = KM.insert "request_transport" (String name) (clientContextFields value)
  where name = case transport of Direct -> "direct"; Remote -> "remote"; UnknownTransport -> "unknown"
 
-queueLimit, batchDelayMicros, requestTimeoutMicros, deviceContextReserveBytes :: Int
+queueLimit, batchDelayMicros, requestTimeoutMicros, contextReserveBytes :: Int
 queueLimit = 100
 batchDelayMicros = 10 * 1000000
 requestTimeoutMicros = 10 * 1000000
-deviceContextReserveBytes = 256
+contextReserveBytes = 384
 heartbeatInterval :: NominalDiffTime
 heartbeatInterval = 60 * 60
 
@@ -216,11 +216,11 @@ localClientContext telemetry value = case parseClientContext value of
   active <- enabled telemetry
   pure (if active then context else Nothing)
 
-batchContext :: Telemetry -> IO Value
-batchContext telemetry = do
+batchContext :: Telemetry -> Credentials -> IO Value
+batchContext telemetry credentials = do
  identity <- cachedNativeDevice telemetry
  pure $ case hostContext telemetry of
-  Object fields -> Object (KM.union (deviceFields "host_" identity) fields)
+  Object fields -> Object (KM.insert "installation_id" (String (installationId credentials)) (KM.union (deviceFields "host_" identity) fields))
   value -> value
 
 disable :: Telemetry -> Text -> IO ()
@@ -261,9 +261,9 @@ emitAt telemetry time event corpora fields = do
  when on $ do
   ident <- UUID.toText <$> UUID.nextRandom
   tick <- toInteger <$> getMonotonicTimeNSec
-  let common = KM.fromList [("event_id",toJSON ident),("event_type",toJSON (eventName event)),("occurred_at",toJSON (unixSeconds time))]
+  let common = KM.fromList [("event_id",toJSON ident),("event_type",toJSON (eventName event)),("timestamp",toJSON (unixSeconds time))]
       row = Object $ KM.union common $ KM.union (maybe KM.empty (KM.singleton "corpora_id" . String) corpora) fields
-      limit = (requestByteLimit - fromIntegral (BL.length (encode (batchEnvelope (hostContext telemetry) []))) - deviceContextReserveBytes - batchLimit) `div` batchLimit
+      limit = (requestByteLimit - fromIntegral (BL.length (encode (batchEnvelope (hostContext telemetry) []))) - contextReserveBytes - batchLimit) `div` batchLimit
   when (BL.length (encode row)<=fromIntegral limit) $ atomically $ do
    active <- reporting telemetry
    queue <- readTVar (pendingEvents telemetry)
@@ -272,7 +272,7 @@ emitAt telemetry time event corpora fields = do
 uiHeartbeat :: Telemetry -> Maybe Text -> Maybe ClientContext -> Value -> IO ()
 uiHeartbeat telemetry corpora context value = case value of
  Object fields | KM.lookup "ui_visible" fields==Just (Bool True) && BL.length (encode value)<=8192 -> do
-  time <- case KM.lookup "occurred_at" fields >>= \v -> case fromJSON v :: Result Int64 of Success seconds -> Just (posixSecondsToUTCTime (fromIntegral seconds)); Error _ -> Nothing of
+  time <- case KM.lookup "timestamp" fields >>= \v -> case fromJSON v :: Result Int64 of Success seconds -> Just (posixSecondsToUTCTime (fromIntegral seconds)); Error _ -> Nothing of
    Just time -> pure time
    Nothing -> getCurrentTime
   let common = clientContextFields context
@@ -352,7 +352,7 @@ sender telemetry = (forever $ do
   active <- enabled telemetry
   credentials <- if active then credentialsFor telemetry else pure Nothing
   forM_ credentials $ \auth -> do
-   context <- batchContext telemetry
+   context <- batchContext telemetry auth
    result <- post telemetry eventsPath (Just auth) (batchEnvelope context batch)
    when (case result of Rejected -> True; _ -> False) (disable telemetry "Telemetry credentials or version were rejected until restart"))
  `catch` \(e::SomeException) -> case fromException e :: Maybe SomeAsyncException of
