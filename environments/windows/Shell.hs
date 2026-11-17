@@ -273,8 +273,7 @@ desktopSession memory probe = do
                 Right identity -> do
                   writeIORef preferenceScript (Just identity)
                   navigate view url
-          startSelected = startSelectedWithConsent Nothing
-          startSelectedWithConsent consent requestedChoice directory = mask $ \unmask -> do
+          startSelected requestedChoice directory = mask $ \unmask -> do
             busy <- atomicModifyIORef' starting (\value -> (True,value))
             unless busy $ do
               modifyIORef' storageAttempt (+1)
@@ -288,7 +287,7 @@ desktopSession memory probe = do
                   let selected = host {dataDirectory=selectedDirectory}
                   guestScript <- B.readFile (runtimeDirectory host </> ".build/web/guest.js")
                   when (B.all (`elem` (" \t\r\n" :: String)) guestScript) $ ioError $ userError "The packaged guest.js is empty. Reinstall the complete Sapiens4 app."
-                  url <- startHost consent choice selected
+                  url <- startHost choice selected
                   post $ installStorage selected url `catch` (\(e :: SomeException) -> recoverStartup $ storageMessage e)
               writeIORef workerRef (Just worker)
           chooseStorage message = do
@@ -296,11 +295,11 @@ desktopSession memory probe = do
             unless busy $ case field "storage" message of
               String "document" -> forM_ (DesktopStorage.legalDocument (T.pack (string (field "document" message)))) $ \file ->
                 void (createProcess (proc "rundll32.exe" ["url.dll,FileProtocolHandler",fileAddress (runtimeDirectory host </> file)]))
-              String operation | operation `elem` ["new","pick","existing"] -> (do
+              _ -> forM_ (DesktopStorage.storageAction message) $ \action -> (do
                 DesktopStorage.acceptTerms message
-                case operation of
-                  "new" -> startSelected (Just StartNew) (dataDirectory host)
-                  "pick" -> do
+                case action of
+                  DesktopStorage.StartFresh -> startSelected (Just StartNew) (dataDirectory host)
+                  DesktopStorage.ChooseFolder -> do
                     picking <- atomicModifyIORef' starting (\value -> (True,value))
                     unless picking $ do
                       post $ do
@@ -308,12 +307,10 @@ desktopSession memory probe = do
                         case result of
                           Left (e :: SomeException) -> storageError (storageMessage e)
                           Right selected -> storageScript ("window.storagePicked?.(" ++ T.unpack (TE.decodeUtf8 $ L.toStrict $ encode selected) ++ ")")
-                  "existing" -> do
-                    let directory=string (field "directory" message)
+                  DesktopStorage.UseFolder directory -> do
                     if isAbsolute directory then startSelected Nothing directory
                       else storageError "Choose a folder before continuing."
-                  _ -> pure ()) `catch` \(e :: IOException) -> storageError (storageMessage e)
-              _ -> pure ()
+                ) `catch` \(e :: IOException) -> storageError (storageMessage e)
           loaded attempt onLoaded result = do
             view <- either (ioError . userError) pure result
             dead <- readIORef closing

@@ -2,7 +2,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 module Host (Host(..), prepareHost, startHost, closeHost, watchHost, desktopArgs) where
 
-import DesktopStorage (storageMode, awaitServerAddress, startupConsentArguments, requireTerms)
+import DesktopStorage (storageMode, awaitServerAddress, requireTerms)
 import Control.Concurrent
 import Control.Concurrent.Async
 import Control.Exception
@@ -76,8 +76,8 @@ prepareHost args = do
   runtime <- makeAbsolute (runtimePath paths)
   Host directory runtime <$> newIORef Nothing <*> newIORef Nothing
 
-startHost :: Maybe Bool -> StorageChoice -> Host -> IO String
-startHost consent choice host = do
+startHost :: StorageChoice -> Host -> IO String
+startHost choice host = do
   requireTerms
   let binary = runtimeDirectory host </> ".build/bin/sapiens4.exe"
   available <- doesFileExist binary
@@ -87,7 +87,7 @@ startHost consent choice host = do
   createDirectoryIfMissing True configRoot
   pid <- processId
   let overrides = [("SAPIENS_STORAGE_MODE",storageMode choice),("SAPIENS_DESKTOP_PID", show pid),("SAPIENS_REPOSITORY",runtimeDirectory host),("SAPIENS_CONFIG_DIR",configRoot),("SAPIENS_DATA_DIR",dataDirectory host)]
-  let command = (proc binary (["--port", "0", "--data-dir", dataDirectory host, "--desktop"] ++ startupConsentArguments consent))
+  let command = (proc binary ["--port", "0", "--data-dir", dataDirectory host, "--desktop"])
         { cwd = Just (runtimeDirectory host), std_in = CreatePipe, std_out = CreatePipe, std_err = CreatePipe
         , env = Just (hostEnvironment overrides environment)
         , create_group = True, use_process_jobs = True, detach_console = True }

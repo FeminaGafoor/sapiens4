@@ -1,4 +1,4 @@
-module DesktopStorage (WorkspaceSignal(..), saveWhenReady, awaitServerAddress, storageMode, preferenceScript, validPreference, bootstrapTermsScript, termsVersion, termsAccepted, acceptTerms, requireTerms, legalDocument, startupConsentArguments) where
+module DesktopStorage (WorkspaceSignal(..), StorageAction(..), storageAction, saveWhenReady, awaitServerAddress, storageMode, preferenceScript, validPreference, bootstrapTermsScript, termsVersion, termsAccepted, acceptTerms, requireTerms, legalDocument) where
 
 import Control.Exception (SomeException, IOException, try)
 import Control.Monad (forM_, guard, unless)
@@ -19,9 +19,16 @@ import System.IO (Handle, hGetLine, hIsEOF)
 import System.FilePath
 import System.Timeout (timeout)
 import Types (readJSON, writeJSON, get)
-import Telemetry (startupConsentArguments)
 
 data WorkspaceSignal = Navigated | WorkspaceReady deriving (Eq)
+data StorageAction = StartFresh | ChooseFolder | UseFolder FilePath
+
+storageAction :: Value -> Maybe StorageAction
+storageAction input = case get input "storage" of
+  String "new" -> Just StartFresh
+  String "pick" -> Just ChooseFolder
+  String "existing" -> Just (UseFolder (case get input "directory" of String path -> T.unpack path; _ -> ""))
+  _ -> Nothing
 
 termsVersion :: Text
 termsVersion = "2026-11-18"
