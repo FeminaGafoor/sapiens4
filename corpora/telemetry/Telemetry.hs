@@ -45,7 +45,7 @@ import TelemetryDevice
 
 data RuntimeKind = Desktop | Headless deriving Eq
 data RequestTransport = Direct | Remote | UnknownTransport
-data Event = AppStarted | CorporaCreated | RequestAccepted | RemotePaired | AppHeartbeat | UIHeartbeat
+data Event = AppStarted | CorporaCreated | RequestAccepted | RemotePaired | PulseId | UIHeartbeat
  deriving Eq
 eventName :: Event -> Text
 eventName event = case event of
@@ -53,7 +53,7 @@ eventName event = case event of
  CorporaCreated -> "corpora_created"
  RequestAccepted -> "request_accepted"
  RemotePaired -> "remote_paired"
- AppHeartbeat -> "pulse_id"
+ PulseId -> "pulse_id"
  UIHeartbeat -> "ui_heartbeat"
 
 metadataValue :: Key -> Value -> Value

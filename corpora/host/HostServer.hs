@@ -91,7 +91,7 @@ startHostUsing inherited consent choice root requested managed = mask $ \restore
    when (not managed && choice==StartNew) (emitTelemetry service Telemetry.CorporaCreated KM.empty)
    heartbeat <- if managed then pure Nothing else Just <$> async (forever $ do
     threadDelay (floor (nominalDiffTimeToSeconds Telemetry.heartbeatInterval * 1000000))
-    forM_ reporter $ \telemetry -> Telemetry.emit telemetry Telemetry.AppHeartbeat Nothing KM.empty)
+    forM_ reporter $ \telemetry -> Telemetry.emit telemetry Telemetry.PulseId Nothing KM.empty)
    stopTranscriber <- startTranscriber service
    stopped <- newMVar False
    let stop = modifyMVar_ stopped $ \done -> if done then pure True else do
