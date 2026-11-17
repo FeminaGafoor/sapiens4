@@ -1,29 +1,22 @@
-# Testing
+# Tests
 
-Build the host and the Blindly4 driver for your platform. Use an unlocked
-desktop with accessibility permission, curl and the Lean toolchain pinned in
-`spec/lean-toolchain`. From the repository root:
+Use Lean from `spec/lean-toolchain`, curl, and the platform build tools.
+Tests use temporary data and a local model fixture.
 
 ```sh
 runghc build/Build.hs
-cd spec
-lake test
+./submodules/blindly4/macos/build.sh
+lake -d spec test
 ```
 
-Use `lake test -- headless` for service and relay scenarios, or
-`lake test -- desktop` for native interaction. The runner uses temporary
-data and a local model fixture. On Linux build with
-`runghc build/Build.hs --desktop` and use the [X11 runner](../environments/linux/README.md).
+`lake -d spec test -- headless`: service/relay jobs.
+`lake -d spec test -- desktop`: native UI jobs; requires an unlocked desktop and
+Accessibility permission. Run desktop tests serially.
+`SAPIENS_TEST_BLINDLY4` selects the driver; `SAPIENS_TEST_MACOS_APP` selects a signed app bundle.
 
-The suite has 19 headless jobs and two desktop jobs. Sapiens4 no longer uses
-Ruby or RSpec to build or run its tests. The pinned submodules still
-contain their own development test tooling; it is not part of this test runner
-or the application payload.
+Linux: build with `--desktop`, then `sh environments/linux/qualify.sh NEW_REPORT_DIRECTORY`.
+Windows: build the host and driver using their platform guides.
 
-Coverage is not equivalent to the retired suite. Installer upgrade and rollback,
-native guest navigation isolation, legacy remote clients, altered or expired
-encrypted deliveries, and performance under load remain gaps. The release
-candidate's native onboarding, provider discovery, model-settings UI and full
-multi-provider execution matrix also need Lean coverage. The release integration
-checks model-settings persistence and validation, plus MCP work and lifecycle
-behavior. Group scenarios are intentionally excluded.
+Coverage excludes installer lifecycle, native guest isolation, remote-client
+compatibility, altered/expired encrypted delivery, load, native onboarding, provider
+discovery, model-settings UI, full provider combinations, and Group scenarios.
