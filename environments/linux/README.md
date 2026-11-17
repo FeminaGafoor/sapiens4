@@ -1,15 +1,7 @@
-# Linux development preview
+# Linux
 
-Sapiens4 has a GTK/WebKit desktop and a host that can run without a display.
-Desktop control currently requires **X11**. GNOME is not required, and Wayland
-control is unsupported. On Ubuntu, use an available Xorg login session or an
-X11 desktop such as XFCE. The driver rejects unsupported sessions rather than
-attempting input through Xwayland.
-
-## Build and run
-
-Use the pinned toolchains and libs4 dependencies in the root README. On Ubuntu
-22.04 or 24.04 amd64, install the native build prerequisites:
+Ubuntu 22.04/24.04 amd64; desktop control requires X11.
+Use the [source prerequisites](../../README.md), then:
 
 ```sh
 sudo apt-get install -y build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev libjson-glib-dev libatspi2.0-dev libx11-dev at-spi2-core dbus-user-session dbus-x11 libglib2.0-bin
@@ -18,45 +10,10 @@ submodules/blindly4/linux/build.sh release
 SAPIENS_LINUX_BACKEND=desktop ./environments/linux/start.sh
 ```
 
-Without `--desktop`, the build produces the host without the GTK executable.
-The model CLI needs separate installation and authentication; tests use local
-model fixtures. `SAPIENS_DATA_DIR` overrides the XDG data directory, and an
-explicit `--data-dir DIRECTORY` takes precedence.
+Install and sign in to a model CLI separately. `SAPIENS_DATA_DIR` selects storage.
+Build without `--desktop` for a headless host.
+For Debian packaging: `sh environments/linux/package.sh .build/sapiens4.deb`.
 
-Desktop control uses AT-SPI accessibility, XRes window ownership, EWMH activation
-and XTest input. PID, focus and exact-draft checks remain required for actions.
-Editable AT-SPI controls support Unicode. For browser editors that lack a working
-editable-text interface, explicitly set `BLINDLY4_LINUX_TEXT_INPUT=keyboard`;
-this transport accepts printable ASCII up to 4096 bytes and verifies the result.
-Unsupported text is rejected before clearing a draft. Clipboard access is not
-implemented. See [driver behavior](../../submodules/blindly4/linux/README.md).
-
-Native browser tabs open on selection, preserve per-Sapi cookies across restarts,
-and unload expired hidden text previews. Active tabs, history and downloads are
-protected from idle unloading.
-
-## Tests
-
-```sh
-sudo apt-get install -y xvfb xauth openbox x11-utils libgtk-4-dev
-sh environments/linux/qualify.sh .build/qualification-x11
-```
-
-This runs the suite using the existing `virtual.sh` Xvfb/Openbox launcher and
-records revisions, binary hashes, logs and JSON results in a new directory.
-Desktop suites run serially against local fixtures. For a focused run, use:
-
-```sh
-(cd spec && sh ../environments/linux/virtual.sh lake test -- desktop)
-```
-
-## Debian package
-
-Build the desktop and release driver against Ubuntu 22.04 libraries, then run:
-
-```sh
-sh environments/linux/package.sh .build/sapiens4.deb
-```
-
-The script checks glibc compatibility and includes dependency notices. The package
-contains no GNOME extension or input helper and installs no background service.
+Tests require `xvfb xauth openbox x11-utils libgtk-4-dev`:
+`sh environments/linux/qualify.sh NEW_REPORT_DIRECTORY`.
+[Driver limits](../../submodules/blindly4/linux/README.md) · [Remote control](../../docs/remote.md)
