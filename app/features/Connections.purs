@@ -24,7 +24,7 @@ import Sapiens.IdleTabs as IdleTabs
 
 data Pairing = NoPairing | LocalPairing String | RemotePairing R.Transport
 
-type Runtime = { idleTabs :: IdleTabs.Timers, updates :: Updates.Updates, clients :: Ref.Ref (O.Object R.Transport), credentials :: Ref.Ref (O.Object Json), camera :: Ref.Ref (Maybe B.Camera), pairing :: Ref.Ref Pairing, persistedSnapshot :: Ref.Ref (Maybe {key :: String, content :: X.SnapshotContent}) }
+type Runtime = { idleTabs :: IdleTabs.Timers, updates :: Updates.Updates, clients :: Ref.Ref (O.Object R.Transport), credentials :: Ref.Ref (O.Object Json), camera :: Ref.Ref (Maybe B.Camera), pairing :: Ref.Ref Pairing, persistedSnapshot :: Ref.Ref (Maybe {key :: String, content :: X.SnapshotContent}), telemetryHeartbeat :: Ref.Ref Number, telemetryChecked :: Ref.Ref {at :: Number, host :: String} }
 type Registry = { records :: Array X.Corpora, localAvailable :: Boolean }
 
 create :: Effect Runtime
@@ -36,7 +36,9 @@ create = ado
   camera <- Ref.new Nothing
   pairing <- Ref.new NoPairing
   persistedSnapshot <- Ref.new Nothing
-  in {idleTabs,updates,clients,credentials,camera,pairing,persistedSnapshot}
+  telemetryHeartbeat <- Ref.new 0.0
+  telemetryChecked <- Ref.new {at:0.0,host:""}
+  in {idleTabs,updates,clients,credentials,camera,pairing,persistedSnapshot,telemetryHeartbeat,telemetryChecked}
 
 read :: String -> Effect Json
 read key = D.parse <$> B.storageRead key
@@ -86,8 +88,8 @@ registry runtime remote origin = if remote then do
     data_ <- json "/api/host" "GET" D.null
     pure {records:map (\r -> (X.corpora r) {key=D.s "id" r}) (D.rows "corpora" data_),localAvailable:D.b "local_available" data_}
 
-authenticate :: Runtime -> Boolean -> X.Corpora -> Aff Unit
-authenticate runtime remote record = when remote $ client runtime record >>= \transport -> void $ R.authenticate transport false
+authenticate :: Runtime -> Boolean -> Boolean -> X.Corpora -> Aff Unit
+authenticate runtime remote metadataAllowed record = when remote $ client runtime record >>= \transport -> void $ R.authenticate transport false metadataAllowed
 
 decorate :: String -> Json -> Effect Json
 decorate key snapshot = do

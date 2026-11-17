@@ -1,6 +1,7 @@
 module Bridge where
 
 import Types
+import qualified Telemetry
 import qualified Service as Service
 import Crypto
 import Receipt (legacyJSON)
@@ -123,7 +124,7 @@ pairingProof time proof config peer message = do
  check (at message "kind"=="pair" && expiry (get config "expires")>time && has message "secret" && proof) 400 "Invalid pairing proof"
  let pending = get config "pending"
  check (pending==Null || get pending "peer"==peer) 400 "Another phone is awaiting approval"
- pure (put "pending" (obj [("peer",peer),("id",get message "id"),("device_info",cleanDeviceInfo (get message "device_info"))]) config)
+ pure (put "pending" (obj [("peer",peer),("id",get message "id"),("device_info",cleanDeviceInfo (get message "device_info")),("telemetry_context",toJSON (Telemetry.parseClientContext (get message "telemetry_context")))]) config)
 
 approvePairing :: Bridge -> Value -> IO Value
 approvePairing b input = modifyMVar (bridgeConfig b) $ \config -> do
@@ -135,6 +136,7 @@ approvePairing b input = modifyMVar (bridgeConfig b) $ \config -> do
  accept <- replyFrame paired (approvalRequest approval) (obj [("paired",Bool True),("corpora",identity)])
  let updated = put "accept" accept paired
  saveConfig b updated
+ emitTelemetry (bridgeService b) Telemetry.RemotePaired (Telemetry.clientContextFields (Telemetry.parseClientContext (get (get config "pending") "telemetry_context")))
  pure (updated,obj [("approved",Bool True)])
 deleteRoom :: Value -> IO Bool
 deleteRoom config = (request (at config "relay") ("/api/rooms/"<>at config "room") (at config "token") "DELETE" Nothing >> pure True)
@@ -180,7 +182,7 @@ remoteRequest message = do
 executeRemote :: Bridge -> Value -> IO Value
 executeRemote b message = do
  RemoteRequest method target input <- validated (remoteRequest message)
- (status,body,mime) <- Service.dispatch (bridgeService b) method target input
+ (status,body,mime) <- Service.dispatch Telemetry.Remote (bridgeService b) method target input
   `catch` \(APIError status messageText) -> pure (status,encode (obj [("error",str messageText)]),"application/json")
  let isJSON = "application/json" `T.isPrefixOf` mime
  pure (obj [("status",num status),("body",if isJSON then fromMaybeValue (decode body) else str (b64 (BL.toStrict body))),("mime",str mime),("binary",Bool (not isJSON))])

@@ -8,6 +8,8 @@ import Control.Concurrent.Async
 import Control.Exception
 import Control.Monad
 import Data.Aeson hiding (pairs)
+import qualified Data.Aeson.Key as K
+import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString.Lazy as BL
 import Data.IORef
 import Data.List (find,nub)
@@ -20,6 +22,7 @@ import qualified Data.Text as T
 import GHC.Clock
 import System.Directory
 import Types
+import qualified Telemetry
 import qualified Store as DB
 import Population
 import Workspace
@@ -59,16 +62,16 @@ trimConversation s a = do
  let Retention final archives = retainConversation state
  forM_ archives $ \(ConversationArchive field rows) -> newId >>= \i -> writeJSON (archivePath s a (field<>"/"<>i)) (arr rows)
  when (final/=state) (decodeValue 500 final >>= saveState s a)
-submitTurn :: Service -> Text -> Value -> IO Value
-submitTurn s a d = do
+submitTurn :: Telemetry.RequestTransport -> Service -> Text -> Value -> IO Value
+submitTurn transport s a d = do
  input <- either (failure 400) pure (messageText (get d "text"))
  let flowValue=get d "flow" `fallback` str "chat"
  attachments <- resolveAttachments s a (get d "attachments" `fallback` arr []) True
  require (not (T.null input) || not (null attachments)) 400 "Write a message or attach a file"
  flow <- decodeValue 400 flowValue
- binary <- codexBinary
- require (isJust binary) 503 "Codex CLI is missing. Install it and run codex login."
- when (flow==Computer) $ blindly s >>= doesFileExist >>= \built -> require built 503 "Blindly4 is not built. Run ./build/start.sh to build it."
+ selected <- runModelSettings s a
+ void (providerFor s selected)
+ when (flow==Computer) $ blindly s >>= doesFileExist >>= \built -> require built 503 "Computer helper is missing. Reinstall Sapiens to repair it."
  stopped <- readIORef (serviceStopping s)
  require (not stopped) 503 "Server is shutting down"
  requireActive s a
@@ -88,6 +91,9 @@ submitTurn s a d = do
      agentState s a >>= saveState s a . enqueueTurn (RunId i) flow message time
      pure i
    DB.message s i input attachments
+   let counts = [(K.fromText (kind<>"_attachment_count"),toJSON (length (filter ((==kind) . (`at` "kind")) attachments))) | kind <- ["voice","image","document","link","filepath"]]
+       fields = KM.fromList ([("agent_id",toJSON (AgentId a)),("flow",toJSON flow),("is_clarification",Bool (isJust workload)),("selected_provider",toJSON (providerName (selectionProvider selected))),("selected_model",toJSON (selectionModel selected)),("selected_effort",toJSON (selectionEffort selected))] ++ counts)
+   emitTelemetry s Telemetry.RequestAccepted (KM.union (Telemetry.requestMetadata transport (Telemetry.parseClientContext (get d "client_context"))) fields)
    DB.forgetDrafts s a attachments
    DB.project s a
    trimConversation s a
@@ -201,6 +207,7 @@ reserveBatch batch tick slot batching state = (marked,snapshot,execution)
 
 launch :: Service -> Text -> NonEmpty Turn -> Pulse -> Int -> Bool -> IO ()
 launch s a batch tick slot batching = do
+ config <- runModelSettings s a
  state <- agentState s a
  let (marked,snapshot,execution) = reserveBatch batch tick slot batching state
      i=turnId (NE.head batch)
@@ -209,7 +216,7 @@ launch s a batch tick slot batching = do
  process <- newMVar Nothing
  activity <- newIORef empty
  deadline <- (+1800000000000) <$> getMonotonicTimeNSec
- let run=Run (AgentId a) i slot cancel process activity deadline
+ let run=Run (AgentId a) i slot cancel process activity deadline config
  modifyMVar_ (serviceRuns s) (pure . M.insert i run)
  DB.pulseCall s tick a "chatInput" slot (nub [at (turnField t "origin") "group" | t <- NE.toList batch,has (turnField t "origin") "group"])
  DB.project s a

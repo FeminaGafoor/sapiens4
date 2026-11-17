@@ -76,7 +76,8 @@ handle runtime dispatch action = case action of
                   Left failure -> receivePair d.identity $ Left failure
                   Right value -> do
                     pairCode d.identity value ""
-                    paired <- H.liftAff $ try $ R.authenticate transport true
+                    permitted <- H.gets _.browserTelemetryEnabled
+                    paired <- H.liftAff $ try $ R.authenticate transport true permitted
                     current <- H.get
                     if (_.identity <$> current.dialog) /= Just d.identity then liftEffect $ R.close transport else case paired of
                       Left failure -> receivePair d.identity $ Left failure

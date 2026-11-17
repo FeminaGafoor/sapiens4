@@ -15,6 +15,9 @@ import Data.Tuple (Tuple(..))
 import Effect.Aff (Aff, Milliseconds(..), delay, try)
 import Effect.Class (liftEffect)
 import Effect.Exception (message)
+import Effect.Ref as Ref
+import Control.Monad.Rec.Class (forever)
+import Sapiens.Telemetry as Telemetry
 import Halogen as H
 import Halogen.Subscription as HS
 import Libs4.Browser as B
@@ -57,6 +60,8 @@ handle runtime input = session input
       void $ H.subscribe $ (NativeReport <<< Browser.nativeReport) <$> HS.makeEmitter (B.callback "sapiensBrowserEvent")
       now <- liftEffect B.now
       savedTheme <- liftEffect $ B.storageRead "sapi-color-theme"
+      browserConsent <- liftEffect $ B.storageRead Telemetry.browserConsentKey
+      H.modify_ _ {browserTelemetryEnabled=browserConsent == "true"}
       H.modify_ \m -> m {now=now,theme=if A.elem savedTheme ["dark","light"] then savedTheme else m.theme}
       m <- H.get
       let ios = N.ios m.env
@@ -68,8 +73,37 @@ handle runtime input = session input
         void $ H.fork $ void $ H.liftAff $ try $ toAffE $ B.registerWorker "/sw.js"
       unless required $ dispatch LoadRegistry
       E.sync runtime
+      dispatch TelemetryTick
+      void $ H.fork $ forever $ H.liftAff (delay $ Milliseconds Telemetry.statusPollMillis) *> dispatch TelemetryTick
     Finalize -> liftEffect $ C.dispose runtime
-    Poll -> E.runUpdate runtime dispatch U.Poll
+    Poll -> dispatch TelemetryTick *> E.runUpdate runtime dispatch U.Poll
+    TelemetryConsent on -> do
+      unless on $ H.modify_ _ {telemetryEnabled=false}
+      E.attempt (C.json "/api/host/telemetry" "PUT" (D.json {enabled:on})) \result -> case result of
+        Left failure -> H.modify_ _ {telemetryEnabled=false,telemetryError=message failure}
+        Right value -> do
+          H.modify_ _ {telemetryEnabled=D.b "enabled" value,telemetryInterval=D.n "heartbeat_interval_ms" value,telemetryError=D.s "error" value}
+          liftEffect $ Ref.write {at:0.0,host:""} runtime.telemetryChecked
+          dispatch TelemetryTick
+    BrowserTelemetryConsent on -> do
+      unless on $ H.modify_ _ {browserTelemetryEnabled=false}
+      saved <- liftEffect $ B.storageWrite Telemetry.browserConsentKey (show on)
+      if saved then H.modify_ _ {browserTelemetryEnabled=on,telemetryError=""}
+      else H.modify_ _ {browserTelemetryEnabled=false,telemetryError="Could not save browser consent. The last saved setting applies after reload."}
+      dispatch TelemetryTick
+    TelemetryTick -> do
+      m <- H.get
+      now <- liftEffect B.now
+      checked <- liftEffect $ Ref.read runtime.telemetryChecked
+      let host = if M.remote m then m.active else "local"
+      when ((not (M.remote m) || (m.active /= "" && M.online m)) && (host /= checked.host || now-checked.at >= Telemetry.statusPollMillis)) do
+        liftEffect $ Ref.write {at:now,host} runtime.telemetryChecked
+        E.attempt (if M.remote m then E.api runtime m "/api/telemetry" "GET" D.null else C.json "/api/host/telemetry" "GET" D.null) \result -> do
+          case result of
+            Left _ -> pure unit
+            Right value -> H.modify_ _ {telemetryEnabled=D.b "enabled" value,telemetryInterval=D.n "heartbeat_interval_ms" value,telemetryError=D.s "error" value}
+          telemetryHeartbeat
+      telemetryHeartbeat
     Copy text caption -> do
       result <- H.liftAff $ try $ toAffE $ B.clipboard text
       E.notify $ case result of
@@ -89,6 +123,7 @@ handle runtime input = session input
         Browser.KeyDown _ -> E.runUpdate runtime dispatch U.UserActivity
         _ -> pure unit
       E.runUpdate runtime dispatch $ U.Global event
+      dispatch TelemetryTick
     RefreshTheme -> do
       saved <- liftEffect $ B.storageRead "sapi-color-theme"
       env <- liftEffect Platform.environment
@@ -203,3 +238,13 @@ handle runtime input = session input
   browserReceived epoch owner op = E.runUpdate runtime dispatch <<< U.BrowserReceived epoch owner op <<< either (Left <<< message) Right
   focusComposer = liftEffect $ B.focus "#message-input"
   updateEnvironment = liftEffect Platform.environment >>= \env -> H.modify_ _ {env=env}
+  telemetryHeartbeat = do
+    m <- H.get
+    env <- liftEffect Platform.environment
+    now <- liftEffect B.now
+    previous <- liftEffect $ Ref.read runtime.telemetryHeartbeat
+    permitted <- liftEffect $ Telemetry.deviceConsent m.browserTelemetryEnabled env
+    when (Telemetry.heartbeatDue m.telemetryEnabled permitted m.telemetryInterval previous now env && (not (M.remote m) || (m.active /= "" && M.online m))) do
+      liftEffect $ Ref.write now runtime.telemetryHeartbeat
+      let fields = Telemetry.metadata (M.remote m) (M.activeRecord m) now env
+      E.attempt (if M.remote m then E.api runtime m "/api/telemetry/heartbeat" "POST" fields else C.json "/api/host/telemetry/heartbeat" "POST" fields) (const $ pure unit)

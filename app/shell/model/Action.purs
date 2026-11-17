@@ -16,6 +16,9 @@ data Action
   | LoadRegistry
   | Finalize
   | Poll
+  | TelemetryTick
+  | TelemetryConsent Boolean
+  | BrowserTelemetryConsent Boolean
   | Select String
   | SetScope Scope
   | Navigate Activity
@@ -79,6 +82,7 @@ data Action
   | ScanFrame Int
   | UploadQR
   | StopScan
+  | OnboardingPoll Int
   | HostPairPoll Int
   | Install
   | Submit Event Action
@@ -88,7 +92,12 @@ data Action
 data Success = Refresh | CloseAndRefresh String | SavedPrompt String
 
 data DialogIntent
-  = SuggestNames
+  = ManageModelConnections
+  | Setup String
+  | SuggestNames
+  | EditModel F.ModelTarget F.ModelEdit
+  | ReloadModelSettings
+  | SaveModelSettings
   | CreateAgent
   | MentionGroup X.Entity
   | ResetRelay

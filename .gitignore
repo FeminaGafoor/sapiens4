@@ -16,6 +16,7 @@ DerivedData/
 
 # Local UI database, runtime state, agent artifacts and Python caches
 .sapiens4/
+.sapiens4-relay/
 .agentpy/
 *.sqlite3
 *.sqlite3-wal
@@ -23,6 +24,7 @@ DerivedData/
 __pycache__/
 .venv/
 .test-output/
+dist-newstyle/
 
 # Optional frontend build dependencies
 node_modules/

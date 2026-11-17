@@ -84,9 +84,15 @@ class Desktop
     end
     raise 'Accessibility tree truncated' if result['truncated']
     flatten = lambda do |node, path|
-      [node.reject { |key, _| key == 'children' }.merge('path' => path)] + node.fetch('children', []).each_with_index.flat_map do |child, i|
+      children = node.fetch('children', []).each_with_index.flat_map do |child, i|
         flatten.call(child, path.empty? ? i.to_s : "#{path}.#{i}")
       end
+      entry = node.reject { |key, _| key == 'children' }.merge('path' => path)
+      if self.class.linux? && entry['role'] == 'AXComboBox' && entry['value'].nil?
+        selected = children.select { |child| child['role'] == 'AXMenuItem' && child['selected'] }
+        entry['value'] = selected.first['title'] if selected.one?
+      end
+      [entry] + children
     end
     result.fetch('tree').fetch('children', []).each_with_index.flat_map do |child, index|
       child['role'] == 'AXWindow' ? flatten.call(child, index.to_s) : []
@@ -99,6 +105,7 @@ class Desktop
 
   def find(text, role: nil)
     roles = Array(role).flat_map { |value| Gem.win_platform? && value == 'AXHeading' ? ['AXStaticText'] : [value] }
+    roles |= ['AXComboBox'] if self.class.linux? && roles.include?('AXPopUpButton')
     Contract.wait(description: "accessible #{text.inspect}") do
       tree.find { |node| (!role || roles.include?(node['role'])) && (text.is_a?(Regexp) ? label(node).match?(text) :
         %w[title description value].any? { |key| node[key] == text }) }
@@ -215,7 +222,7 @@ class Desktop
 
   def value(text, expected)
     Contract.wait(description: "#{text.inspect} value #{expected.inspect}") do
-      node = find(text, role: %w[AXTextField AXTextArea AXComboBox])
+      node = find(text, role: %w[AXTextField AXTextArea AXComboBox AXPopUpButton])
       node['value'] if node['value'] == expected
     end
   end

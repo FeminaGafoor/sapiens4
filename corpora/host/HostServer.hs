@@ -1,11 +1,18 @@
 module HostServer where
 
 import Types
+import qualified Telemetry
+import System.Environment (getArgs)
+import qualified Data.Aeson.KeyMap as KM
+import Data.Time (nominalDiffTimeToSeconds)
+import DataRoot
+import System.Environment (lookupEnv)
 import qualified Service as Service
 import Assets
 import HTTP
 import Bridge
 import Registry
+import qualified Onboarding as O
 import Voice (startTranscriber)
 import Control.Concurrent
 import Control.Concurrent.STM hiding (check)
@@ -16,12 +23,14 @@ import Control.Monad
 import qualified Data.ByteString as B
 import Data.IORef
 import qualified Data.Map.Strict as M
-import Data.Aeson (encode)
+import Data.Aeson (encode,Value(..))
 import System.Directory (getModificationTime)
 import Network.Wai.Handler.WebSockets (websocketsOr)
 import qualified Network.WebSockets as WS
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
+import System.Directory (doesFileExist)
+import System.FilePath ((</>))
 import Network.HTTP.Types
 import Network.Wai
 import Network.Wai.Handler.Warp
@@ -38,31 +47,59 @@ listenLoopback port = Socket.withSocketsDo $ do
   Socket.listen sock 128
   Socket.SockAddrInet assigned _ <- Socket.getSocketName sock
   pure (sock,fromIntegral assigned)
-startHost :: FilePath -> Int -> Bool -> IO Host
-startHost root requested managed = do
- unless managed (recoverRelays root)
- service <- Service.openService root
- flip onException (Service.closeService service) $ do
+startHost :: Maybe Bool -> FilePath -> Int -> Bool -> IO Host
+startHost consent root requested managed = do
+ mode <- lookupEnv "SAPIENS_STORAGE_MODE"
+ exists <- doesFileExist (root </> "corpora-identity.json")
+ startHostWith consent (if managed || mode==Just "existing" || mode==Nothing && exists then AttachExisting else StartNew) root requested managed
+
+startHostWith :: Maybe Bool -> StorageChoice -> FilePath -> Int -> Bool -> IO Host
+startHostWith = startHostUsing Nothing
+
+startHostUsing :: Maybe Telemetry.Telemetry -> Maybe Bool -> StorageChoice -> FilePath -> Int -> Bool -> IO Host
+startHostUsing inherited consent choice root requested managed = mask $ \restore -> do
+ args <- getArgs
+ desktopPid <- lookupEnv "SAPIENS_DESKTOP_PID"
+ let desktop = "--desktop" `elem` args || desktopPid/=Nothing
+ reporter <- if managed then pure inherited else Just <$> Telemetry.openTelemetry (if desktop then Telemetry.Desktop else Telemetry.Headless) consent
+ flip onException (unless managed (mapM_ Telemetry.closeTelemetry reporter)) $ restore $ do
+  mode <- lookupEnv "SAPIENS_STORAGE_MODE"
+  let report phase = when (not managed && mode `elem` [Just "new",Just "existing"]) (putStrLn phase)
+  report openingStorage
+  bracketOnError (Service.openService choice root) Service.closeService $ \service -> do
+   writeIORef (serviceTelemetry service) reporter
+   report openedStorage >> start reporter service
+ where
+ start reporter service = do
+  unless managed (recoverRelays root)
   (socket,port) <- listenLoopback requested
   flip onException (Socket.close socket) $ do
    Service.attachEndpoint service ("http://127.0.0.1:"<>T.pack (show port))
    bridge <- newBridge service
-   let child path = do
-        host <- startHost path 0 True
+   let child selection path = do
+        host <- startHostUsing reporter Nothing selection path 0 True
         pure (hostService host,hostBridge host,hostStop host)
    registry <- if managed then pure Nothing else Just <$> newRegistry service bridge child
+   onboarding <- if managed then pure Nothing else Just <$> O.openOnboarding (repositoryRoot service)
    shutdown <- newEmptyMVar
    ready <- newEmptyMVar
    let settings = setServerName "Sapiens4" $ setPort port $ setHost "127.0.0.1" $ setGracefulCloseTimeout1 1000 $ setGracefulShutdownTimeout (Just 5) $ setInstallShutdownHandler (putMVar shutdown) $ setBeforeMainLoop (putMVar ready ()) defaultSettings
-   worker <- async $ withAsync (watchSnapshotFiles service) $ \watcher -> link watcher >> runSettingsSocket settings socket (application service bridge registry port)
+   worker <- async $ withAsync (watchSnapshotFiles service) $ \watcher -> link watcher >> runSettingsSocket settings socket (application service bridge registry onboarding port)
    void (race (wait worker) (takeMVar ready))
    Service.startService service
-   -- Stop transcription and its network request before closing the database it uses.
+   unless managed $ forM_ reporter $ \telemetry -> Telemetry.emit telemetry Telemetry.AppStarted Nothing KM.empty
+   when (not managed && choice==StartNew) (emitTelemetry service Telemetry.CorporaCreated KM.empty)
+   heartbeat <- if managed then pure Nothing else Just <$> async (forever $ do
+    threadDelay (floor (nominalDiffTimeToSeconds Telemetry.heartbeatInterval * 1000000))
+    forM_ reporter $ \telemetry -> Telemetry.emit telemetry Telemetry.AppHeartbeat Nothing KM.empty)
    stopTranscriber <- startTranscriber service
    stopped <- newMVar False
    let stop = modifyMVar_ stopped $ \done -> if done then pure True else do
+        mapM_ O.closeOnboarding onboarding
         mapM_ closeRegistry registry
         closeBridge bridge
+        mapM_ cancel heartbeat
+        unless managed (mapM_ Telemetry.closeTelemetry reporter)
         readMVar shutdown >>= id
         stopTranscriber
         -- Children can retain Windows socket handles until their work is stopped.
@@ -80,8 +117,8 @@ localRequest port write headers = do
  check (originHeader==Nothing || originHeader==(("http://" <>) <$> host)) 403 "Same-origin request required"
  when write (check (lookup "X-Sapiens-Local" headers==Just "1" && fmap (B.takeWhile (/=59)) (lookup hContentType headers)==Just "application/json") 403 "Local JSON request required")
 
-application :: Service -> Bridge -> Maybe Registry -> Int -> Application
-application service bridge registry port req respond
+application :: Service -> Bridge -> Maybe Registry -> Maybe O.Onboarding -> Int -> Application
+application service bridge registry onboarding port req respond
  | ["api","host","corpora",owner,"api","updates"] <- pathInfo req = do
     let headers = requestHeaders req
     result <- try $ do
@@ -95,7 +132,7 @@ application service bridge registry port req respond
      Left (APIError code message) -> respond (jsonResponse code (obj [("error",str message)]))
      Right s -> websocketsOr WS.defaultConnectionOptions {WS.connectionMessageDataSizeLimit=WS.SizeLimit 1024}
       (updatesSocket s) (\_ send -> send (jsonResponse 400 (obj [("error",str "WebSocket upgrade required")]))) req respond
- | otherwise = httpApplication service bridge registry port req respond
+ | otherwise = httpApplication service bridge registry onboarding port req respond
 
 -- One metadata sampler per service, asleep when no window is subscribed.
 watchSnapshotFiles :: Service -> IO ()
@@ -123,8 +160,8 @@ updatesSocket s pending = do
  bracket_ (count (+1)) (count (subtract 1)) $ WS.withPingThread conn 25 (pure ()) $
   race_ (send (-1)) (void (WS.receiveDataMessage conn))
 
-httpApplication :: Service -> Bridge -> Maybe Registry -> Int -> Application
-httpApplication service bridge registry port req respond = respond =<< respondError (do
+httpApplication :: Service -> Bridge -> Maybe Registry -> Maybe O.Onboarding -> Int -> Application
+httpApplication service bridge registry onboarding port req respond = respond =<< respondError (do
  let method = TE.decodeUtf8 (requestMethod req)
      path = TE.decodeUtf8 (rawPathInfo req)
      target = requestTarget req
@@ -137,6 +174,24 @@ httpApplication service bridge registry port req respond = respond =<< respondEr
   stopping <- readIORef (serviceStopping service)
   when write (require (not stopping) 503 "Host is shutting down")
   case (method,T.splitOn "/" path) of
+   ("GET",["","api","host","computer"]) -> maybe (failure 404 "Local setup unavailable") (fmap (jsonResponse 200) . O.computerView) onboarding
+   ("GET",["","api","host","telemetry"]) -> do
+    reporter <- readIORef (serviceTelemetry service)
+    jsonResponse 200 <$> maybe (pure (obj [("enabled",Bool False),("available",Bool False)])) Telemetry.consentView reporter
+   ("PUT",["","api","host","telemetry"]) -> do
+    reporter <- readIORef (serviceTelemetry service) >>= maybe (failure 503 "Telemetry configuration unavailable") pure
+    on <- case get data_ "enabled" of Bool value -> pure value; _ -> failure 400 "Expected enabled boolean"
+    saved <- Telemetry.setConsent reporter on
+    either (failure 500) pure saved
+    jsonResponse 200 <$> Telemetry.consentView reporter
+   ("POST",["","api","host","telemetry","heartbeat"]) -> do
+    reporter <- readIORef (serviceTelemetry service)
+    forM_ reporter $ \telemetry -> do
+     context <- Telemetry.localClientContext telemetry data_
+     Telemetry.uiHeartbeat telemetry Nothing context data_
+    pure (jsonResponse 202 empty)
+   ("POST",["","api","host","computer"]) -> maybe (failure 404 "Local setup unavailable") (fmap (jsonResponse 200) . flip O.computerAction data_) onboarding
+   ("GET",["","api","host","onboarding"]) -> maybe (failure 404 "Local setup unavailable") (fmap (jsonResponse 200) . O.onboardingView) onboarding
    ("GET",["","api","host"]) -> jsonResponse 200 <$> registryRecords r
    ("GET",["","api","host","relays"]) -> jsonResponse 200 <$> relayView r Nothing
    ("GET",["","api","host","relays",ident]) -> jsonResponse 200 <$> relayView r (Just ident)
@@ -164,5 +219,5 @@ httpApplication service bridge registry port req respond = respond =<< respondEr
       _ -> failure 404 "Not found"
     pure (jsonResponse (if "/pair" `T.isSuffixOf` path then 201 else 200) value)
    else do
-    (code,raw,mime) <- Service.dispatch service method target body
+    (code,raw,mime) <- Service.dispatch Telemetry.Direct service method target body
     pure (response code raw mime))

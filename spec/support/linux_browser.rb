@@ -13,7 +13,7 @@ class LinuxBrowser
       ["--user-data-dir=#{@profile}", "--ozone-platform=x11",
        '--no-first-run', '--no-default-browser-check', '--force-renderer-accessibility', '--disable-gpu']
     when 'firefox'
-      File.write(File.join(@profile, 'user.js'), "user_pref(\"accessibility.force_disabled\", -1);\n")
+      File.write(File.join(@profile, 'user.js'), "user_pref(\"accessibility.force_disabled\", -1);\nuser_pref(\"termsofuse.bypassNotification\", true);\n")
       ['--no-remote', '--profile', @profile]
     else
       raise ArgumentError, "Unknown browser #{engine}"
