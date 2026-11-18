@@ -19,7 +19,7 @@ int sapiens_update_preferences(const char *name, const char *path, const char *t
             NSData *data = [NSPropertyListSerialization dataWithPropertyList:value format:NSPropertyListBinaryFormat_v1_0 options:0 error:nil];
             result = data ? sapiens_update_publish(path, temporary, data.bytes, data.length, 1) : EINVAL;
         }
-        if (![defaults synchronize] && !result) result = EIO;
+        if (restore && ![defaults synchronize] && !result) result = EIO;
         [defaults release];
         return result;
     }

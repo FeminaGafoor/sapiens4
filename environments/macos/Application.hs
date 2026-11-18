@@ -50,7 +50,7 @@ import Numeric (showHex)
 import Text.Read (readMaybe)
 
 
-data Application = Application { native :: Obj, browser :: IORef Browser, windowRef :: IORef Obj, pending :: IORef [IO ()], fixture :: Bool, child :: IORef (Maybe ServerProcess), address :: IORef Text, startup :: IORef (Maybe (Async ())), starting :: IORef Bool, localLoaded :: IORef Bool, runtime :: FilePath, selectedRoot :: IORef (Maybe FilePath), recoveryError :: IORef (Maybe Text), firstSignal :: IORef (Maybe WorkspaceSignal), attemptNumber :: IORef Integer, recovering :: IORef Bool, clientPreferences :: Obj, preferenceDomain :: Text, quitting :: IORef Bool, updateCache :: Update.UpdateCache }
+data Application = Application { native :: Obj, browser :: IORef Browser, windowRef :: IORef Obj, pending :: IORef [IO ()], fixture :: Bool, child :: IORef (Maybe ServerProcess), address :: IORef Text, startup :: IORef (Maybe (Async ())), starting :: IORef Bool, localLoaded :: IORef Bool, runtime :: FilePath, selectedRoot :: IORef (Maybe FilePath), recoveryError :: IORef (Maybe Text), firstSignal :: IORef (Maybe WorkspaceSignal), attemptNumber :: IORef Integer, recovering :: IORef Bool, clientPreferences :: Obj, preferenceDomain :: Text, preferencesDirty :: MVar Bool, quitting :: IORef Bool, updateCache :: Update.UpdateCache }
 
 data ServerProcess = ServerProcess { serverHandle :: ProcessHandle, serverSession :: ProcessID, serverInput :: Handle, serverOutput :: Handle, serverErrors :: Async (), serverDrain :: Maybe (Async ()), serverDirectory :: FilePath, updateReplies :: Chan String, updateGuard :: MVar () }
 
@@ -461,7 +461,8 @@ runSession isFixture initialAddress = Update.withUpdateCache $ \cache -> do
         mirrorPreferences suite True
         pure suite
     preferences <- if isFixture then pure nullPtr else allocated "NSUserDefaults" >>= \o -> str domain >>= obj1 o "initWithSuiteName:"
-    let state = Application application b win tasks isFixture process address worker busy loaded runtime selection problem signal generation recovery preferences domain closing cache
+    dirty <- newMVar True
+    let state = Application application b win tasks isFixture process address worker busy loaded runtime selection problem signal generation recovery preferences domain dirty closing cache
     (do
         target <- installMethods state
         initialize state target initialAddress
@@ -571,9 +572,7 @@ saveClientPreferences application input = unless (fixture application) $ do
         when (validPreference name value) $ do
             previous <- fromMaybe KeyMap.empty <$> readClientPreferences application (serverDirectory server)
             let stored=Object (KeyMap.insert (Key.fromText name) (String value) previous)
-            content <- str (jsonText stored)
-            nameObject <- str (T.pack (serverDirectory server))
-            void (obj2 (clientPreferences application) "setObject:forKey:" content nameObject)
+            writeClientPreference application (T.pack (serverDirectory server)) (jsonText stored)
             flushPreferences application
 
 installClientPreferences :: Application -> Obj -> Text -> FilePath -> IO ()
@@ -701,18 +700,31 @@ mirrorPreferences domain restore = do
     withCString (T.unpack domain) $ \name -> withCString path $ \file -> withCString (path ++ "." ++ nonce) $ \temporary ->
         cPreferences name file temporary (if restore then 1 else 0) >>= UpdatePlatform.check "Native preferences"
 
+writeClientPreference :: Application -> Text -> Text -> IO ()
+writeClientPreference application key value = modifyMVarMasked_ (preferencesDirty application) $ \dirty -> do
+    name <- str key
+    previous <- obj1 (clientPreferences application) "stringForKey:" name >>= string
+    if previous == value then pure dirty else do
+        content <- str value
+        void (obj2 (clientPreferences application) "setObject:forKey:" content name)
+        pure True
+
 saveWindowFrame :: Application -> IO ()
 saveWindowFrame application = unless (fixture application) $ do
     win <- readIORef (windowRef application)
     when (win /= nullPtr) $ do
-        frame <- obj0 win "stringWithSavedFrame"
-        key <- str "workspace-frame"
-        void (obj2 (clientPreferences application) "setObject:forKey:" frame key)
+        frame <- obj0 win "stringWithSavedFrame" >>= string
+        writeClientPreference application "workspace-frame" frame
+
 flushPreferences :: Application -> IO ()
 flushPreferences application = do
-    saved <- long (clientPreferences application) "synchronize"
-    unless (saved /= 0) (fail "Native preferences could not be saved")
-    mirrorPreferences (preferenceDomain application) False
+    result <- modifyMVarMasked (preferencesDirty application) $ \dirty -> if not dirty then pure (False, Right ()) else do
+        saved <- try $ do
+            synced <- long (clientPreferences application) "synchronize"
+            when (synced == 0) (fail "Native preferences could not be saved")
+            mirrorPreferences (preferenceDomain application) False
+        pure (either (const True) (const False) saved, saved)
+    either throwIO pure (result :: Either SomeException ())
 
 updateCommand :: Application -> String -> IO String
 updateCommand application command = do
@@ -745,7 +757,7 @@ beginUpdate :: Application -> IO ()
 beginUpdate application = do
     busy <- atomicModifyIORef' (starting application) (\value -> (True,value))
     if busy then reportUpdate application "busy" else do
-        saved <- Update.tryUpdate (saveWindowFrame application >> flushPreferences application)
+        saved <- Update.tryUpdate (saveWindowFrame application)
         case saved of
             Left _ -> writeIORef (starting application) False >> reportUpdate application "error"
             Right () -> void $ async $ do
@@ -757,7 +769,7 @@ beginUpdate application = do
                             graceful <- stopOwnedServer application
                             unless graceful (fail "The idle backend did not shut down cleanly; update cancelled")
                     Update.updateAndRestartCached (updateCache application) (post application $ reportUpdate application "updating") (updateCommand application)
-                        (mirrorPreferences (preferenceDomain application) False) stop (serverDirectory server) config
+                        (flushPreferences application) stop (serverDirectory server) config
                 post application $ case result of
                     Left problem -> do
                         writeIORef (starting application) False

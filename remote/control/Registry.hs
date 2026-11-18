@@ -447,4 +447,6 @@ startRegistry registry = modifyMVar_ (registryCleanup registry) $ \old -> do
  else Just <$> async (cleanupRelays (registryLock registry) registry Nothing Nothing)
 
 prepareRegistry :: Registry -> IO ()
-prepareRegistry registry = void (registryRecords registry)
+prepareRegistry registry = when localAvailable $ registryLock registry $ do
+ saved <- readIORef (registrySaved registry)
+ mapM_ (local registry . text) (items saved "locals")
