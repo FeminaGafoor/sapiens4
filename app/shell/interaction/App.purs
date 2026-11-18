@@ -69,7 +69,7 @@ handle runtime input = session input
         void $ H.subscribe $ AppUpdateStatus <$> HS.makeEmitter (B.callback "sapiensAppUpdate")
         void $ H.fork $ forever do
           liftEffect $ B.nativeMessage $ D.json {appUpdate:"check"}
-          H.liftAff $ delay $ Milliseconds 86400000.0
+          H.liftAff $ delay $ Milliseconds 43200000.0
       let ios = N.ios m.env
           mobile = ios || D.matches "Android" (m.env.userAgent)
           required = M.remote m && mobile && not (m.env.installed)
