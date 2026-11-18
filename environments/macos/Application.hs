@@ -513,7 +513,9 @@ receiveMessage application message = do
     if connected || fixture application then do
         current <- readIORef (child application)
         live <- maybe (pure $ fixture application) (fmap not . serverExited . serverHandle) current
-        if live then receive b message (saveClientPreferences application) (commitWorkspace application WorkspaceReady) (handleUpdate application)
+        if live then do
+            candidate <- Update.preparingUpdate
+            receive b message candidate (saveClientPreferences application) (commitWorkspace application WorkspaceReady) (handleUpdate application)
           else recoverStartup application "The application server stopped. Choose a folder to reopen your workspace."
       else do
         sh <- readIORef (shell b)
@@ -747,7 +749,6 @@ beginUpdate application = do
         case saved of
             Left _ -> writeIORef (starting application) False >> reportUpdate application "error"
             Right () -> void $ async $ do
-                rejected <- newIORef False
                 result <- Update.tryUpdate $ do
                     server <- readIORef (child application) >>= maybe (fail "Open a Workspace before updating") pure
                     config <- configDirectory
@@ -755,18 +756,13 @@ beginUpdate application = do
                             writeIORef (address application) ""
                             graceful <- stopOwnedServer application
                             unless graceful (fail "The idle backend did not shut down cleanly; update cancelled")
-                    let command action = do
-                            reply <- updateCommand application action
-                            when (action == "quiesce" && reply == "busy") (writeIORef rejected True)
-                            pure reply
-                    Update.updateAndRestartCached (updateCache application) (post application $ reportUpdate application "updating") command
+                    Update.updateAndRestartCached (updateCache application) (post application $ reportUpdate application "updating") (updateCommand application)
                         (mirrorPreferences (preferenceDomain application) False) stop (serverDirectory server) config
                 post application $ case result of
                     Left problem -> do
                         writeIORef (starting application) False
                         connected <- not . T.null <$> readIORef (address application)
-                        busyReply <- readIORef rejected
-                        if connected then reportUpdate application (if busyReply then "busy" else "error")
+                        if connected then reportUpdate application (case fromException problem of Just Update.UpdateBusy -> "busy"; Nothing -> "error")
                           else recoverStartup application (T.pack (displayException problem))
                     Right () -> do
                         terminate <- sel "terminate:"
