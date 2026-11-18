@@ -22,6 +22,8 @@ Accessibility permission. Run desktop tests serially.
 `SAPIENS_TEST_BLINDLY4` selects the driver; `SAPIENS_TEST_MACOS_APP` selects a signed app bundle.
 
 Linux: build with `--desktop`, then `sh environments/linux/qualify.sh NEW_REPORT_DIRECTORY`.
+Linux desktop input uses Blindly4's guarded ASCII keyboard mode for WebKitGTK;
+Unicode message persistence remains covered by the headless conversation job.
 Windows: build the host and driver using their platform guides.
 
 Coverage excludes installer lifecycle, native guest isolation, remote-client
