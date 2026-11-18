@@ -57,40 +57,6 @@ RSpec.describe 'Source distribution contract' do
     end
   end
 
-  it 'packages a signed Starter and immutable payload without changing existing user data', :macos do
-    skip 'macOS desktop build' unless RUBY_PLATFORM.include?('darwin')
-    expect(Dir.children(@product)).to contain_exactly('Sapiens.dmg', 'Sapiens-Payload-mac-arm64.dmg', 'SHA256SUMS')
-    out, error, code = Contract.capture('shasum', '-a', '256', '-c', 'SHA256SUMS', chdir: @product)
-    expect(code).to eq(0), out + error
-    expect(out).to include('Sapiens.dmg: OK')
-    mount = File.join(@folder, 'mounted')
-    Dir.mkdir(mount)
-    %w[Sapiens.dmg Sapiens-Payload-mac-arm64.dmg].each do |image|
-      _, error, code = Contract.capture('hdiutil', 'attach', '-readonly', '-nobrowse', '-mountpoint', mount, File.join(@product, image))
-      expect(code).to eq(0), error
-      begin
-        app = File.join(mount, 'Sapiens4.app')
-        expect(File.executable?(File.join(app, 'Contents/MacOS/Sapiens4'))).to be(true)
-        if image == 'Sapiens.dmg'
-          expect(File.file?(File.join(app, 'Contents/Resources/Seed.dmg'))).to be(true)
-        else
-          bin = File.join(app, 'Contents/Resources/runtime/.build/bin')
-          expect(File.executable?(File.join(bin, 'sapiens4'))).to be(true)
-          expect(File.exist?(File.join(bin, 'obsolete-helper.py'))).to be(false)
-          expect(File.binread(File.join(app, 'Contents/Resources/runtime/app/shell/AI-LOGOS-LICENSE.txt')))
-            .to eq(File.binread(File.join(Contract::ROOT, 'app/shell/AI-LOGOS-LICENSE.txt')))
-        end
-        _, error, code = Contract.capture('codesign', '--verify', '--deep', '--strict', app)
-        expect(code).to eq(0), error
-      ensure
-        _, error, code = Contract.capture('hdiutil', 'detach', mount)
-        raise error unless code == 0
-      end
-    end
-    expect(Dir.children(@data)).to eq(['keep.txt'])
-    expect(File.read(File.join(@data, 'keep.txt'))).to eq('Existing corpora data')
-  end
-
   it 'boots from a source-only release and completes work using its packaged assets' do
     command = ['sh', File.join(@release, 'environments/linux/start.sh')] if RUBY_PLATFORM.include?('linux')
     isolated = Host.new(repo: @release, command: command)

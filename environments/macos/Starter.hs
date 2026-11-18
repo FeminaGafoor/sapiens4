@@ -17,8 +17,6 @@ main = (do
  root <- starterDirectory
  createDirectoryIfMissing True root
  validatePath root
- -- The immutable Starter carries a seed; all mutable installation state lives
- -- beside Data/Config, never inside a sealed application bundle.
  initialized <- doesFileExist (statePath root)
  when (null args && not initialized) $ withLease (leasePath root) True $ \_ -> do
   exists <- doesFileExist (statePath root)

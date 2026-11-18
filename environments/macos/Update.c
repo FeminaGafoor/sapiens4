@@ -34,8 +34,6 @@ int d2_lease(const char *path, int mode) {
     }
     return fd;
 }
-// One lease descriptor per process. F_SETLK replaces this process's lock;
-// flock conversion instead drops the lock first on macOS (flock(2)).
 int d2_downgrade(int fd) {
     struct flock lock = {.l_whence = SEEK_SET, .l_type = F_RDLCK};
     return fcntl(fd, F_SETLK, &lock);
@@ -77,8 +75,6 @@ int d2_copy(const char *source, const char *destination, int metadata) {
     int error = d2_validate(source);
     if (error) return error;
     if (copyfile(source, destination, NULL, (metadata ? COPYFILE_METADATA : COPYFILE_ALL) | COPYFILE_NOFOLLOW)) return errno;
-    // copyfile preserves mtime but may initialize creation time from mtime.
-    // Keep APFS creation time explicitly; it is part of the owned inventory.
     struct stat original;
     if (lstat(source, &original)) return errno;
     struct attrlist attributes = {.bitmapcount = ATTR_BIT_MAP_COUNT, .commonattr = ATTR_CMN_CRTIME};
@@ -103,7 +99,6 @@ int d2_metadata(const char *path, unsigned char *digest) {
     HASH(st.st_mode); HASH(st.st_uid); HASH(st.st_gid); HASH(st.st_flags);
     HASH(st.st_mtimespec); HASH(st.st_birthtimespec);
     acl_t acl = acl_get_file(path, ACL_TYPE_EXTENDED);
-    // macOS reports ENOENT when an existing file has no extended ACL.
     if (!acl && errno != ENOENT) return errno;
     ssize_t length = 0;
     char *text = acl ? acl_to_text(acl, &length) : NULL;

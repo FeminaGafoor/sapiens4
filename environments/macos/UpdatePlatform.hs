@@ -87,8 +87,6 @@ starterDirectory = do
  override <- lookupEnv "SAPIENS_INSTALL_DIR"
  maybe ((</> "Library/Application Support/Sapiens4/installation") <$> getHomeDirectory) makeAbsolute override
 
--- Both a signed image and its extracted app must belong to the installed
--- Developer ID publisher. App identity additionally satisfies the old app's DR.
 verifyPublisher :: FilePath -> FilePath -> IO ()
 verifyPublisher current payload = do
  let app executable = takeDirectory (takeDirectory (takeDirectory executable))
@@ -124,7 +122,6 @@ stagePayload payload destination = do
  unless (lines ident == ["com.sapiens4.desktop"]) (fail "Unexpected application identity")
  release <- readProcess "/usr/libexec/PlistBuddy" ["-c","Print :CFBundleShortVersionString",app </> "Contents/Info.plist"] ""
  writeFile (destination </> "sapiens-release.version") release
- -- Submit every staged file before publishing Pending, then flush the device.
  let flush path full = withCString path (\p -> cFlush p full >>= check "Staged bundle durability")
      walk path = do
       validatePath path
@@ -168,8 +165,6 @@ candidateOwnership (Candidate child _ _) commit = unless commit $ do
  when (done == Nothing) $ getPid child >>= mapM_ (signalProcess sigKILL)
  void (waitForProcess child)
 
--- An abandoned candidate must not keep a shared lease forever. Its backend
--- owns its own lease and shuts down on stdin EOF when this desktop exits.
 watchCoordinator :: IO ()
 watchCoordinator = do
  candidate <- lookupEnv "SAPIENS_UPDATE_ATTEMPT"

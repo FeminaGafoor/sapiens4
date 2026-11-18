@@ -395,7 +395,6 @@ initialize application target address = do
         size win "setMinSize:" 720 540
         frame <- str "workspace-frame" >>= obj1 (clientPreferences application) "stringForKey:"
         if frame == nullPtr then do
-            -- Import the pre-D2 window setting once; subsequent saves use Config.
             name <- str "Sapiens4Workspace"
             void (booleanArgument win "setFrameUsingName:" name)
           else void (obj1 win "setFrameFromString:" frame)
@@ -566,8 +565,6 @@ saveClientPreferences application input = unless (fixture application) $ do
             content <- str (jsonText stored)
             nameObject <- str (T.pack (serverDirectory server))
             void (obj2 (clientPreferences application) "setObject:forKey:" content nameObject)
-            -- Config is the recovery authority. Keep it current during normal
-            -- editing too, so startup never imports an older pre-crash draft.
             flushPreferences application
 
 installClientPreferences :: Application -> Obj -> Text -> FilePath -> IO ()
@@ -728,7 +725,6 @@ beginUpdate :: Application -> IO ()
 beginUpdate application = do
     busy <- atomicModifyIORef' (starting application) (\value -> (True,value))
     unless busy $ do
-        -- Capture NSUserDefaults and window state on the Cocoa thread.
         saved <- Update.tryUpdate (saveWindowFrame application >> flushPreferences application)
         case saved of
             Left problem -> writeIORef (starting application) False >> alert (T.pack (displayException problem))
@@ -753,7 +749,5 @@ beginUpdate application = do
                         if connected then alert (T.pack (displayException problem))
                           else recoverStartup application (T.pack (displayException problem))
                     Right () -> do
-                        -- Leave the tick callback before Cocoa's deferred-quit
-                        -- loop; that loop needs this timer to deliver its reply.
                         terminate <- sel "terminate:"
                         void (obj3 (native application) "performSelectorOnMainThread:withObject:waitUntilDone:" terminate nullPtr (int 0))

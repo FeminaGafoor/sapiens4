@@ -261,8 +261,6 @@ packageMac root version outputInput public = do
   relocate app
   audit app
   sign root app identity
-  -- The payload is immutable. The small stable Starter installs its seed into
-  -- the per-user version store and always dispatches via the shared decision.
   forM_ profile $ \credentials -> do
    let archive=temporary</>"notarize.zip"
    run "ditto" ["-c","-k","--keepParent",app,archive]

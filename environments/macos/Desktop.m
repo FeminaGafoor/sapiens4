@@ -2,7 +2,6 @@
 #include <errno.h>
 extern int d2_publish(const char *, const char *, const void *, size_t);
 
-// Only the Sapiens-owned suite is mirrored. cfprefsd is never copied or killed.
 int d2_preferences(const char *name, const char *path, const char *temporary, int restore) {
     @autoreleasepool {
         NSString *domain = [NSString stringWithUTF8String:name];
