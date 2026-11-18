@@ -31,7 +31,7 @@ foreign import ccall safe "d2_downgrade" cDowngrade :: Ptr () -> IO Word32
 foreign import ccall safe "d2_publish" cPublish :: CWString -> CWString -> Ptr Word8 -> Word32 -> IO Word32
 foreign import ccall safe "d2_copy" cCopy :: CWString -> CWString -> IO Word32
 foreign import ccall safe "d2_metadata" cMetadata :: CWString -> Ptr Word8 -> Word32 -> IO Word32
-foreign import ccall safe "d2_directory_metadata" cDirectoryMetadata :: CWString -> CWString -> IO Word32
+foreign import ccall safe "d2_copy_metadata" cCopyMetadata :: CWString -> CWString -> IO Word32
 foreign import ccall safe "d2_trust" cTrust :: CWString -> CWString -> IO Word32
 foreign import ccall safe "d2_job" cJob :: Ptr () -> CInt -> IO Word32
 
@@ -53,8 +53,8 @@ publish path temporary bytes = withCWString path $ \p -> withCWString temporary 
  B.useAsCStringLen bytes $ \(buffer,len) -> cPublish p t (castPtr buffer) (fromIntegral len) >>= check "Durable update decision"
 copyOwned :: FilePath -> FilePath -> IO ()
 copyOwned source destination = withCWString source $ \s -> withCWString destination $ \d -> cCopy s d >>= check "Owned file copy"
-directoryMetadata :: FilePath -> FilePath -> IO ()
-directoryMetadata source destination = withCWString source $ \s -> withCWString destination $ \d -> cDirectoryMetadata s d >>= check "Directory metadata"
+copyMetadata :: FilePath -> FilePath -> IO ()
+copyMetadata source destination = withCWString source $ \s -> withCWString destination $ \d -> cCopyMetadata s d >>= check "Owned metadata copy"
 metadata :: FilePath -> IO B.ByteString
 metadata path = withCWString path $ \p -> allocaBytes 65536 $ \buffer -> do
  count <- cMetadata p buffer 65536

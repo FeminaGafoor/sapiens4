@@ -106,9 +106,10 @@ copyTree source destination entries = do
  forM_ entries $ \(relative,directory,_) -> if directory
   then createDirectoryIfMissing True (destination </> relative)
   else copyOwned (source </> relative) (destination </> relative)
- -- Set directory timestamps and security after creating descendants.
- forM_ (reverse entries) $ \(relative,directory,_) -> when directory $
-  directoryMetadata (source </> relative) (destination </> relative)
+ -- All directory entries exist before restoring timestamps. Parent ACLs must
+ -- precede child ACLs because native inheritance can modify descendants.
+ forM_ entries $ \(relative,_,_) ->
+  copyMetadata (source </> relative) (destination </> relative)
 
 restoreSnapshot :: FilePath -> PendingUpdate -> IO ()
 restoreSnapshot installation pending = do

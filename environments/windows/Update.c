@@ -64,8 +64,11 @@ static DWORD security(const wchar_t *source, const wchar_t *destination) {
     flags = DACL_SECURITY_INFORMATION | ((control & SE_DACL_PROTECTED) ? PROTECTED_DACL_SECURITY_INFORMATION : UNPROTECTED_DACL_SECURITY_INFORMATION);
     if (!EqualSid(owner, destOwner)) flags |= OWNER_SECURITY_INFORMATION;
     if (!EqualSid(group, destGroup)) flags |= GROUP_SECURITY_INFORMATION;
-    /* SetFileSecurity drops AUTO_INHERITED. NamedSecurityInfo preserves it. */
-    error = SetNamedSecurityInfoW((wchar_t *)destination, SE_FILE_OBJECT, flags, owner, group, dacl, NULL);
+    /* Keep the source's inheritance model: NamedSecurityInfo converts legacy
+       descriptors to AUTO_INHERITED; SetFileSecurity clears that marker. */
+    if (control & SE_DACL_AUTO_INHERITED)
+        error = SetNamedSecurityInfoW((wchar_t *)destination, SE_FILE_OBJECT, flags, owner, group, dacl, NULL);
+    else if (!SetFileSecurityW(destination, flags, sd)) error = GetLastError();
  done:
     if (dest) LocalFree(dest);
     LocalFree(sd);
@@ -94,7 +97,7 @@ DWORD d2_copy(const wchar_t *source, const wchar_t *destination) {
     if (error) return error;
     if (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) return ERROR_DIRECTORY;
     if (!CopyFileW(source, destination, TRUE)) return GetLastError();
-    return attributes(source, destination, TRUE);
+    return 0;
 }
 static wchar_t *streamPath(const wchar_t *path, const wchar_t *stream) {
     wchar_t *result = malloc((wcslen(path)+wcslen(stream)+1)*sizeof(wchar_t));
@@ -146,6 +149,11 @@ DWORD d2_directory_metadata(const wchar_t *source, const wchar_t *destination) {
         FindClose(find);
     } else if (GetLastError()!=ERROR_HANDLE_EOF) error=GetLastError();
     return error ? error : attributes(source,destination,FALSE);
+}
+DWORD d2_copy_metadata(const wchar_t *source, const wchar_t *destination) {
+    DWORD kind = GetFileAttributesW(source);
+    if (kind == INVALID_FILE_ATTRIBUTES) return GetLastError();
+    return (kind & FILE_ATTRIBUTE_DIRECTORY) ? d2_directory_metadata(source,destination) : attributes(source,destination,TRUE);
 }
 static BOOL digest(const wchar_t *path, BYTE result[32]) {
     HANDLE file = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
