@@ -113,6 +113,7 @@ desktopSession memory probe = Update.withUpdateCache $ \cache -> do
       postUpdate hwnd action = do
         atomicModifyIORef' pending (\actions -> (action:actions,()))
         void (postMessage hwnd 0x802A 0 0)
+      reportUpdate :: String -> IO ()
       reportUpdate state = readIORef shellRef >>= mapM_ (\view ->
         execute memory view ("window.sapiensAppUpdate?.(" ++ jsonString state ++ ")") (const (pure ())))
       beginUpdate hwnd = do
