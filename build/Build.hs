@@ -15,7 +15,10 @@ main = do
  when (os=="darwin") $ setEnv "MACOSX_DEPLOYMENT_TARGET" "13.0"
  let vendor = root </> "submodules/libs4/haskell"
      cache = vendor </> ".cabal"
-     build = root </> ".build" </> (if os=="darwin" then "haskell-macos-13.0" else "haskell")
+     sodiumSource = "libsodium-1.0.20-remote-1"
+     platformBuild = root </> ".build" </> (if os=="darwin" then "haskell-macos-13.0" else "haskell")
+     -- Cabal does not reliably relink cached executables when a static library changes.
+     build = platformBuild </> sodiumSource
      suffix = if os=="mingw32" then ".exe" else ""
      desktop = os=="linux" && "--desktop" `elem` args
      buildFlags = ["--flags=" ++ if desktop then "linux-desktop" else "-linux-desktop"]
@@ -24,18 +27,17 @@ main = do
  createDirectoryIfMissing True cache
  index <- doesFileExist (cache </> "packages/hackage.haskell.org/01-index.tar")
  unless index (callProcess "cabal" ["update"])
- sodium <- doesFileExist (vendor </> "sodium/src/libsodium/.libs/libsodium.a")
- let targetStamp = vendor </> "sodium/.sapiens-build-target"
+ let sodiumDirectory = vendor </> sodiumSource
+ sodium <- doesFileExist (sodiumDirectory </> "src/libsodium/.libs/libsodium.a")
+ let targetStamp = sodiumDirectory </> ".sapiens-build-target"
      target = os ++ "-" ++ arch ++ if os=="darwin" then "-13.0" else ""
  stamped <- doesFileExist targetStamp
  reusable <- if stamped then (==target) <$> readFile targetStamp else pure False
  unless (sodium && reusable) $ do
   when stamped (removeFile targetStamp)
-  extracted <- doesDirectoryExist (vendor </> "sodium")
+  extracted <- doesDirectoryExist sodiumDirectory
   unless extracted $ do
-   callProcess "tar" ["-xzf",vendor </> "vendor/libsodium-1.0.20.tar.gz","-C",vendor]
-   renameDirectory (vendor </> "libsodium-1.0.20") (vendor </> "sodium")
-  let sodiumDirectory = vendor </> "sodium"
+   callProcess "tar" ["-xzf",vendor </> "vendor" </> sodiumSource<>".tar.gz","-C",vendor]
   -- Autotools rejects spaces even when the compiler accepts the checkout path.
   directory <- buildPath sodiumDirectory
   withCurrentDirectory directory $ do
@@ -50,8 +52,8 @@ main = do
    callProcess "make" (["-j4"] ++ if os=="mingw32" then ["SHELL=sh","LIBTOOL=sh $(top_builddir)/libtool"] else [])
   writeFile targetStamp target
  when (os=="mingw32") $ do
-  createDirectoryIfMissing True build
-  callProcess "windres" ["-I",root</>"environments/windows",root</>"environments/windows/resources.rc","-O","coff","-o",build</>"windows-resources.o"]
+  createDirectoryIfMissing True platformBuild
+  callProcess "windres" ["-I",root</>"environments/windows",root</>"environments/windows/resources.rc","-O","coff","-o",platformBuild</>"windows-resources.o"]
  let cabal options = callProcess "cabal" (["--project-file="<>root</>"build/cabal.project","--builddir="<>build]++options)
  cabal (["build"]++buildFlags++map ("exe:"++) (filter (/="sapiens-windows") targets)++
   ["--ghc-options=-optc-mmacosx-version-min=13.0 -optl-mmacosx-version-min=13.0" | os=="darwin"])

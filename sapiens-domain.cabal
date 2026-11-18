@@ -72,7 +72,7 @@ common host
     Voice,
     Workspace,
     Wire
-  extra-lib-dirs: submodules/libs4/haskell/sodium/src/libsodium/.libs
+  extra-lib-dirs: submodules/libs4/haskell/libsodium-1.0.20-remote-1/src/libsodium/.libs
   extra-libraries: sodium
 
 executable sapiens4
