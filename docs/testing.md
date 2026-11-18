@@ -4,6 +4,12 @@ Use Lean from `spec/lean-toolchain`, Node.js 22+, curl, Chrome/Chromium/Edge,
 and the platform build tools. `SAPIENS_TEST_BROWSER` selects the browser executable.
 Tests use temporary data and a local model fixture.
 
+Test cases and assertions live in Lean, including browser crypto vectors and
+tamper rejection. JavaScript only bridges browser operations and returns observations.
+Desktop jobs initialize a temporary workspace before launch; they do not cover onboarding.
+If a browser exits during fixture startup, set `SAPIENS_TEST_BROWSER` to a working
+Chrome/Chromium/Edge executable (Chrome was used for Windows qualification).
+
 ```sh
 runghc build/Build.hs
 ./submodules/blindly4/macos/build.sh

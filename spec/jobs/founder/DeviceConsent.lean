@@ -132,8 +132,8 @@ private def Mailbox.awaitEnvelope (box : Mailbox) (token : String) (privateText 
 
 def resumeRemoteWorkWhenBrowserReopens : IO Unit := withRelay fun relay admin =>
   IO.FS.withTempDir fun hostDir => IO.FS.withTempDir fun deviceDir =>
-    withHost hostDir fun authority => withCryptoHost deviceDir fun device => do
-      let (box, route) ← withCryptoWindow authority do
+    withHost hostDir fun authority => withHost deviceDir fun device => withCryptoSession device fun browser => do
+      let (box, identity, route) ← withCryptoWindow authority do
         let qr ← invitationFor authority relay admin
         let (pairing, pending) ← requestPairing authority device qr
         approvePairing authority device pairing (← IO.ofExcept <| pending.getObjVal? "peer")
@@ -142,9 +142,17 @@ def resumeRemoteWorkWhenBrowserReopens : IO Unit := withRelay fun relay admin =>
           return Mailbox.mk relay ("/api/rooms/" ++ (← stringField qr "room") ++ "/messages")
             (← stringField qr "token") (← stringField config "token")
         let identity ← IO.ofExcept <| stringField config "corpora_id"
-        return (box, "/api/host/corpora/" ++ identity ++ "/api/agents/" ++ (← authority.chief) ++ "/messages")
+        return (box, identity, "/api/agents/" ++ (← authority.chief) ++ "/messages")
       let message := "Wait for the host browser"
-      let delivery ← IO.asTask (device.api "POST" route (json% {text: $(message)}) 202) .dedicated
+      let saved ← IO.ofExcept <| Json.parse (← IO.FS.readFile (deviceDir / "host-corpora.json"))
+      let config ← IO.ofExcept do (← saved.getObjVal? "remotes").getObjVal? identity
+      -- Use the browser protocol's five-minute validity window: this job tests
+      -- queued redelivery, not the desktop proxy's twelve-second request deadline.
+      let frame ← browser (json% {operation: "request", config: $(config), body: {
+        kind: "request", op: "api", method: "POST", path: $(route), corpora_id: $(identity), data: {text: $(message)}}})
+      let queued ← request relay "POST" box.path frame
+        #["Content-Type: application/json", s!"Authorization: Bearer {box.deviceToken}"]
+      IO.ofExcept <| requireThat "relay refused queued work" (queued.status == 200)
       discard <| box.awaitEnvelope box.hostToken [message, admin]
       IO.sleep 300
       let waiting ← box.entries box.hostToken
@@ -153,8 +161,11 @@ def resumeRemoteWorkWhenBrowserReopens : IO Unit := withRelay fun relay admin =>
         requireThat "closed browser acknowledged encrypted work" (!waiting.isEmpty)
         requireThat "closed browser executed remote work" ((← state.getObjValAs? (Array Json) "turns").isEmpty)
       withCryptoWindow authority do
-        let receipt ← IO.ofExcept (← IO.wait delivery)
-        let turnId ← IO.ofExcept <| receipt.getObjVal? "id"
+        let response ← box.awaitEnvelope box.deviceToken [message, admin]
+        let plain ← browser (json% {operation: "response", config: $(config), frame: $(response)})
+        let receipt ← IO.ofExcept <| plain.getObjVal? "result"
+        IO.ofExcept <| fieldsMatch receipt (json% {status: 202})
+        let turnId ← IO.ofExcept <| (receipt.getObjValD "body").getObjVal? "id"
         let turn ← authority.awaitTurn turnId "done"
         IO.ofExcept <| fieldsMatch turn (json% {input: $(message), output: "The review is ready."})
 

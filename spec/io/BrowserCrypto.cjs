@@ -79,16 +79,31 @@ process.on('SIGINT', () => close().finally(() => process.exit(0)));
     if (Date.now() > deadline) throw new Error('Browser crypto did not connect');
     await new Promise(resolve => setTimeout(resolve, 50));
   }
-  if (process.argv.includes('--verify')) {
-    const checks = require('./CryptoChecks.cjs');
-    await evaluate(`(${checks.toString()})()`);
-  }
+
   process.stdout.write('ready\n');
   for await (const line of createInterface({input: process.stdin})) {
     if (!line.trim()) break;
     const input = JSON.parse(line);
     const result = await evaluate(`(input => {
       const C = SapiensCrypto;
+      if (input.operation === 'crypto') {
+        const [data, index] = input.args;
+        const bytes = text => Uint8Array.from(atob(text), c => c.charCodeAt(0));
+        const base64 = value => btoa(String.fromCharCode(...value));
+        try {
+          let value;
+          switch (input.method) {
+            case 'hex': value = base64(Uint8Array.from(data.match(/../g), byte => parseInt(byte,16))); break;
+            case 'encode': value = base64(new TextEncoder().encode(data)); break;
+            case 'byteLength': value = bytes(data).length; break;
+            case 'flipByte': { const changed = bytes(data); changed[index] ^= 1; value = base64(changed); break; }
+            case 'truncate': value = base64(bytes(data).subarray(0,index)); break;
+            case 'zeros': value = base64(new Uint8Array(data)); break;
+            default: value = C[input.method](...input.args);
+          }
+          return {ok: true, value};
+        } catch (error) { return {ok: false, error: String(error)}; }
+      }
       if (input.operation === 'request') {
         const config = input.config, nonce = C.randomBytes(24);
         const body = {...input.body, v: 'sapiens-remote-box-v1', room: config.room,

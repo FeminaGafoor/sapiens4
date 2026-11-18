@@ -1,4 +1,5 @@
 import io.Host
+import io.CryptoChecks
 
 open Lean System
 namespace Spec
@@ -8,7 +9,7 @@ abbrev CryptoWindow := Json → IO Json
 def withCryptoSession (host : Host) (use : CryptoWindow → IO α) (verify := false) : IO α := do
   let root ← repoRoot
   let child ← IO.Process.spawn {
-    cmd := "node", args := #["spec/io/BrowserCrypto.cjs", host.url] ++ (if verify then #["--verify"] else #[])
+    cmd := "node", args := #["spec/io/BrowserCrypto.cjs", host.url]
     cwd := root, stdin := .piped, stdout := .piped }
   try
     let ready ← IO.asTask child.stdout.getLine .dedicated
@@ -16,7 +17,7 @@ def withCryptoSession (host : Host) (use : CryptoWindow → IO α) (verify := fa
       if ← IO.hasFinished ready then return some (← IO.ofExcept ready.get)
       return none) 30000
     IO.ofExcept <| requireThat "browser crypto fixture failed" (line.trimAscii == "ready")
-    use fun input => do
+    let call := fun (input : Json) => do
       child.stdin.putStrLn input.compress
       child.stdin.flush
       let reply ← IO.asTask child.stdout.getLine .dedicated
@@ -24,6 +25,8 @@ def withCryptoSession (host : Host) (use : CryptoWindow → IO α) (verify := fa
         if ← IO.hasFinished reply then return some (← IO.ofExcept reply.get)
         return none) 30000
       IO.ofExcept <| Json.parse line
+    if verify then verifyCrypto call
+    use call
   finally
     if (← child.tryWait).isNone then
       child.stdin.putStrLn ""
