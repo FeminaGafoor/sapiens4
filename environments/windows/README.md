@@ -26,3 +26,20 @@ After changing a favicon SVG, regenerate both variants and commit the updated re
 ```powershell
 .\environments\windows\regenerate-icons.ps1
 ```
+
+### Update payload packaging
+
+The build emits `Sapiens-Setup-<runtime>.exe` for ordinary installation and
+`Sapiens-Payload-<runtime>.exe` for extraction into an empty version directory.
+Both contain the same complete application. A public release signs and verifies
+both containers and the native payload files; local development builds remain
+explicitly unsigned fixtures.
+
+The payload container is compiled with `StagePayload`. It requires an explicit
+`/DIR=<new-version-directory>`, refuses nonempty destinations (including owned
+installations), and creates no shortcut, uninstall record, uninstaller or
+post-install launch. Failed extraction directories must be abandoned; retry into
+a fresh empty directory. This artifact only stages bytes: it neither selects a
+version nor authorizes data migration. The updater must verify the container's
+Authenticode publisher before executing it and commit version selection through
+its transaction protocol. That integration is not implemented by packaging.

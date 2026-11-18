@@ -106,12 +106,20 @@ try {
         $arguments += '/DPublisherSign'
         $arguments += ('/Ssapiens=signtool.exe sign /sha1 '+$CertificateThumbprint+' /fd SHA256 /tr '+$TimestampUrl+' /td SHA256 $f')
     }
-    & $compiler @arguments (Join-Path $repo 'build/package/windows-installer.iss')
-    if ($LASTEXITCODE -ne 0) { throw 'Inno Setup compilation failed' }
-    $installer = Join-Path $product $artifactName
-    if ($PublicRelease) { Verify-Signature $installer }
-    $checksum = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
-    [IO.File]::WriteAllText((Join-Path $product 'SHA256SUMS'), "$checksum  $artifactName`n")
+    $checksums = @()
+    foreach ($payloadOnly in @($false, $true)) {
+        $name = if ($payloadOnly) { "Sapiens-Payload-$Runtime.exe" } else { $artifactName }
+        $compileArguments = @($arguments | Where-Object { $_ -notlike '/DArtifactBaseName=*' })
+        $compileArguments += '/DArtifactBaseName=' + [IO.Path]::GetFileNameWithoutExtension($name)
+        if ($payloadOnly) { $compileArguments += '/DStagePayload' }
+        & $compiler @compileArguments (Join-Path $repo 'build/package/windows-installer.iss')
+        if ($LASTEXITCODE -ne 0) { throw "Inno Setup compilation failed: $name" }
+        $installer = Join-Path $product $name
+        if ($PublicRelease) { Verify-Signature $installer }
+        $checksum = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+        $checksums += "$checksum  $name"
+    }
+    [IO.File]::WriteAllText((Join-Path $product 'SHA256SUMS'), ($checksums -join "`n") + "`n")
     [IO.Directory]::Move($product, $output)
     Write-Host "Installer $(Join-Path $output $artifactName)"
 } finally {

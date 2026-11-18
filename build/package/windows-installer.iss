@@ -11,7 +11,13 @@ ArchitecturesInstallIn64BitMode={#PackageArchitecture}
 MinVersion=10.0
 DisableDirPage=yes
 DisableProgramGroupPage=yes
+#ifdef StagePayload
+UsePreviousAppDir=no
+Uninstallable=no
+CreateUninstallRegKey=no
+#else
 UsePreviousAppDir=yes
+#endif
 OutputDir={#OutputDir}
 OutputBaseFilename={#ArtifactBaseName}
 Compression=lzma2/fast
@@ -31,11 +37,14 @@ SignedUninstaller=no
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Excludes: "sapiens-installation.id"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SourceDir}\sapiens-installation.id"; DestDir: "{app}"; Flags: ignoreversion
 
+#ifndef StagePayload
 [Icons]
 Name: "{userprograms}\{#PackageName}"; Filename: "{app}\Sapiens4.exe"
 
 [Run]
 Filename: "{app}\Sapiens4.exe"; Description: "Launch {#PackageName}"; Flags: nowait postinstall skipifsilent unchecked
+
+#endif
 
 [Code]
 const
@@ -79,7 +88,9 @@ begin
     StateRoot := AddBackslash(ExpandFileName(GetEnv('SAPIENS_CONFIG_DIR')));
     if CompareText(Copy(Target, 1, Length(StateRoot)), StateRoot) = 0 then begin Result := False; Exit; end;
   end;
+#ifndef StagePayload
   if OwnedDirectory then Exit;
+#endif
   if FindFirst(Target + '*', Item) then begin
     try
       repeat
@@ -191,6 +202,13 @@ end;
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   Result := '';
+#ifdef StagePayload
+  { Payload extraction is never an in-place install. A failed extraction is abandoned. }
+  if ExpandConstant('{param:DIR|}') = '' then begin
+    Result := 'Payload staging requires an explicit new /DIR destination.';
+    Exit;
+  end;
+#endif
   if not SafeDestination then
     Result := 'Choose a new installation directory. Existing data or unowned files cannot be replaced.'
   else if not ProcessesStopped(False) then
