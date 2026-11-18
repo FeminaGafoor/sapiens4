@@ -342,6 +342,3 @@ pickDirectory owner = withGuid "{DC1C5A9C-E88A-4DDE-A5A1-60F82A20AEF7}" $ \class
         bracket (getValue dialog 20) release $ \item -> do
           getName <- method item 5
           Just <$> bracket (alloca $ \out -> invokeIntPtr getName item 0x80058000 out >>= check >> peek out) coFree readWide
-
-foreign import ccall unsafe "GetSystemMenu" systemMenu :: Window -> Int32 -> IO Object
-foreign import ccall unsafe "AppendMenuW" appendMenu :: Object -> Word32 -> WordPtr -> Wide -> IO Int32

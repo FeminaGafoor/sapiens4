@@ -154,7 +154,6 @@ desktopSession memory probe = Update.withUpdateCache $ \cache -> do
                   readIORef shellRef >>= mapM_ (\view -> execute memory view report (const (pure ())))
           postUpdate hwnd complete
       procedure hwnd message wparam lparam = case message of
-        0x0112 | wparam .&. 0xfff0 == 0x7000 -> beginUpdate hwnd >> pure 0
         0x06 | wparam .&. 0xffff == 0 -> focusedWindow >>= writeIORef focusRef >> defaultProc hwnd message wparam lparam
         0x07 -> do
           -- Reactivation otherwise focuses the outer window and drops typed input.
@@ -205,9 +204,6 @@ desktopSession memory probe = Update.withUpdateCache $ \cache -> do
     instanceHandle <- moduleHandle nullPtr
     hwnd <- createMainWindow memory instanceHandle windowProc
     flip finally (void $ destroyWindow hwnd) $ do
-      menu <- systemMenu hwnd 0
-      void $ appendMenu menu 0x800 0 nullPtr
-      withWide "Update & Restart" $ \title -> void $ appendMenu menu 0 0x7000 title
       resizeContent hwnd 1440 960
       label <- withWide "STATIC" $ \className -> withWide "Starting Sapiens4…" $ \title ->
         createWindow 0 className title 0x50000001 0 0 1440 960 hwnd nullPtr instanceHandle nullPtr
