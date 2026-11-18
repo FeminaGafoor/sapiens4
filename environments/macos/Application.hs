@@ -394,7 +394,11 @@ initialize application target address = do
     unless (fixture application) $ do
         size win "setMinSize:" 720 540
         frame <- str "workspace-frame" >>= obj1 (clientPreferences application) "stringForKey:"
-        when (frame /= nullPtr) (void (obj1 win "setFrameFromString:" frame))
+        if frame == nullPtr then do
+            -- Import the pre-D2 window setting once; subsequent saves use Config.
+            name <- str "Sapiens4Workspace"
+            void (booleanArgument win "setFrameUsingName:" name)
+          else void (obj1 win "setFrameFromString:" frame)
     showWindow application
     timerClass <- cls "NSTimer"; timerSelector <- sel "scheduledTimerWithTimeInterval:target:selector:userInfo:repeats:"; tick <- sel "tick:"
     timer <- callTimer timerClass timerSelector 0.05 target tick nullPtr 1
@@ -561,6 +565,9 @@ saveClientPreferences application input = unless (fixture application) $ do
             content <- str (jsonText stored)
             nameObject <- str (T.pack (serverDirectory server))
             void (obj2 (clientPreferences application) "setObject:forKey:" content nameObject)
+            -- Config is the recovery authority. Keep it current during normal
+            -- editing too, so startup never imports an older pre-crash draft.
+            flushPreferences application
 
 installClientPreferences :: Application -> Obj -> Text -> FilePath -> IO ()
 installClientPreferences application view readyAddress directory = unless (fixture application) $ do
