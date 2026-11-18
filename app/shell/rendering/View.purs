@@ -66,7 +66,7 @@ appUpdateButton state = V.div "app-update"
   where
   label = case state of
     M.UpdateDownloading -> "Downloading"
-    M.UpdatePreparing -> "Updating…"
+    M.UpdatePreparing -> "Updating"
     _ -> "Update"
   notice = case state of
     M.UpdateBusy -> "Finish current work, then try again."
