@@ -131,14 +131,16 @@ hostMain root args = do
             synchronous problem = case fromException problem :: Maybe SomeAsyncException of
              Just _ -> Nothing
              Nothing -> Just problem
+            reportIdle action = do
+             result <- tryJust synchronous (timeout 5000000 action)
+             reply $ case result of
+              Right (Just True) -> "quiet"
+              Right (Just False) -> "busy"
+              _ -> "error"
+             commands
         case verb of
-         "quiesce" -> do
-          result <- tryJust synchronous (timeout 5000000 (hostQuiesce host))
-          reply $ case result of
-           Right (Just True) -> "quiet"
-           Right (Just False) -> "busy"
-           _ -> "error"
-          commands
+         "check-busy" -> reportIdle (not <$> hostBusy host)
+         "quiesce" -> reportIdle (hostQuiesce host)
          "resume" -> hostResume host >> reply "resumed" >> commands
          "prepare-ready" -> do
           result <- tryJust synchronous (hostPrepareReady host)

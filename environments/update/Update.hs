@@ -1,5 +1,5 @@
 {-# LANGUAGE CPP #-}
-module Update (UpdateCache, UpdateBusy(..), withUpdateCache, updateAndRestartCached, updateMode, updateAvailable, updateAndRestart, updateAndRestartWithProgress, candidateReady, preparingUpdate, tryUpdate) where
+module Update (UpdateCache, UpdateBusy(..), withUpdateCache, updateAndRestartCached, updateMode, updateAvailable, candidateReady, preparingUpdate, tryUpdate) where
 
 import Control.Exception
 import Control.Monad
@@ -51,13 +51,6 @@ candidateReady activate = do
 installed :: IO (FilePath,Version)
 installed = installation >>= maybe (fail "Updates require an installed Sapiens version") pure
 
-updateAndRestart :: (String -> IO String) -> IO () -> IO () -> FilePath -> FilePath -> IO ()
-updateAndRestart = updateAndRestartWithProgress (pure ())
-
-updateAndRestartWithProgress :: IO () -> (String -> IO String) -> IO () -> IO () -> FilePath -> FilePath -> IO ()
-updateAndRestartWithProgress preparing command flushPreferences stop dataDirectory configDirectory =
- withUpdateCache $ \cache -> updateAndRestartCached cache preparing command flushPreferences stop dataDirectory configDirectory
-
 data Release = Release
  { releaseVersion :: [Integer]
  , releaseURL :: String
@@ -82,18 +75,20 @@ updateAndRestartCached cache preparing command flushPreferences stop dataDirecto
   Left problem | Just UpdateBusy <- fromException problem -> throwIO problem
   _ -> clearUpdateCache cache >> either throwIO pure result
  where
+ requireIdle action message = command action >>= \reply -> case reply of
+  "quiet" -> pure ()
+  "busy" -> throwIO UpdateBusy
+  _ -> fail message
  attempt = do
   (root,owner) <- installed
   validateRoots root dataDirectory configDirectory
+  requireIdle "check-busy" "Sapiens could not check for unfinished work. Update cancelled."
   next <- requestUpdate cache root owner
   withCandidate (versionExecutable root owner) ["--update-coordinate",versionName next,dataDirectory,configDirectory] [] $ \coordinator ->
    (do
     preparing
     await 15 coordinator "update: coordinator"
-    let quiet = command "quiesce" >>= \reply -> case reply of
-         "quiet" -> pure ()
-         "busy" -> throwIO UpdateBusy
-         _ -> fail "Sapiens could not pause safely. Update cancelled."
+    let quiet = requireIdle "quiesce" "Sapiens could not pause safely. Update cancelled."
     (do
       (quiet >> flushPreferences) `onException` void (tryUpdate (command "resume"))
       void (tryUpdate (command "app-update-initiated"))

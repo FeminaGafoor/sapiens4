@@ -40,7 +40,7 @@ import Network.Wai.Handler.Warp
 import qualified Network.Socket as Socket
 
 
-data Host = Host { hostPort :: Int, hostService :: Service, hostBridge :: Bridge, hostStop :: IO (), hostActivate :: IO (), hostQuiesce :: IO Bool, hostResume :: IO (), hostPrepareReady :: IO () }
+data Host = Host { hostPort :: Int, hostService :: Service, hostBridge :: Bridge, hostStop :: IO (), hostActivate :: IO (), hostBusy :: IO Bool, hostQuiesce :: IO Bool, hostResume :: IO (), hostPrepareReady :: IO () }
 listenLoopback :: Int -> IO (Socket.Socket,Int)
 listenLoopback port = Socket.withSocketsDo $ do
  sock <- Socket.socket Socket.AF_INET Socket.Stream Socket.defaultProtocol
@@ -122,11 +122,13 @@ startHostUsing gate activations inherited inheritedCrypto consent choice root re
          forM_ owned $ \(s,_,_) -> writeIORef (serviceTelemetry s) (Just telemetry)
         mapM_ (\(_,start,_) -> start) owned
         openAdmission gate
+       busyHosts = do
+        checks <- readMVar activations
+        or <$> mapM (\(_,_,checkBusy) -> checkBusy) checks
        quiesce = do
         mapM_ prepareRegistry registry
         closeAdmission gate
-        checks <- readMVar activations
-        busy <- or <$> mapM (\(_,_,checkBusy) -> checkBusy) checks
+        busy <- busyHosts
         when busy (openAdmission gate)
         pure (not busy)
        prepareReady = do
@@ -155,7 +157,7 @@ startHostUsing gate activations inherited inheritedCrypto consent choice root re
         pure True
    (admissionOpen gate >>= \open -> if open then Service.prepareService service >> activate else mapM_ prepareRegistry registry) `onException` stop
    modifyMVar_ activations (pure . ((service,activate,busy):))
-   pure (Host port service bridge stop activateAll (quiesce `onException` openAdmission gate) (openAdmission gate) prepareReady)
+   pure (Host port service bridge stop activateAll busyHosts (quiesce `onException` openAdmission gate) (openAdmission gate) prepareReady)
 localRequest :: Int -> Bool -> RequestHeaders -> Validation ()
 localRequest port write headers = do
  let host = lookup hHost headers
