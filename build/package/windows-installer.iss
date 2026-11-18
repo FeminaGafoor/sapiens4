@@ -58,6 +58,7 @@ Type: dirifempty; Name: "{app}\versions"
 #endif
 
 [Code]
+#ifndef StagePayload
 const
   Identity = '{#PackageId}';
 
@@ -70,6 +71,7 @@ begin
     'Software\Microsoft\Windows\CurrentVersion\Uninstall\' + Identity + '_is1', 'InstallLocation', Installed);
   Result := Result and (CompareText(AddBackslash(Installed), AddBackslash(ExpandConstant('{app}'))) = 0);
 end;
+#endif
 
 function FileAttributes(FileName: String): Cardinal;
   external 'GetFileAttributesW@kernel32.dll stdcall';
@@ -117,6 +119,7 @@ begin
   end;
 end;
 
+#ifndef StagePayload
 function InstallerProcessId: Cardinal;
   external 'GetCurrentProcessId@kernel32.dll stdcall';
 
@@ -210,6 +213,7 @@ begin
     Log('Cannot establish stopped installation: ' + GetExceptionMessage);
   end;
 end;
+#endif
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
@@ -220,12 +224,17 @@ begin
     Exit;
   end;
 #endif
-  if not SafeDestination then
-    Result := 'Choose a new installation directory. Existing data or unowned files cannot be replaced.'
-  else if not ProcessesStopped(False) then
+  if not SafeDestination then begin
+    Result := 'Choose a new installation directory. Existing data or unowned files cannot be replaced.';
+    Exit;
+  end;
+#ifndef StagePayload
+  if not ProcessesStopped(False) then
     Result := 'Quit {#PackageName} and its backend, then retry. No running process will be stopped by Setup.';
+#endif
 end;
 
+#ifndef StagePayload
 function InitializeUninstall: Boolean;
 begin
   Result := OwnedDirectory and ProcessesStopped(True);
@@ -236,7 +245,6 @@ begin
   end;
 end;
 
-#ifndef StagePayload
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var Code: Integer;
 begin

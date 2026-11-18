@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP #-}
 module Update (UpdateCache, UpdateBusy(..), withUpdateCache, updateAndRestartCached, updateMode, updateAvailable, candidateReady, preparingUpdate, tryUpdate, sendUpdateCommand) where
 
 import Control.Concurrent (Chan, MVar, readChan, withMVar)
@@ -7,7 +6,6 @@ import Control.Exception
 import Control.Monad
 import qualified Crypto.Hash.SHA256 as SHA256
 import qualified Data.ByteString as B
-import qualified Data.ByteString.Lazy as BSL
 import Data.Aeson
 import Data.Aeson.Types (parseEither)
 import Data.Char (isSpace)
@@ -123,31 +121,26 @@ updateAndRestartCached cache preparing command flushPreferences stop dataDirecto
     `onException` discardStaged
 
 requestUpdate :: UpdateCache -> FilePath -> Version -> Version -> IO ()
-requestUpdate cache@(UpdateCache ref) root owner nonce = do
- let destination = versionPath root nonce
+requestUpdate cache@(UpdateCache ref) root owner next = do
  validatePath (root </> "versions")
- fixture <- updateFixture
  manager <- newManager tlsManagerSettings
- release <- discoverRelease manager root owner (fst <$> fixture)
+ release <- discoverRelease manager root owner
  existing <- readIORef ref
  payload <- case existing of
   Just (cached,path) | release == cached -> pure path
   _ -> do
    clearUpdateCache cache
-   let path = root </> (versionName nonce ++ "-" ++ payloadName)
+   let path = root </> (versionName next ++ "-" ++ payloadName)
    writeIORef ref (Just (release,path))
-   case snd <$> fixture of
-    Just file -> copyFile file path
-    Nothing -> do
-     transfer <- parseRequest (releaseURL release)
-     withResponse transfer manager $ \result -> withBinaryFile path WriteMode $ \file ->
-      let loop = do chunk <- brRead (responseBody result); unless (B.null chunk) (B.hPut file chunk >> loop)
-      in loop
+   transfer <- parseRequest (releaseURL release)
+   withResponse transfer manager $ \result -> withBinaryFile path WriteMode $ \file ->
+    let loop = do chunk <- brRead (responseBody result); unless (B.null chunk) (B.hPut file chunk >> loop)
+    in loop
    pure path
  validatePath payload
  verifyPayloadDigest (releaseDigest release) payload
- stagePayload payload destination
- staged <- installedVersion root nonce
+ stagePayload payload (versionPath root next)
+ staged <- installedVersion root next
  unless (staged == releaseVersion release) (fail "Update payload version differs from the release tag")
 
 verifyPayloadDigest :: String -> FilePath -> IO ()
@@ -165,35 +158,19 @@ updateAvailable :: IO Bool
 updateAvailable = do
  result <- tryUpdate $ do
   (root,owner) <- installed
-  fixture <- updateFixture
   manager <- newManager tlsManagerSettings
-  void (discoverRelease manager root owner (fst <$> fixture))
+  void (discoverRelease manager root owner)
  pure (either (const False) (const True) result)
 
 installedVersion :: FilePath -> Version -> IO [Integer]
 installedVersion root version = readFile (versionPath root version </> "sapiens-release.version") >>= parseReleaseVersion
 
-updateFixture :: IO (Maybe (FilePath,FilePath))
-#ifdef UPDATE_FIXTURE
-updateFixture = do
- manifest <- lookupEnv "SAPIENS_UPDATE_FIXTURE_RELEASE"
- payload <- lookupEnv "SAPIENS_UPDATE_FIXTURE_PAYLOAD"
- case (manifest,payload) of
-  (Nothing,Nothing) -> pure Nothing
-  (Just release,Just file) -> pure (Just (release,file))
-  _ -> fail "Set both the update fixture manifest and package paths"
-#else
-updateFixture = pure Nothing
-#endif
-
-discoverRelease :: Manager -> FilePath -> Version -> Maybe FilePath -> IO Release
-discoverRelease manager root owner fixtureManifest = do
+discoverRelease :: Manager -> FilePath -> Version -> IO Release
+discoverRelease manager root owner = do
  installedRelease <- installedVersion root owner
  let repository = "aleski-green/sapiens4"
-     latest = do
-      request <- parseRequest ("https://api.github.com/repos/" ++ repository ++ "/releases/latest")
-      responseBody <$> httpLbs request {requestHeaders=[("User-Agent","Sapiens4-Updater"),("Accept","application/vnd.github+json")]} manager
- body <- maybe latest BSL.readFile fixtureManifest
+ request <- parseRequest ("https://api.github.com/repos/" ++ repository ++ "/releases/latest")
+ body <- responseBody <$> httpLbs request {requestHeaders=[("User-Agent","Sapiens4-Updater"),("Accept","application/vnd.github+json")]} manager
  value <- either fail pure (eitherDecode body)
  tag <- either fail pure (parseEither (withObject "release" (\o -> o .: "tag_name")) value)
  available <- parseReleaseVersion tag
@@ -242,7 +219,8 @@ instance Exception CandidateNotJoined where
   "The candidate process tree could not be joined. Recovery is deferred. Close Sapiens and relaunch from its installed shortcut. " ++ displayException problem
 
 discard :: [FilePath] -> IO ()
-discard paths = forM_ paths $ \path -> removePathForcibly path `catch` \(_::IOException) -> pure ()
+discard paths = forM_ paths $ \path ->
+ (pathPresent path >>= flip when (removePathForcibly path)) `catch` \(_::IOException) -> pure ()
 
 coordinate :: Maybe (Version,FilePath,FilePath) -> IO ()
 coordinate requested = do

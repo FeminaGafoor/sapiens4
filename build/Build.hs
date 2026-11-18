@@ -18,7 +18,7 @@ main = do
      build = platformBuild </> "browser-crypto"
      suffix = if os=="mingw32" then ".exe" else ""
      desktop = os=="linux" && "--desktop" `elem` args
-     buildFlags = ["--flags=" ++ (if desktop then "linux-desktop" else "-linux-desktop") ++ " -update-fixture"]
+     buildFlags = ["--flags=" ++ (if desktop then "linux-desktop" else "-linux-desktop")]
      targets = ["sapiens4","sapiens-domain"] ++ case os of
       "darwin" -> ["sapiens-macos","sapiens-macos-starter"]
       "mingw32" -> ["sapiens-windows","sapiens-starter"]

@@ -8,11 +8,6 @@ flag linux-desktop
   default: False
   manual: True
 
-flag update-fixture
-  description: Isolated updater fixture build; never publish
-  default: False
-  manual: True
-
 common runtime
   default-language: Haskell2010
   default-extensions: OverloadedStrings, ScopedTypeVariables, TupleSections
@@ -22,8 +17,6 @@ common runtime
     sqlite-simple, filelock, uuid, base64-bytestring, network-uri, regex-tdfa,
     http-client, http-client-tls, http-types, network, wai, warp, wai-websockets,
     websockets, wuss, cryptohash-sha256, entropy, memory, random, tagsoup ==0.14.8
-  if flag(update-fixture)
-    cpp-options: -DUPDATE_FIXTURE
   if !os(windows)
     build-depends: unix
 
