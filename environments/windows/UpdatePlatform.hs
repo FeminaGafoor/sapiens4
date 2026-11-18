@@ -102,40 +102,38 @@ launchVersion root version args = do
  void $ createProcess (proc (versionExecutable root version) args)
   {env=Just (filter (\(key,_) -> key /= "SAPIENS_UPDATE_ATTEMPT") inherited),close_fds=True}
 
-data Candidate = Candidate ProcessHandle Handle Handle Handle
+data Candidate = Candidate ProcessHandle Handle Handle
 withCandidate :: FilePath -> [String] -> [(String,String)] -> (Candidate -> IO a) -> IO a
 withCandidate executable args overrides = bracket acquire close
  where
  acquire = do
   inherited <- getEnvironment
-  (Just input,Just output,Just errors,child) <- createProcess (proc executable args)
-   {std_in=CreatePipe,std_out=CreatePipe,std_err=CreatePipe,use_process_jobs=True,create_group=True,close_fds=True
+  -- Inherit native diagnostics: cancelling a reader on a discarded stderr pipe
+  -- can block until the candidate exits, retaining the installation lease.
+  (Just input,Just output,_,child) <- createProcess (proc executable args)
+   {std_in=CreatePipe,std_out=CreatePipe,std_err=Inherit,use_process_jobs=True,create_group=True,close_fds=True
    ,env=Just (overrides ++ filter (\(key,_) -> key `notElem` map fst overrides) inherited)}
-  let candidate = Candidate child input output errors
-  (mapM_ (\stream -> hSetEncoding stream utf8 >> hSetNewlineMode stream universalNewlineMode) [input,output,errors]
+  let candidate = Candidate child input output
+  (mapM_ (\stream -> hSetEncoding stream utf8 >> hSetNewlineMode stream universalNewlineMode) [input,output]
    >> pure candidate) `onException` (candidateOwnership candidate False >> close candidate)
- close (Candidate _ input output errors) = mapM_ (\h -> hClose h `catch` \(_::IOException) -> pure ()) [input,output,errors]
+ close (Candidate _ input output) = mapM_ (\h -> hClose h `catch` \(_::IOException) -> pure ()) [input,output]
 
 candidateMessage :: Candidate -> IO String
-candidateMessage candidate@(Candidate _ _ output _) = race exited (hGetLine output) >>= either (const (fail "Candidate exited")) pure
+candidateMessage candidate@(Candidate _ _ output) = race exited (hGetLine output) >>= either (const (fail "Candidate exited")) pure
  where
  exited = do
   alive <- candidateAlive candidate
   when alive (threadDelay 100000 >> exited)
 
 candidateAlive :: Candidate -> IO Bool
-candidateAlive (Candidate child _ _ _) = withProcessHandle child $ \state -> case state of
+candidateAlive (Candidate child _ _) = withProcessHandle child $ \state -> case state of
  OpenExtHandle handle _ -> (/=0) <$> waitProcess handle 0
  _ -> pure False
 
 sendCandidate :: Candidate -> String -> IO ()
-sendCandidate (Candidate _ input _ _) message = hPutStrLn input message >> hFlush input
-
-drainCandidate :: Candidate -> IO a -> IO a
-drainCandidate (Candidate _ _ _ errors) action = withAsync loop (const action)
- where loop = B.hGetSome errors 4096 >>= \chunk -> unless (B.null chunk) loop
+sendCandidate (Candidate _ input _) message = hPutStrLn input message >> hFlush input
 
 candidateOwnership :: Candidate -> Bool -> IO ()
-candidateOwnership (Candidate child _ _ _) commit = withProcessHandle child $ \state -> case state of
+candidateOwnership (Candidate child _ _) commit = withProcessHandle child $ \state -> case state of
  OpenExtHandle _ handle -> cJob handle (if commit then 1 else 0) >>= check "Candidate process ownership"
  _ -> fail "Candidate has no owned Windows job"
