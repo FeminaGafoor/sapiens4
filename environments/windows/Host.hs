@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-module Host (Host(..), prepareHost, startHost, closeHost, watchHost, desktopArgs) where
+module Host (Host(..), prepareHost, startHost, closeHost, watchHost, desktopArgs, updateCommand, stopQuietHost) where
 
 import DesktopStorage (storageMode, awaitServerAddress, startupConsentArguments)
 import Control.Concurrent
@@ -39,6 +39,8 @@ data ServerProcess = ServerProcess
   , processErrors :: Handle
   , outputReader :: Maybe (Async ())
   , exitWatcher :: Maybe (Async ())
+  , updateReply :: MVar String
+  , updateGuard :: MVar ()
   , errorReader :: Maybe (Async ())
   }
 
@@ -96,7 +98,9 @@ launchHost :: Host -> CreateProcess -> IO String
 launchHost host command = mask $ \restore -> do
   closeHost host
   (Just input, Just output, Just errors, child) <- createProcess command
-  let owned = ServerProcess child input output errors Nothing Nothing Nothing
+  reply <- newEmptyMVar
+  guard <- newMVar ()
+  let owned = ServerProcess child input output errors Nothing Nothing reply guard Nothing
   writeIORef (serverProcess host) (Just owned)
   (do
     mapM_ (\stream -> hSetEncoding stream utf8 >> hSetNewlineMode stream universalNewlineMode) [input, output, errors]
@@ -114,7 +118,7 @@ launchHost host command = mask $ \restore -> do
       putMVar readiness result
       case result of
         Left _ -> pure ()
-        Right _ -> (forever (void $ hGetLine output)) `catch` \(_ :: IOException) -> pure ()
+        Right _ -> (forever (hGetLine output >>= \line -> when (take 8 line == "UPDATE: ") (putMVar reply (drop 8 line)))) `catch` \(_ :: IOException) -> pure ()
     writeIORef (serverProcess host) (Just owned {outputReader=Just drain,errorReader=Just collect})
     restore (takeMVar readiness >>= either (\e -> do
       void (timeout 250000 (waitCatch collect))
@@ -190,3 +194,27 @@ stopServer server = mask_ $ do
 
 closeStream :: Handle -> IO ()
 closeStream stream = hClose stream `catch` \(_ :: IOException) -> pure ()
+
+-- Private inherited pipes, never an HTTP activation endpoint.
+updateCommand :: Host -> String -> IO String
+updateCommand host command = do
+ server <- readIORef (serverProcess host) >>= maybe (fail "Application server unavailable") pure
+ withMVar (updateGuard server) $ \_ -> do
+  hPutStrLn (processInput server) command
+  hFlush (processInput server)
+  takeMVar (updateReply server)
+
+stopQuietHost :: Host -> IO ()
+stopQuietHost host = do
+ result <- updateCommand host "quiesce"
+ unless (result == "quiet") (fail "Sapiens is busy. Finish accepted work before updating.")
+ server <- readIORef (serverProcess host) >>= maybe (fail "Application server unavailable") pure
+ mapM_ cancel (exitWatcher server)
+ hPutStrLn (processInput server) "stop"
+ hFlush (processInput server)
+ -- Update shutdown never escalates to terminating accepted work.
+ void (waitForProcess (processHandle server))
+ mapM_ cancel (catMaybes [outputReader server,errorReader server])
+ mapM_ closeStream [processInput server,processOutput server,processErrors server]
+ writeIORef (serverProcess host) Nothing
+ writeIORef (origin host) Nothing

@@ -34,8 +34,14 @@ SignedUninstaller=no
 #endif
 
 [Files]
-Source: "{#SourceDir}\*"; DestDir: "{app}"; Excludes: "sapiens-installation.id"; Flags: ignoreversion recursesubdirs createallsubdirs
+#ifdef StagePayload
+Source: "{#SourceDir}\*"; DestDir: "{app}"; Excludes: "sapiens-installation.id,sapiens-starter.exe"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SourceDir}\sapiens-installation.id"; DestDir: "{app}"; Flags: ignoreversion
+#else
+Source: "{#SourceDir}\*"; DestDir: "{app}\versions\{#InitialVersion}"; Excludes: "sapiens-starter.exe"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#SourceDir}\sapiens-starter.exe"; DestDir: "{app}"; DestName: "Sapiens4.exe"; Flags: ignoreversion
+Source: "{#SourceDir}\sapiens-installation.id"; DestDir: "{app}"; Flags: ignoreversion
+#endif
 
 #ifndef StagePayload
 [Icons]
@@ -89,6 +95,7 @@ begin
     if CompareText(Copy(Target, 1, Length(StateRoot)), StateRoot) = 0 then begin Result := False; Exit; end;
   end;
 #ifndef StagePayload
+  if FileExists(ExpandConstant('{app}\update-state.json')) then begin Result := False; Exit; end;
   if OwnedDirectory then Exit;
 #endif
   if FindFirst(Target + '*', Item) then begin
@@ -224,3 +231,14 @@ begin
       MsgBox('Quit {#PackageName} and its backend, then retry uninstall. No running process will be stopped.', mbError, MB_OK);
   end;
 end;
+
+#ifndef StagePayload
+procedure CurStepChanged(CurStep: TSetupStep);
+var Code: Integer;
+begin
+  if CurStep = ssPostInstall then begin
+    if not Exec(ExpandConstant('{app}\Sapiens4.exe'), '--initialize {#InitialVersion}', '', SW_HIDE, ewWaitUntilTerminated, Code) or (Code <> 0) then
+      RaiseException('Sapiens installation could not publish its initial version.');
+  end;
+end;
+#endif

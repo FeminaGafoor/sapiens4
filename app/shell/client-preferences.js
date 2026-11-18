@@ -29,6 +29,14 @@ function installClientPreferences(address, root, saved, token) {
     };
     publish();
     addEventListener('sapiens-preferences-ready', publish);
+    addEventListener('sapiens-preferences-flush', () => {
+      document.documentElement.inert = true;
+      publish();
+      bridge.postMessage({preferencesFlushed: true});
+    });
+    addEventListener('sapiens-preferences-resume', () => {
+      document.documentElement.inert = false;
+    });
     addEventListener('pagehide', publish);
   } catch (_) { /* Storage may be unavailable in this document. */ }
 }

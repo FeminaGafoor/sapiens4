@@ -54,9 +54,12 @@ newBridge service = do
  case loaded of
   Right v -> modifyMVar_ config (const (pure v)) >> writeIORef (bridgeConnections b) (S.singleton (at v "last_connection_id"))
   Left (errorValue::SomeException) -> rethrowAsync errorValue >> writeIORef (bridgeError b) "Saved remote pairing is invalid. Create a new pairing; local CORPORA is unaffected."
- worker <- async (runBridge b)
- modifyMVar_ (bridgeThread b) (const (pure (Just worker)))
  pure b
+
+startBridge :: Bridge -> IO ()
+startBridge b = modifyMVar_ (bridgeThread b) $ \existing -> case existing of
+ Just _ -> pure existing
+ Nothing -> Just <$> async (runBridge b)
 saveConfig :: Bridge -> Value -> IO ()
 saveConfig b Null = removeFile (configPath b) `catch` \(e::IOException) -> do
  exists <- doesFileExist (configPath b)
@@ -192,7 +195,7 @@ executeReply b config message = do
  value <- executeRemote b message `catches` [Handler (\(APIError _ err) -> pure (obj [("error",str err)])), Handler (\(errorValue::SomeException) -> rethrowAsync errorValue >> pure (obj [("error",str "Local operation failed; check desktop before sending again")]))]
  replyFrame config (at message "id") value `catch` \(_::APIError) -> replyFrame config (at message "id") (obj [("error",str "Response too large; inspect on desktop")])
 processFrame :: Bridge -> Value -> Value -> IO (Value,Maybe Value)
-processFrame b config frame = do
+processFrame b config frame = admitted (bridgeService b) True $ do
  let peer = fallback (get config "peer") (get frame "sender")
  (message,plaintext) <- unpackWithPlaintext (get config "private") peer (at config "room") PhoneToDesktop frame
  time <- seconds

@@ -55,7 +55,6 @@ newRegistry service bridge openChild = do
  registry <- Registry service bridge openChild <$> newMVar () <*> newIORef saved
    <*> newIORef (M.singleton (at identity "id") (service,bridge,pure ())) <*> newIORef M.empty
    <*> newIORef M.empty <*> newIORef M.empty <*> newIORef False
- unless (null $ items saved "relay_cleanup") $ void $ forkIO $ registryLock registry $ cleanupRelays registry Nothing Nothing
  pure registry
 
 local :: Registry -> Text -> IO (Service, Bridge, IO ())
@@ -430,3 +429,11 @@ resetConnections registry connection = do
  withSavedCorporaLocks (serviceRoot $ registryService registry) unopened $
   resetSavedConnections (serviceRoot $ registryService registry) (items saved "locals") connection
  void $ forkIO $ registryLock registry $ cleanupRelays registry Nothing Nothing
+
+startRegistry :: Registry -> IO ()
+startRegistry registry = registryLock registry $ do
+ saved <- readIORef (registrySaved registry)
+ unless (null $ items saved "relay_cleanup") $ cleanupRelays registry Nothing Nothing
+
+prepareRegistry :: Registry -> IO ()
+prepareRegistry registry = void (registryRecords registry)

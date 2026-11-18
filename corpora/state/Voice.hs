@@ -6,9 +6,10 @@ module Voice
  ( Pcm, pcmBytes, pcmFromWav, wavFromPcm
  , Progress(..), Cut(..), PiecePlan(..), startProgress, planPiece
  , receivePiece, cancelRecording, retryTranscription, draftable
- , startTranscriber
+ , startTranscriber, busyVoice
  ) where
 
+import Admission (admissionOpen)
 import Control.Concurrent (threadDelay, MVar, newMVar, modifyMVar_, withMVar, swapMVar)
 import Control.Concurrent.Async (asyncWithUnmask, cancel, AsyncCancelled(..))
 import Control.Exception (IOException, SomeException, SomeAsyncException, fromException, try, tryJust, throwIO, finally, mask_)
@@ -289,7 +290,7 @@ transcribeLoop s gate manager = do
  let go = do
       stopping <- readIORef (serviceStopping s)
       unless stopping $ do
-       outcome <- tryTranscription (transcribeNext s gate manager base)
+       outcome <- tryTranscription (admissionOpen (serviceAdmission s) >>= \open -> if open then transcribeNext s gate manager base else pure False)
         `finally` modifyMVar_ gate (pure . fmap (const []))
        case outcome of
         -- Never fail silently: report the problem in the host log, then retry calmly.
@@ -340,3 +341,17 @@ whisper manager base path = do
   -- Whisper returns one line per segment with leading spaces; keep plain sentences.
   Just value | String raw <- get value "text" -> pure (T.unwords (T.words raw))
   _ -> failure 502 "Whisper returned no text"
+
+-- A recording can be accepted before it has produced a transcribable part.
+busyVoice :: Service -> IO Bool
+busyVoice s = do
+ pending <- DB.pendingVoices s
+ agents <- DB.agents s
+ recordings <- fmap concat $ forM agents $ \agent -> do
+  let folder = serviceRoot s </> "uploads" </> T.unpack (at agent "id") </> "voice"
+  exists <- doesDirectoryExist folder
+  if not exists then pure [] else do
+   names <- listDirectory folder
+   filterM doesFileExist [folder </> name </> "progress.json" | name <- names]
+ unfinished <- or <$> mapM (fmap (not . finished) . readProgress) recordings
+ pure (not (null pending) || unfinished)

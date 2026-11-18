@@ -25,11 +25,15 @@ import Foreign hiding (void)
 import Numeric
 import Browser
 import Host
+import qualified WindowsUpdate as Update
+import Installation (withInstalledVersion)
+import UpdateState (versionName)
 import Native
 import qualified Navigation as Navigation
 import System.Environment
 import System.FilePath
 import System.IO
+import System.Timeout (timeout)
 import System.Process (createProcess, proc)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as B
@@ -38,7 +42,7 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 
 runDesktop :: Bool -> IO ()
-runDesktop probe = runInBoundThread $
+runDesktop probe = withInstalledVersion $ runInBoundThread $
   -- Release callbacks only after COM has finished releasing its references.
   (bracket newArena freeArena $ \memory ->
     bracket_ (check =<< coInitialize nullPtr 2) coUninitialize (desktopSession memory probe))
@@ -83,6 +87,8 @@ desktopSession memory probe = do
   selectedRoot <- newIORef Nothing
   preferenceScript <- newIORef Nothing
   preferenceValues <- newIORef KM.empty
+  updating <- newIORef False
+  preferencesFlushed <- newEmptyMVar
   let resize hwnd = do
         (width, height) <- rectangle hwnd
         offset <- readIORef top
@@ -100,7 +106,40 @@ desktopSession memory probe = do
       runPending = do
         actions <- atomicModifyIORef' pending (\actions -> ([], reverse actions))
         sequence_ actions
+      beginUpdate hwnd = do
+        already <- atomicModifyIORef' updating (\old -> (True,old))
+        preparing <- Update.preparingUpdate
+        unless (already || preparing) $ void $ async $ do
+          result <- try $ do
+            quiet <- updateCommand host "quiesce"
+            unless (quiet == "quiet") (fail "Sapiens is busy. Finish accepted work before updating.")
+            void (updateCommand host "activate")
+            next <- Update.requestUpdate
+            quietAgain <- updateCommand host "quiesce"
+            unless (quietAgain == "quiet") (fail "Sapiens became busy while downloading. Update cancelled.")
+            let flushPreferences = readIORef shellRef >>= mapM_ (\view -> execute memory view "window.dispatchEvent(new Event('sapiens-preferences-flush'))" (const (pure ())))
+            void (tryTakeMVar preferencesFlushed)
+            atomicModifyIORef' pending (\actions -> (flushPreferences:actions,()))
+            void (postMessage hwnd 0x802A 0 0)
+            flushed <- timeout 10000000 (takeMVar preferencesFlushed)
+            when (isNothing flushed) $ do
+              void (updateCommand host "activate")
+              fail "Native preferences could not be saved; update cancelled."
+            stopQuietHost host
+            writeIORef closing True
+            directory <- readIORef activeRoot
+            executable <- getExecutablePath
+            void $ createProcess (proc executable ["--d2-update",versionName next,directory,configRoot])
+          let complete = case result of
+                Right () -> closeViews >> void (destroyWindow hwnd)
+                Left (e::SomeException) -> do
+                  writeIORef updating False
+                  readIORef shellRef >>= mapM_ (\view -> execute memory view "window.dispatchEvent(new Event('sapiens-preferences-resume'))" (const (pure ())))
+                  withWide (storageMessage e) $ \message -> withWide "Sapiens update" $ \title -> void (messageBox hwnd message title 0x10)
+          atomicModifyIORef' pending (\actions -> (complete:actions,()))
+          void (postMessage hwnd 0x802A 0 0)
       procedure hwnd message wparam lparam = case message of
+        0x0112 | wparam .&. 0xfff0 == 0x7000 -> beginUpdate hwnd >> pure 0
         0x06 | wparam .&. 0xffff == 0 -> focusedWindow >>= writeIORef focusRef >> defaultProc hwnd message wparam lparam
         0x07 -> do
           -- Reactivation otherwise focuses the outer window and drops typed input.
@@ -151,6 +190,9 @@ desktopSession memory probe = do
     instanceHandle <- moduleHandle nullPtr
     hwnd <- createMainWindow memory instanceHandle proc
     flip finally (void $ destroyWindow hwnd) $ do
+      menu <- systemMenu hwnd 0
+      void $ appendMenu menu 0x800 0 nullPtr
+      withWide "Update & Restart" $ \title -> void $ appendMenu menu 0 0x7000 title
       resizeContent hwnd 1440 960
       label <- withWide "STATIC" $ \className -> withWide "Starting Sapiens4…" $ \title ->
         createWindow 0 className title 0x50000001 0 0 1440 960 hwnd nullPtr instanceHandle nullPtr
@@ -169,6 +211,7 @@ desktopSession memory probe = do
             let guarded = readIORef closing >>= \closed -> unless closed action
             unless dead $ atomicModifyIORef' pending (\xs -> (guarded:xs, ())) >> void (postMessage hwnd 0x802A 0 0)
           failStart message = do
+            Update.preparingUpdate >>= \preparing -> when preparing (putStrLn "D2: failed" >> hFlush stdout)
             modifyIORef' generation (+1)
             cleanup <- try (closeViews `finally` closeHost host)
             let detail = case cleanup of
@@ -182,10 +225,12 @@ desktopSession memory probe = do
           storageScript source = readIORef shellRef >>= mapM_ (\view -> execute memory view source (const $ pure ()))
           storageError :: String -> IO ()
           storageError message = do
+            Update.preparingUpdate >>= \preparing -> when preparing (putStrLn "D2: failed" >> hFlush stdout)
             closeHost host
             writeIORef starting False
             storageScript ("window.storageError(" ++ T.unpack (TE.decodeUtf8 $ L.toStrict $ encode message) ++ ")")
           recoverStartup message = do
+            Update.preparingUpdate >>= \preparing -> when preparing (putStrLn "D2: failed" >> hFlush stdout)
             modifyIORef' storageAttempt (+1)
             writeIORef (origin host) Nothing
             atomicModifyIORef' workerRef (\old -> (Nothing,old)) >>= mapM_ cancel
@@ -210,9 +255,10 @@ desktopSession memory probe = do
             writeIORef workerRef (Just worker)
           preferencesPath directory = configRoot </> "client-preferences" </> concatMap (\byte -> let h=showHex byte "" in replicate (2-length h) '0' ++ h) (BS.unpack $ SHA.hash $ TE.encodeUtf8 $ T.pack directory) <.> "json"
           savePreferences input = do
+            stopped <- readIORef closing
             selection <- readIORef selectedRoot
             browser <- readIORef browserRef
-            when (isNothing selection && not (isNothing browser)) $ do
+            when (not stopped && isNothing selection && not (isNothing browser)) $ do
               let key=string (field "key" input); value=string (field "value" input)
               when (DesktopStorage.validPreference (T.pack key) (T.pack value)) $ do
                 directory <- readIORef activeRoot
@@ -223,6 +269,13 @@ desktopSession memory probe = do
           commitWorkspace signal =
             DesktopStorage.saveWhenReady firstSignal signal selectedRoot fst recoverStartup $ \(_,url) -> do
               atomicModifyIORef' workerRef (\old -> (Nothing,old)) >>= mapM_ cancel
+              candidate <- Update.preparingUpdate
+              when candidate $ do
+                prepared <- updateCommand host "prepare-ready"
+                unless (prepared == "prepared") (fail "Candidate preparation did not quiesce")
+              Update.candidateReady $ do
+                response <- updateCommand host "activate"
+                unless (response == "active") (fail "Candidate activation failed")
               writeIORef starting False
               storageScript "window.dispatchEvent(new Event('sapiens-preferences-ready'))"
               when probe $ putStrLn "TITLE: Sapiens4" >> putStrLn ("Sapiens4: " ++ url)
@@ -232,7 +285,8 @@ desktopSession memory probe = do
             writeIORef firstSignal Nothing
             writeIORef selectedRoot (Just (dataDirectory selected,url))
             watchHost selected (post . current . recoverStartup)
-            async (threadDelay 35000000 >> post (current $ do
+            preparing <- Update.preparingUpdate
+            unless preparing $ async (threadDelay 35000000 >> post (current $ do
               selection <- readIORef selectedRoot
               when (selection==Just (dataDirectory selected,url)) $ recoverStartup "Your workspace did not load within 35 seconds. Your saved storage selection is unchanged.")) >>= writeIORef workerRef . Just
             bootstrap <- readIORef shellRef >>= maybe (ioError $ userError "The application window closed.") pure
@@ -344,7 +398,9 @@ desktopSession memory probe = do
                   Just message
                     | isNothing base && bootstrapSource source && bootstrapSource current -> chooseStorage message
                     | Navigation.trusted base source && Navigation.trusted base current -> do
-                        when (field "workspaceReady" message==Bool True) $ commitWorkspace DesktopStorage.WorkspaceReady
+                        when (field "preferencesFlushed" message==Bool True) $ void (tryPutMVar preferencesFlushed ())
+                        candidate <- Update.preparingUpdate
+                        when (field "workspaceReady" message==Bool True || candidate && field "workspaceShellReady" message==Bool True) $ commitWorkspace DesktopStorage.WorkspaceReady
                         applyWindowTheme hwnd light dark lastTheme message
                         case field "clientPreferences" message of
                           input@(JSON.Object _) -> savePreferences input

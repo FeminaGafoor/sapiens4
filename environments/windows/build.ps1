@@ -91,6 +91,7 @@ try {
     Copy-Item -LiteralPath (Join-Path $repo '.build/bin/sapiens-windows.exe') -Destination (Join-Path $package 'Sapiens4.exe')
     Copy-Item -LiteralPath (Join-Path $repo '.build/bin/WebView2Loader.dll'),(Join-Path $repo '.build/bin/WebView2-LICENSE.txt') -Destination $package
     [IO.File]::WriteAllText((Join-Path $package 'sapiens-installation.id'), 'com.sapiens4.desktop')
+    Copy-Item -LiteralPath (Join-Path $repo '.build/bin/sapiens-starter.exe') -Destination (Join-Path $package 'sapiens-starter.exe')
     Audit-Payload $package
     if ($PublicRelease) {
         Get-ChildItem -LiteralPath $package -Recurse -File | Where-Object { $_.Extension -in @('.exe','.dll') } | ForEach-Object {
@@ -102,6 +103,7 @@ try {
     $product = Join-Path $staging 'product'
     New-Item -ItemType Directory -Path $product | Out-Null
     $arguments = @('/DPackageName=Sapiens4','/DPackageId=com.sapiens4.desktop','/Qp',("/DSourceDir=$package"),("/DOutputDir=$product"),("/DAppVersion=$Version"),("/DFileVersion=$Version"),("/DPackageArchitecture=$installerArchitecture"),("/DArtifactBaseName="+[IO.Path]::GetFileNameWithoutExtension($artifactName)))
+    $arguments += '/DInitialVersion=' + [guid]::NewGuid().ToString()
     if ($PublicRelease) {
         $arguments += '/DPublisherSign'
         $arguments += ('/Ssapiens=signtool.exe sign /sha1 '+$CertificateThumbprint+' /fd SHA256 /tr '+$TimestampUrl+' /td SHA256 $f')

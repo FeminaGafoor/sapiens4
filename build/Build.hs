@@ -22,8 +22,8 @@ main = do
      build = root </> ".build" </> (if os=="darwin" then "haskell-macos-13.0" else "haskell")
      suffix = if os=="mingw32" then ".exe" else ""
      desktop = os=="linux" && "--desktop" `elem` args
-     buildFlags = ["--flags=" ++ if desktop then "linux-desktop" else "-linux-desktop"]
-     targets = ["sapiens4","sapiens-domain"] ++ map fst helpers ++ if os=="darwin" then ["sapiens-macos"] else if os=="mingw32" then ["sapiens-windows"] else ["sapiens-linux" | desktop]
+     buildFlags = ["--flags=" ++ (if desktop then "linux-desktop" else "-linux-desktop") ++ " -d2-fixture"]
+     targets = ["sapiens4","sapiens-domain"] ++ map fst helpers ++ if os=="darwin" then ["sapiens-macos"] else if os=="mingw32" then ["sapiens-windows","sapiens-starter"] else ["sapiens-linux" | desktop]
  setEnv "CABAL_DIR" cache
  createDirectoryIfMissing True cache
  index <- doesFileExist (cache </> "packages/hackage.haskell.org/01-index.tar")
@@ -56,7 +56,7 @@ main = do
  when (os=="mingw32") $ do
   createDirectoryIfMissing True build
   callProcess "windres" ["-I",root</>"environments/windows",root</>"environments/windows/resources.rc","-O","coff","-o",build</>"windows-resources.o"]
- let cabal options = callProcess "cabal" (["--project-file="<>root</>"build/cabal.project","--builddir="<>build]++options)
+ let cabal options = callProcess "cabal" (["--project-dir="<>root</>"build","--project-file=cabal.project","--builddir="<>build]++options)
  cabal (["build"]++buildFlags++map ("exe:"++) (filter (/="sapiens-windows") targets)++
   ["--ghc-options=-optc-mmacosx-version-min=13.0 -optl-mmacosx-version-min=13.0" | os=="darwin"])
  -- The desktop resource already contains the application's DPI/UAC manifest.
@@ -64,7 +64,7 @@ main = do
  createDirectoryIfMissing True (root </> ".build/bin")
  createDirectoryIfMissing True (root </> ".build/domain")
  forM_ targets $ \name -> do
-  source <- trim <$> readProcess "cabal" (["--project-file="<>root</>"build/cabal.project","--builddir="<>build,"list-bin","exe:"<>name]++buildFlags) ""
+  source <- trim <$> readProcess "cabal" (["--project-dir="<>root</>"build","--project-file=cabal.project","--builddir="<>build,"list-bin","exe:"<>name]++buildFlags) ""
   let destination = root </> (if name=="sapiens-domain" then ".build/domain" else ".build/bin") </> name<>suffix
   copyFile source (destination<>".installing")
   renameFile (destination<>".installing") destination

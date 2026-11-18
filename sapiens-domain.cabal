@@ -8,6 +8,11 @@ flag linux-desktop
   default: False
   manual: True
 
+flag d2-fixture
+  description: Isolated updater fixture build; never publish
+  default: False
+  manual: True
+
 common runtime
   default-language: Haskell2010
   default-extensions: OverloadedStrings, ScopedTypeVariables, TupleSections
@@ -17,6 +22,8 @@ common runtime
     sqlite-simple, filelock, uuid, base64-bytestring, network-uri, regex-tdfa,
     http-client, http-client-tls, http-types, network, wai, warp, wai-websockets,
     websockets, wuss, cryptohash-sha256, random, tagsoup ==0.14.8
+  if flag(d2-fixture)
+    cpp-options: -DD2_FIXTURE
   if !os(windows)
     build-depends: unix
 
@@ -29,9 +36,12 @@ executable sapiens-domain
   ghc-options: -O2 -Wall -Werror
 
 common host
-  hs-source-dirs: corpora, corpora/state, corpora/work, corpora/work/schedule, corpora/host, corpora/telemetry, remote/relay, remote/control, remote/protocol, build
+  hs-source-dirs: corpora, corpora/state, corpora/work, corpora/work/schedule, corpora/host, corpora/telemetry, remote/relay, remote/control, remote/protocol, build, environments/update
   other-modules:
     Command,
+    Installation,
+    UpdateState,
+    Admission,
     Domain,
     RuntimePaths,
     Telemetry,
@@ -74,6 +84,11 @@ common host
     Wire
   extra-lib-dirs: submodules/libs4/haskell/sodium/src/libsodium/.libs
   extra-libraries: sodium
+  if os(windows)
+    hs-source-dirs: environments/windows
+    other-modules: UpdateNative
+    c-sources: environments/windows/Update.c
+    extra-libraries: user32, advapi32, bcrypt, crypt32, wintrust
 
 executable sapiens4
   import: runtime, host
@@ -92,8 +107,9 @@ executable sapiens-linux
 
 executable sapiens-macos
   import: runtime
-  hs-source-dirs: environments/macos, environments, corpora/state, corpora/telemetry
+  hs-source-dirs: environments/macos, environments, environments/update, corpora/state, corpora/telemetry
   other-modules:
+    Admission,
     Domain,
     RuntimePaths,
     Telemetry,
@@ -118,6 +134,10 @@ executable sapiens-macos
 common windows-host
   import: runtime
   other-modules:
+    Installation,
+    UpdateState,
+    UpdateNative,
+    Admission,
     Domain,
     RuntimePaths,
     Telemetry,
@@ -131,16 +151,18 @@ common windows-host
     Host,
     Native,
     Navigation,
-    Shell
+    Shell,
+    WindowsUpdate,
+    UpdateBackup
   if os(windows)
-    c-sources: submodules/libs4/haskell/native/windows.c
-    extra-libraries: user32, ole32, dwmapi, comdlg32, kernel32
+    c-sources: submodules/libs4/haskell/native/windows.c, environments/windows/Update.c
+    extra-libraries: user32, ole32, dwmapi, comdlg32, kernel32, advapi32, bcrypt, crypt32, wintrust
   else
     buildable: False
 
 executable sapiens-windows
   import: windows-host
-  hs-source-dirs: environments/windows, environments, corpora/state, corpora/telemetry
+  hs-source-dirs: environments/windows, environments, environments/update, corpora/state, corpora/telemetry
   main-is: WindowsMain.hs
   if os(windows)
     ld-options: .build/haskell/windows-resources.o
@@ -148,7 +170,7 @@ executable sapiens-windows
 
 executable sapiens-windows-probe
   import: windows-host
-  hs-source-dirs: spec/support, environments/windows, environments, corpora/state, corpora/telemetry
+  hs-source-dirs: spec/support, environments/windows, environments, environments/update, corpora/state, corpora/telemetry
   main-is: WindowsProbeMain.hs
 
 executable sapiens-provider
@@ -168,3 +190,15 @@ executable sapiens-peer
     containers, network-uri, stm, text, websockets, wuss
   extra-lib-dirs: submodules/libs4/haskell/sodium/src/libsodium/.libs
   extra-libraries: sodium
+
+executable sapiens-starter
+  import: runtime
+  hs-source-dirs: environments/windows, environments/update
+  main-is: Starter.hs
+  other-modules: Installation, UpdateState, UpdateNative
+  if os(windows)
+    c-sources: environments/windows/Update.c
+    extra-libraries: user32, advapi32, bcrypt, crypt32, wintrust
+    ghc-options: -optl-mwindows
+  else
+    buildable: False

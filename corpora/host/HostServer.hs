@@ -1,6 +1,7 @@
 module HostServer where
 
 import Types
+import Admission
 import qualified Telemetry
 import System.Environment (getArgs)
 import qualified Data.Aeson.KeyMap as KM
@@ -37,7 +38,7 @@ import Network.Wai.Handler.Warp
 import qualified Network.Socket as Socket
 
 
-data Host = Host { hostPort :: Int, hostService :: Service, hostBridge :: Bridge, hostStop :: IO () }
+data Host = Host { hostPort :: Int, hostService :: Service, hostBridge :: Bridge, hostStop :: IO (), hostActivate :: IO (), hostQuiesce :: IO Bool, hostPrepareReady :: IO () }
 listenLoopback :: Int -> IO (Socket.Socket,Int)
 listenLoopback port = Socket.withSocketsDo $ do
  sock <- Socket.socket Socket.AF_INET Socket.Stream Socket.defaultProtocol
@@ -54,60 +55,98 @@ startHost consent root requested managed = do
  startHostWith consent (if managed || mode==Just "existing" || mode==Nothing && exists then AttachExisting else StartNew) root requested managed
 
 startHostWith :: Maybe Bool -> StorageChoice -> FilePath -> Int -> Bool -> IO Host
-startHostWith = startHostUsing Nothing
+startHostWith consent choice root port managed = do
+ preparing <- (==Just "1") <$> lookupEnv "SAPIENS_UPDATE_PREPARING"
+ gate <- newAdmission preparing
+ activations <- newMVar []
+ startHostUsing gate activations Nothing consent choice root port managed
 
-startHostUsing :: Maybe Telemetry.Telemetry -> Maybe Bool -> StorageChoice -> FilePath -> Int -> Bool -> IO Host
-startHostUsing inherited consent choice root requested managed = mask $ \restore -> do
+startHostUsing :: Admission -> MVar [(Service,IO (),IO Bool)] -> Maybe Telemetry.Telemetry -> Maybe Bool -> StorageChoice -> FilePath -> Int -> Bool -> IO Host
+startHostUsing gate activations inherited consent choice root requested managed = mask $ \restore -> do
  args <- getArgs
  desktopPid <- lookupEnv "SAPIENS_DESKTOP_PID"
  let desktop = "--desktop" `elem` args || desktopPid/=Nothing
- reporter <- if managed then pure inherited else Just <$> Telemetry.openTelemetry (if desktop then Telemetry.Desktop else Telemetry.Headless) consent
+ preparing <- not <$> admissionOpen gate
+ reporter <- if managed then pure inherited else if preparing then pure Nothing else Just <$> Telemetry.openTelemetry (if desktop then Telemetry.Desktop else Telemetry.Headless) consent
  flip onException (unless managed (mapM_ Telemetry.closeTelemetry reporter)) $ restore $ do
   mode <- lookupEnv "SAPIENS_STORAGE_MODE"
   let report phase = when (not managed && mode `elem` [Just "new",Just "existing"]) (putStrLn phase)
   report openingStorage
-  bracketOnError (Service.openService choice root) Service.closeService $ \service -> do
+  bracketOnError (Service.openServiceWith gate choice root) Service.closeService $ \service -> do
    writeIORef (serviceTelemetry service) reporter
    report openedStorage >> start reporter service
  where
  start reporter service = do
-  unless managed (recoverRelays root)
   (socket,port) <- listenLoopback requested
   flip onException (Socket.close socket) $ do
    Service.attachEndpoint service ("http://127.0.0.1:"<>T.pack (show port))
    bridge <- newBridge service
    let child selection path = do
-        host <- startHostUsing reporter Nothing selection path 0 True
+        host <- startHostUsing gate activations reporter Nothing selection path 0 True
         pure (hostService host,hostBridge host,hostStop host)
-   registry <- if managed then pure Nothing else Just <$> newRegistry service bridge child
+   registry <- Just <$> newRegistry service bridge child
    onboarding <- if managed then pure Nothing else Just <$> O.openOnboarding (repositoryRoot service)
    shutdown <- newEmptyMVar
    ready <- newEmptyMVar
    let settings = setServerName "Sapiens4" $ setPort port $ setHost "127.0.0.1" $ setGracefulCloseTimeout1 1000 $ setGracefulShutdownTimeout (Just 5) $ setInstallShutdownHandler (putMVar shutdown) $ setBeforeMainLoop (putMVar ready ()) defaultSettings
-   worker <- async $ withAsync (watchSnapshotFiles service) $ \watcher -> link watcher >> runSettingsSocket settings socket (application service bridge registry onboarding port)
+   worker <- async $ withAsync (watchSnapshotFiles service) $ \watcher -> link watcher >> runSettingsSocket settings socket (application service bridge (if managed then Nothing else registry) onboarding port)
    void (race (wait worker) (takeMVar ready))
-   Service.startService service
-   unless managed $ forM_ reporter $ \telemetry -> Telemetry.emit telemetry Telemetry.AppStarted Nothing KM.empty
-   when (not managed && choice==StartNew) (emitTelemetry service Telemetry.CorporaCreated KM.empty)
-   heartbeat <- if managed then pure Nothing else Just <$> async (forever $ do
-    threadDelay (floor (nominalDiffTimeToSeconds Telemetry.heartbeatInterval * 1000000))
-    forM_ reporter $ \telemetry -> Telemetry.emit telemetry Telemetry.AppHeartbeat Nothing KM.empty)
-   stopTranscriber <- startTranscriber service
+   heartbeat <- newMVar Nothing
+   transcriber <- newMVar (pure ())
+   activated <- newMVar False
+   let activate = modifyMVar_ activated $ \done -> if done then pure True else do
+        unless managed (recoverRelays root)
+        mapM_ startRegistry registry
+        Service.startService service
+        unless managed $ do
+         reporter <- readIORef (serviceTelemetry service)
+         forM_ reporter $ \telemetry -> Telemetry.emit telemetry Telemetry.AppStarted Nothing KM.empty
+         when (choice==StartNew) (emitTelemetry service Telemetry.CorporaCreated KM.empty)
+         task <- async (forever $ do
+          threadDelay (floor (nominalDiffTimeToSeconds Telemetry.heartbeatInterval * 1000000))
+          forM_ reporter $ \telemetry -> Telemetry.emit telemetry Telemetry.AppHeartbeat Nothing KM.empty)
+         modifyMVar_ heartbeat (const (pure (Just task)))
+        startBridge bridge
+        startTranscriber service >>= \stopVoice -> modifyMVar_ transcriber (const (pure stopVoice))
+        pure True
+       activateAll = do
+        owned <- readMVar activations
+        reporter <- readIORef (serviceTelemetry service)
+        when (not managed && maybe True (const False) reporter) $ do
+         args <- getArgs
+         telemetry <- Telemetry.openTelemetry (if "--desktop" `elem` args then Telemetry.Desktop else Telemetry.Headless) consent
+         forM_ owned $ \(s,_,_) -> writeIORef (serviceTelemetry s) (Just telemetry)
+        mapM_ (\(_,start,_) -> start) owned
+        openAdmission gate
+       quiesce = do
+        closeAdmission gate
+        checks <- readMVar activations
+        busy <- or <$> mapM (\(_,_,checkBusy) -> checkBusy) checks
+        when busy (openAdmission gate)
+        pure (not busy)
+   let busy = do
+        work <- Service.busyService service
+        pairing <- or <$> mapM (fmap (not . M.null) . readIORef . registryPairClients) registry
+        pure (work || pairing)
+   modifyMVar_ activations (pure . ((service,activate,busy):))
+   mapM_ prepareRegistry registry
+   admissionOpen gate >>= flip when activate
    stopped <- newMVar False
    let stop = modifyMVar_ stopped $ \done -> if done then pure True else do
         mapM_ O.closeOnboarding onboarding
         mapM_ closeRegistry registry
         closeBridge bridge
-        mapM_ cancel heartbeat
-        unless managed (mapM_ Telemetry.closeTelemetry reporter)
+        readMVar heartbeat >>= mapM_ cancel
+        unless managed (readIORef (serviceTelemetry service) >>= mapM_ Telemetry.closeTelemetry)
         readMVar shutdown >>= id
-        stopTranscriber
+        readMVar transcriber >>= id
         -- Children can retain Windows socket handles until their work is stopped.
         Service.closeService service
         void (waitCatch worker)
         Socket.close socket
+        modifyMVar_ activations (pure . filter (\(s,_,_) -> serviceRoot s /= root))
         pure True
-   pure (Host port service bridge stop)
+   pure (Host port service bridge stop activateAll (quiesce `onException` openAdmission gate) (closeAdmission gate))
 localRequest :: Int -> Bool -> RequestHeaders -> Validation ()
 localRequest port write headers = do
  let host = lookup hHost headers
@@ -121,7 +160,7 @@ application :: Service -> Bridge -> Maybe Registry -> Maybe O.Onboarding -> Int 
 application service bridge registry onboarding port req respond
  | ["api","host","corpora",owner,"api","updates"] <- pathInfo req = do
     let headers = requestHeaders req
-    result <- try $ do
+    result <- try $ admitted service False $ do
      validated (localRequest port False headers)
      require (lookup hOrigin headers /= Nothing && B.null (rawQueryString req)) 403 "Same-origin updates required"
      r <- maybe (failure 404 "Host registry unavailable") pure registry
@@ -161,7 +200,7 @@ updatesSocket s pending = do
   race_ (send (-1)) (void (WS.receiveDataMessage conn))
 
 httpApplication :: Service -> Bridge -> Maybe Registry -> Maybe O.Onboarding -> Int -> Application
-httpApplication service bridge registry onboarding port req respond = respond =<< respondError (do
+httpApplication service bridge registry onboarding port req respond = respond =<< respondError (admitted service (requestMethod req /= "GET") $ do
  let method = TE.decodeUtf8 (requestMethod req)
      path = TE.decodeUtf8 (rawPathInfo req)
      target = requestTarget req

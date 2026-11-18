@@ -1,4 +1,7 @@
 module Main where
 import Shell (runDesktop)
+import WindowsUpdate (updateMode)
+import System.Environment (getArgs)
+import Control.Monad (unless)
 main :: IO ()
-main = runDesktop False
+main = getArgs >>= updateMode >>= \handled -> unless handled (runDesktop False)

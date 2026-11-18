@@ -2,6 +2,7 @@
 module Main where
 
 import Types
+import Installation (withInstalledVersion)
 import DataRoot
 import HostServer
 import qualified Telemetry
@@ -36,7 +37,7 @@ import qualified GHC.ConsoleHandler as Console
 #endif
 
 main :: IO ()
-main = run `catches` [Handler (\(code::ExitCode) -> throwIO code), Handler report]
+main = withInstalledVersion run `catches` [Handler (\(code::ExitCode) -> throwIO code), Handler report]
  where
  report (e::SomeException) = do
   let detail = case fromException e of Just (APIError _ message) -> T.unpack message; Nothing -> storageMessage e
@@ -110,7 +111,26 @@ hostMain root args = do
   finished <- newEmptyMVar
   let shutdown=void (tryPutMVar finished ())
   installShutdown shutdown
-  when ("--desktop" `elem` args) (void (forkIO ((void getLine `catch` \(_::IOException)->pure ()) >> shutdown)))
+  when ("--desktop" `elem` args) $ void $ forkIO $ do
+   let commands = do
+        command <- getLine
+        case command of
+         "quiesce" -> do
+          result <- try (hostQuiesce host)
+          putStrLn $ "UPDATE: " ++ case result of
+           Right True -> "quiet"
+           Right False -> "busy"
+           Left (_::SomeException) -> "error"
+          commands
+         "prepare-ready" -> hostPrepareReady host >> putStrLn "UPDATE: prepared" >> commands
+         "activate" -> do
+          result <- try (hostActivate host)
+          case result of
+           Right () -> putStrLn "UPDATE: active" >> commands
+           Left (_::SomeException) -> putStrLn "UPDATE: error" >> shutdown
+         "stop" -> shutdown
+         _ -> commands
+   commands `catch` \(_::IOException) -> shutdown
   when ("--open" `elem` args) (void (createProcess (proc (if os=="darwin" then "open" else if os=="mingw32" then "explorer" else "xdg-open") [url])))
   takeMVar finished
 

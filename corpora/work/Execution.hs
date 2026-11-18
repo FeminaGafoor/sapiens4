@@ -3,6 +3,7 @@
 {-# OPTIONS_GHC -Werror=incomplete-patterns #-}
 module Execution where
 
+import Admission (withAdmission)
 import Control.Concurrent
 import Control.Concurrent.Async
 import Control.Exception
@@ -304,7 +305,7 @@ startExecution s = modifyMVar_ (serviceWorker s) $ \existing -> case existing of
   let step = do
        stopped <- readIORef (serviceStopping s)
        unless stopped $ do
-        locked s $ do
+        void $ withAdmission (serviceAdmission s) True $ locked s $ do
          config <- corporaSettings s
          pulse <- readIORef (servicePulse s)
          let active=corporaStatus config==Active

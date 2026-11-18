@@ -1,9 +1,10 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE CPP #-}
-module Service (Service, APIError(..), openService, startService, closeService, serviceRoot, attachEndpoint, dispatch, snapshot, corporaIdentity) where
+module Service (Service, APIError(..), openService, openServiceWith, busyService, startService, closeService, serviceRoot, attachEndpoint, dispatch, snapshot, corporaIdentity) where
 
 import Control.Concurrent
+import Admission
 import Control.Concurrent.STM (newTVarIO, readTVarIO)
 import Control.Concurrent.Async
 import Control.Exception
@@ -30,7 +31,7 @@ import qualified Computer
 import qualified Store as DB
 import Population
 import Workspace
-import Voice (receivePiece, cancelRecording, retryTranscription, draftable)
+import Voice (receivePiece, cancelRecording, retryTranscription, draftable, busyVoice)
 import Memo
 import qualified Management as Mgt
 import qualified Provider as Provider
@@ -42,7 +43,10 @@ import qualified GroupChat as GC
 import qualified GroupWork as GW
 
 openService :: StorageChoice -> FilePath -> IO Service
-openService choice path = do
+openService choice path = newAdmission False >>= \gate -> openServiceWith gate choice path
+
+openServiceWith :: Admission -> StorageChoice -> FilePath -> IO Service
+openServiceWith gate choice path = do
  root <- selectedPath choice path
  repo <- lookupEnv "SAPIENS_REPOSITORY" >>= maybe getCurrentDirectory pure >>= canonicalizePath
  lock <- acquireStorage choice root
@@ -69,7 +73,7 @@ openService choice path = do
       subscribers <- newTVarIO 0
       files <- newIORef Set.empty
       telemetry <- newIORef Nothing
-      let s=Service root repo guard lock stopping worker runs lease endpoint pulse actors database states revision subscribers files telemetry corporaId
+      let s=Service gate root repo guard lock stopping worker runs lease endpoint pulse actors database states revision subscribers files telemetry corporaId
       DB.initialize s
       migrateWorkspaces s
       rows <- DB.agents s
@@ -93,9 +97,7 @@ openService choice path = do
       writeIORef pulse (obj [("id",str identityPulse),("running",Bool (corporaStatus cfg==Active)),("numbers",merge (obj [(k,num 0) | k<-["bpm120","bpm60","bph60"]]) (get savedPulse "numbers"))])
       R.initializeRoutines s
       D.reconcileWorks s
-      D.pendingWorks s
       GC.reconcileGroups s
-      GC.dispatchGroups s
       DB.record s [chief] "corpora" "system.started" empty "system" Nothing
       pure s
  initialize `onException` (withMVar database (mapM_ DB.closeConnection) `finally` unlockFile lock)
@@ -104,7 +106,19 @@ attachEndpoint s url = locked s $ do
  writeIORef (serviceEndpoint s) url
  DB.agents s >>= mapM_ (Mgt.prepare s . (`at` "id"))
 startService :: Service -> IO ()
-startService = E.startExecution
+startService s = do
+ locked s (D.pendingWorks s >> GC.dispatchGroups s)
+ E.startExecution s
+
+-- Queued and output-pending work is accepted work even without a live process.
+busyService :: Service -> IO Bool
+busyService s = locked s $ do
+ runs <- readMVar (serviceRuns s)
+ turns <- DB.turns s
+ works <- D.readWorks s
+ voices <- busyVoice s
+ pure (voices || not (M.null runs) || any (\t -> at t "status" `elem` ["queued","running","output_pending"]) turns
+       || any (any ((`elem` [D.CallQueued,D.CallRunning]) . D.callState) . D.workCalls) works)
 closeService :: Service -> IO ()
 closeService s = do
  already <- atomicModifyIORef' (serviceStopping s) (\old -> (True,old))
