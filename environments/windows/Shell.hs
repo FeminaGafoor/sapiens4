@@ -199,10 +199,10 @@ desktopSession memory probe = Update.withUpdateCache $ \cache -> do
         0x802A -> runPending >> pure 0
         _ -> defaultProc hwnd message wparam lparam
   flip finally (stop >> closeViews) $ do
-    proc <- wrapWindowProc $ \hwnd message wparam lparam -> procedure hwnd message wparam lparam `catch` \(e :: SomeException) -> reportException e >> defaultProc hwnd message wparam lparam
-    retain memory (freeHaskellFunPtr proc)
+    windowProc <- wrapWindowProc $ \hwnd message wparam lparam -> procedure hwnd message wparam lparam `catch` \(e :: SomeException) -> reportException e >> defaultProc hwnd message wparam lparam
+    retain memory (freeHaskellFunPtr windowProc)
     instanceHandle <- moduleHandle nullPtr
-    hwnd <- createMainWindow memory instanceHandle proc
+    hwnd <- createMainWindow memory instanceHandle windowProc
     flip finally (void $ destroyWindow hwnd) $ do
       menu <- systemMenu hwnd 0
       void $ appendMenu menu 0x800 0 nullPtr
