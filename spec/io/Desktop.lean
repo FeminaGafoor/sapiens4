@@ -11,6 +11,8 @@ structure Desktop where
 def Desktop.invoke (desktop : Desktop) (command : String) (args : Array String := #[]) : IO Json := do
   let child ← IO.Process.spawn {
     cmd := desktop.driver, args := #[command, "--pid", toString desktop.pid] ++ args
+    env := if Platform.isWindows || Platform.isOSX then #[] else
+      #[("BLINDLY4_LINUX_TEXT_INPUT", some "keyboard")]
     stdin := .null, stdout := .piped, stderr := .piped }
   let stdout ← IO.asTask child.stdout.readToEnd .dedicated
   let stderr ← IO.asTask child.stderr.readToEnd .dedicated
@@ -34,8 +36,11 @@ def Desktop.findRole (desktop : Desktop) (role : String) : IO (Array Json) := do
     try
       return some (← desktop.invoke "find" #["--role", role, "--depth", "50", "--limit", "1000"])
     catch error =>
-      -- Windows UIA can invalidate a node while WebView navigates or rerenders.
-      if Platform.isWindows && error.toString.contains "0x80040201" then return none
+      let message := error.toString
+      if Platform.isWindows && message.contains "0x80040201" then return none
+      if !Platform.isWindows && !Platform.isOSX &&
+          message.contains "org.freedesktop.DBus.Error.UnknownMethod" &&
+          message.contains "Object does not exist at path" then return none
       throw error
   IO.ofExcept do
     fieldsMatch found (json% {truncated: false})
@@ -96,7 +101,9 @@ def withDesktop (directory : FilePath) (use : Desktop → IO Unit) : IO Unit := 
           let windows ← desktop.findRole "AXWindow"
           return if windows.isEmpty then none else some ()
         catch error =>
-          if error.toString.contains "not a running application" || error.toString.contains "No visible windows" then return none
+          if error.toString.contains "not a running application" ||
+              error.toString.contains "No visible windows" ||
+              error.toString.contains s!"No accessible application for PID {child.pid}" then return none
           throw error
       discard <| desktop.invoke "activate"
       use desktop

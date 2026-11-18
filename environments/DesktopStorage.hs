@@ -121,7 +121,7 @@ validPreference key value =
 
 preferenceScript :: FilePath -> Text -> FilePath -> Value -> IO Text
 preferenceScript runtime address directory saved = do
-  source <- TIO.readFile (runtime </> "app/shell/client-preferences.js")
+  source <- TIO.readFile (runtime </> ".build/web/preferences.js")
   token <- UUID.nextRandom
   let arguments = TE.decodeUtf8 (BL.toStrict (encode (address, directory, saved, token)))
-  pure ("(" <> source <> ")(..." <> arguments <> ");")
+  pure (source <> "\nwindow.sapiensPreferences(" <> arguments <> ");")

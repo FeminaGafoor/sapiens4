@@ -84,6 +84,11 @@ process.on('SIGINT', () => close().finally(() => process.exit(0)));
   for await (const line of createInterface({input: process.stdin})) {
     if (!line.trim()) break;
     const input = JSON.parse(line);
+    if (input.operation === 'application') {
+      const result = await require('./BrowserApp.cjs').observe(evaluate, command, sessionId, origin);
+      process.stdout.write(JSON.stringify(result) + '\n');
+      continue;
+    }
     const result = await evaluate(`(input => {
       const C = SapiensCrypto;
       if (input.operation === 'crypto') {
