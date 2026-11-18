@@ -1,4 +1,4 @@
-module UpdateBackup (snapshot, restoreSnapshot, withRootLocks) where
+module UpdateBackup (snapshot, restoreSnapshot, withRootLocks, validateRoots) where
 
 import Control.Exception
 import Control.Monad
@@ -6,7 +6,7 @@ import Data.Aeson
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as L
 import qualified Crypto.Hash.SHA256 as SHA
-import Data.List (sort)
+import Data.List (nub, sort)
 import qualified Data.Text as T
 import qualified Data.UUID as UUID
 import Numeric (showHex)
@@ -27,9 +27,8 @@ managedRoots :: FilePath -> IO [FilePath]
 managedRoots root = do
  validatePath root
  let path = root </> "host-corpora.json"
- exists <- doesFileExist path
+ exists <- pathPresent path
  children <- if not exists then pure [] else do
-  validatePath path
   value <- B.readFile path >>= either fail pure . eitherDecodeStrict
   names <- either fail pure (parseEitherLocals value)
   forM names $ \name -> case UUID.fromText name of
@@ -44,24 +43,28 @@ newtype DataMap = DataMap [T.Text]
 instance FromJSON DataMap where parseJSON = withObject "Corpora registry" (\o -> DataMap <$> o .:? "locals" .!= [])
 
 withRootLocks :: FilePath -> IO a -> IO a
-withRootLocks root action = do
+withRootLocks root action = withLock (root </> "host.lock") $ do
  roots <- managedRoots root
- withLocks (sort [p </> "host.lock" | p <- roots]) action
+ foldr withLock action [p </> "host.lock" | p <- sort (nub (drop 1 roots))]
 
-withLocks :: [FilePath] -> IO a -> IO a
-withLocks paths action = acquire paths
- where
- acquire [] = action
- acquire (p:ps) = do
-  validatePath (takeDirectory p)
-  exists <- doesPathExist p
-  when exists (validatePath p)
-  bracket (tryLockFile p Exclusive >>= maybe (fail "A Corpora writer is still running; update refused") pure) unlockFile (const (acquire ps))
+withLock :: FilePath -> IO a -> IO a
+withLock path action = do
+ validatePath (takeDirectory path)
+ void (pathPresent path)
+ bracket (tryLockFile path Exclusive >>= maybe (fail "A Corpora writer is still running; update refused") pure)
+  unlockFile (const action)
+
+withSurvivingLock :: FilePath -> IO a -> IO a
+withSurvivingLock path action = do
+ let parent = takeDirectory path
+ exists <- pathPresent parent
+ directory <- if exists then doesDirectoryExist parent else pure False
+ if directory then withLock path action else action
 
 tree :: FilePath -> [FilePath] -> [FilePath] -> IO [(FilePath,Bool)]
 tree root locks excluded = walk ""
  where
- walk relative | any (`containsPath` relative) excluded || relative `elem` locks = pure []
+ walk relative | any (`containsPath` relative) excluded || any (equalFilePath relative) locks = pure []
  walk relative = do
   let path = root </> relative
   validatePath path
@@ -88,6 +91,13 @@ snapshot destination dataDirectory configDirectory = do
  unless (copied == original) (fail "Backup verification failed; original data are unchanged")
  pure (hash (L.toStrict (encode original)))
 
+validateRoots :: FilePath -> FilePath -> FilePath -> IO ()
+validateRoots installation dataPath configPath = do
+ mapM_ validatePath [installation,dataPath,configPath]
+ let overlaps a b = containsPath a b || containsPath b a
+ when (overlaps dataPath configPath || any (overlaps installation) [dataPath,configPath]) $
+  fail "Installation, Data and Config must be separate roots for updates"
+
 inventories :: FilePath -> FilePath -> FilePath -> FilePath -> IO [Inventory]
 inventories dataPath configPath sourceData sourceConfig = do
  corpora <- managedRoots sourceData
@@ -109,17 +119,25 @@ copyTree source destination entries = do
 restoreSnapshot :: FilePath -> PendingUpdate -> IO ()
 restoreSnapshot installation pending = do
  let backup = backupPath installation pending
+     originalData = dataRoot pending
+     originalConfig = configRoot pending
+ validateRoots installation originalData originalConfig
  original <- inventories (dataRoot pending) (configRoot pending) (backup </> "0") (backup </> "1")
  unless (hash (L.toStrict (encode original)) == backupDigest pending) (fail "Backup changed or is incomplete; recovery refused")
- withLocks [root </> lock | Inventory root locks _ _ <- original, lock <- locks] $ forM_ (zip [0::Int ..] original) $ \(index,Inventory root locks excluded entries) -> do
-  live <- tree root locks excluded
-  forM_ (reverse live) $ \(relative,directory) -> unless (null relative) $ do
-   let path = root </> relative
-   if not directory then do
-    permissions <- getPermissions path
-    setPermissions path permissions {writable=True}
-    removeFile path
-   else when (relative `notElem` [p | (p,True,_) <- entries] && not (any (containsPath relative) (locks++excluded))) (removeDirectory path)
-  copyTree (backup </> show index) root entries
-  actual <- inventory root locks excluded
-  unless (actual == entries) (fail "Recovery verification failed; original backup retained for retry")
+ let childLocks = nub [root </> lock | Inventory root locks _ _ <- original, lock <- drop 1 locks]
+ withLock (originalData </> "host.lock") $ foldr withSurvivingLock (restore backup original) childLocks
+ where
+ restore backup original = do
+  live <- forM original $ \(Inventory root locks excluded _) -> tree root locks excluded
+  forM_ (zip3 [0::Int ..] original live) $ \(index,Inventory root locks excluded entries,existing) -> do
+   forM_ (reverse existing) $ \(relative,directory) -> unless (null relative) $ do
+    let path = root </> relative
+    if not directory then do
+     permissions <- getPermissions path
+     setPermissions path permissions {writable=True}
+     removeFile path
+    else when (not (any (equalFilePath relative) [p | (p,True,_) <- entries])
+      && not (any (containsPath relative) (locks++excluded))) (removeDirectory path)
+   copyTree (backup </> show index) root entries
+   actual <- inventory root locks excluded
+   unless (actual == entries) (fail "Recovery verification failed; original backup retained for retry")

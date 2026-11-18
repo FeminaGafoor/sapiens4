@@ -67,10 +67,15 @@ showUpdateError :: String -> IO ()
 showUpdateError message = withCWString message $ \body -> withCWString "Sapiens update" $ \title -> void (cMessageBox nullPtr body title 0x10)
 
 validatePath :: FilePath -> IO ()
-validatePath path = do
- withCWString path cValidate >>= check "Owned path validation"
+validatePath path = pathPresent path >>= \exists -> unless exists (fail ("Owned path is missing: " ++ path))
+
+pathPresent :: FilePath -> IO Bool
+pathPresent path = do
  let parent = takeDirectory (dropTrailingPathSeparator path)
- unless (equalFilePath parent path) (validatePath parent)
+ present <- if equalFilePath parent path then pure True else pathPresent parent
+ if not present then pure False else do
+  code <- withCWString path cValidate
+  if code `elem` [2,3] then pure False else check ("Owned path validation: " ++ path) code >> pure True
 
 containsPath :: FilePath -> FilePath -> Bool
 containsPath parent path = let p = map toLower (normalise parent); q = map toLower (normalise path) in p == q || addTrailingPathSeparator p `isPrefixOf` q
