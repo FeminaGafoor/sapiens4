@@ -25,10 +25,11 @@ newtype Lease = Lease (Ptr ())
 foreign import ccall safe "MessageBoxW" cMessageBox :: Ptr () -> CWString -> CWString -> Word32 -> IO CInt
 foreign import ccall safe "WaitForSingleObject" waitProcess :: Ptr () -> Word32 -> IO Word32
 foreign import ccall safe "d2_validate" cValidate :: CWString -> IO Word32
+foreign import ccall safe "d2_open_root" cOpenRoot :: CWString -> Ptr (Ptr ()) -> Ptr Word64 -> IO Word32
 foreign import ccall safe "d2_lease" cLease :: CWString -> CInt -> IO (Ptr ())
 foreign import ccall unsafe "d2_close" cClose :: Ptr () -> IO ()
 foreign import ccall safe "d2_downgrade" cDowngrade :: Ptr () -> IO Word32
-foreign import ccall safe "d2_publish" cPublish :: CWString -> CWString -> Ptr Word8 -> Word32 -> IO Word32
+foreign import ccall safe "d2_publish" cPublish :: CWString -> CWString -> Ptr Word8 -> Word32 -> CInt -> IO Word32
 foreign import ccall safe "d2_copy" cCopy :: CWString -> CWString -> IO Word32
 foreign import ccall safe "d2_metadata" cMetadata :: CWString -> Ptr Word8 -> Word32 -> IO Word32
 foreign import ccall safe "d2_copy_metadata" cCopyMetadata :: CWString -> CWString -> IO Word32
@@ -42,7 +43,7 @@ acquireLease path exclusive = leaseWithMode path (if exclusive then 1 else 0)
 leaseWithMode :: FilePath -> CInt -> IO Lease
 leaseWithMode path mode = withCWString path $ \p -> do
  handle <- cLease p mode
- when (handle == nullPtr) (fail "Could not acquire installation lease")
+ when (handle == nullPtr) (fail "Could not acquire the installation lease. Close other Sapiens instances and retry.")
  pure (Lease handle)
 releaseLease :: Lease -> IO ()
 releaseLease (Lease handle) = cClose handle
@@ -52,9 +53,12 @@ withIdleLease :: FilePath -> IO a -> IO a
 withIdleLease path = bracket (leaseWithMode path 2) releaseLease . const
 downgradeLease :: Lease -> IO ()
 downgradeLease (Lease handle) = cDowngrade handle >>= check "Lease handoff"
-publish :: FilePath -> FilePath -> B.ByteString -> IO ()
-publish path temporary bytes = withCWString path $ \p -> withCWString temporary $ \t ->
- B.useAsCStringLen bytes $ \(buffer,len) -> cPublish p t (castPtr buffer) (fromIntegral len) >>= check "Durable update decision"
+publish, publishNew :: FilePath -> FilePath -> B.ByteString -> IO ()
+publish = publishWith 1
+publishNew = publishWith 0
+publishWith :: CInt -> FilePath -> FilePath -> B.ByteString -> IO ()
+publishWith replace path temporary bytes = withCWString path $ \p -> withCWString temporary $ \t ->
+ B.useAsCStringLen bytes $ \(buffer,len) -> cPublish p t (castPtr buffer) (fromIntegral len) replace >>= check "Durable update ownership or decision"
 copyOwned :: FilePath -> FilePath -> IO ()
 copyOwned source destination = withCWString source $ \s -> withCWString destination $ \d -> cCopy s d >>= check "Owned file copy"
 copyMetadata :: FilePath -> FilePath -> IO ()
@@ -72,6 +76,13 @@ showUpdateError message = withCWString message $ \body -> withCWString "Sapiens 
 
 validatePath :: FilePath -> IO ()
 validatePath path = pathPresent path >>= \exists -> unless exists (fail ("Owned path is missing: " ++ path))
+
+withRootIdentity :: FilePath -> (String -> IO a) -> IO a
+withRootIdentity path action = do
+ validatePath path
+ bracket (withCWString path $ \p -> alloca $ \handle -> allocaArray 2 $ \identity -> do
+  cOpenRoot p handle identity >>= check ("Open Data or Config root: " ++ path)
+  (,) <$> peek handle <*> (show <$> peekArray 2 identity)) (cClose . fst) (action . snd)
 
 pathPresent :: FilePath -> IO Bool
 pathPresent path = do

@@ -3,7 +3,7 @@ module Main where
 
 import Types
 #ifdef mingw32_HOST_OS
-import Installation (withInstalledVersion)
+import Installation (checkCandidateData, claimConfigRoot, withInstalledVersion)
 #endif
 import DataRoot
 import HostServer
@@ -112,6 +112,10 @@ hostMain root args = do
     else defaultDataDirectory
  void (asset root "/")
  void (asset root "/workspace/app.js")
+#ifdef mingw32_HOST_OS
+ checkCandidateData directory
+ claimConfigRoot =<< configDirectory
+#endif
  bracket (startHost consent directory port False) hostStop $ \host -> do
   let url="http://127.0.0.1:"<>show (hostPort host)<>"/workspace/"
   putStrLn ("Sapiens4: "<>url<>"\nUI database: "<>directory</>"corpora.sqlite3")

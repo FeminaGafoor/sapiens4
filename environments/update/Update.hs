@@ -13,9 +13,11 @@ import Network.HTTP.Client
 import Network.HTTP.Client.TLS
 import System.Directory hiding (executable)
 import System.Environment
+import System.Exit (exitFailure)
 import System.FilePath
 import System.IO
 import System.IO.Error (isDoesNotExistError)
+import System.Timeout (timeout)
 import UpdateState
 import UpdatePlatform
 import UpdateBackup
@@ -50,7 +52,7 @@ updateAndRestart command flushPreferences stop dataDirectory configDirectory = d
  next <- requestUpdate root owner
  withCandidate (versionExecutable root owner) ["--d2-update",versionName next,dataDirectory,configDirectory] [] $ \coordinator ->
   (do
-   await coordinator "D2: coordinator"
+   await 15 coordinator "D2: coordinator"
    let quiet = command "quiesce" >>= \reply -> case reply of
         "quiet" -> pure ()
         "busy" -> fail "Sapiens is busy. Finish accepted work before updating."
@@ -129,12 +131,12 @@ updateMode args = case args of
   version <- either fail pure (parseEither parseJSON (toJSON name))
   putStrLn "D2: coordinator" >> hFlush stdout
   command <- getLine `catch` \(_::IOException) -> pure ""
-  when (command == "handoff") $ do
-   result <- tryUpdate (coordinate (Just (version,dataDirectory,configDirectory)))
-   either (showUpdateError . displayException) pure result
+  when (command == "handoff") $ report (coordinate (Just (version,dataDirectory,configDirectory)))
   pure True
- ["--d2-recover"] -> coordinate Nothing >> pure True
+ ["--d2-recover"] -> report (coordinate Nothing) >> pure True
  _ -> pure False
+ where
+ report action = tryUpdate action >>= either (\problem -> showUpdateError (displayException problem) >> exitFailure) pure
 
 data Dispatch = Running | Launch Version | Recover
 discard :: [FilePath] -> IO ()
@@ -148,9 +150,8 @@ coordinate requested = do
   case (state,requested) of
    (Pending pending,_) -> do
     unless (owner == current (original pending)) (fail "Recovery must run through retained original version")
-    restoreSnapshot root pending
-    writeUpdateState root (Settled (original pending))
-    discard [versionPath root (target pending), backupPath root pending]
+    restoreSnapshot root pending (writeUpdateState root (Settled (original pending)))
+    discard [versionPath root (target pending), backupPath root (attempt pending)]
     pure (Launch (current (original pending)))
    (Settled selected,Nothing) -> pure (Launch (current selected))
    (Settled selected,Just (next,dataDirectory,configDirectory)) -> do
@@ -159,17 +160,21 @@ coordinate requested = do
      originalData <- canonicalizePath dataDirectory
      originalConfig <- canonicalizePath configDirectory
      validateRoots root originalData originalConfig
+     claimConfigRoot originalConfig
      nonce <- freshVersion
      let backups = root </> "backups"
      exists <- pathPresent backups
      unless exists (createDirectory backups)
      validatePath (versionExecutable root next)
-     let pending = PendingUpdate selected next nonce originalData originalConfig ""
-     fingerprint <- withRootLocks originalData $ snapshot (backupPath root pending) originalData originalConfig
-     let saved = pending {backupDigest=fingerprint}
-     writeUpdateState root (Pending saved)
-     downgradeLease lease
-     runCandidate root saved
+     withRootIdentity originalData $ \dataId -> withRootIdentity originalConfig $ \configId -> do
+      saved <- withRootLocks originalData $ do
+       fingerprint <- snapshot (backupPath root nonce) originalData originalConfig
+       reserveDataRoot originalData root nonce
+       let pending = PendingUpdate selected next nonce originalData originalConfig dataId configId fingerprint
+       writeUpdateState root (Pending pending)
+       pure pending
+      downgradeLease lease
+      runCandidate root saved
     case result of
      Right () -> do
       forM_ (previous selected) $ \old ->
@@ -178,10 +183,11 @@ coordinate requested = do
      Left problem -> do
       decision <- readUpdateState root
       hPutStrLn stderr ("Sapiens update: " ++ displayException problem) `catch` \(_::IOException) -> pure ()
-      pure $ case decision of
-       Settled selection | current selection == next -> Running
-       Settled selection -> Launch (current selection)
-       Pending _ -> Recover
+      case decision of
+       Settled selection | current selection == next ->
+        fail ("The update was committed, but activation failed. Relaunch Sapiens with its installed shortcut. " ++ displayException problem)
+       Settled selection -> pure (Launch (current selection))
+       Pending _ -> pure Recover
  case dispatch of
   Running -> pure ()
   Launch version -> launchVersion root version []
@@ -191,7 +197,7 @@ runCandidate :: FilePath -> PendingUpdate -> IO ()
 runCandidate root pending = withCandidate (versionExecutable root (target pending)) []
  [("SAPIENS_UPDATE_ATTEMPT",versionName (attempt pending)),("SAPIENS_DATA_DIR",dataRoot pending),("SAPIENS_CONFIG_DIR",configRoot pending)] $ \candidate -> do
   (do
-   await candidate "D2: ready"
+   await (60 * 60) candidate "D2: ready"
    alive <- candidateAlive candidate
    unless alive (fail "Candidate exited before commit")
    state <- readUpdateState root
@@ -201,10 +207,13 @@ runCandidate root pending = withCandidate (versionExecutable root (target pendin
     candidateOwnership candidate True)
    `onException` candidateOwnership candidate False
   sendCandidate candidate "commit"
-  await candidate "D2: active"
+  await 60 candidate "D2: active"
 
-await :: Candidate -> String -> IO ()
-await candidate expected = do
- message <- candidateMessage candidate
- when (message == "D2: failed") (fail "Candidate could not prepare the workspace")
- unless (message == expected) (await candidate expected)
+await :: Int -> Candidate -> String -> IO ()
+await seconds candidate expected =
+ timeout (seconds * 1000000) loop >>= maybe (fail ("Timed out waiting for " ++ expected)) pure
+ where
+ loop = do
+  message <- candidateMessage candidate
+  when (message == "D2: failed") (fail "Candidate could not prepare the workspace")
+  unless (message == expected) loop

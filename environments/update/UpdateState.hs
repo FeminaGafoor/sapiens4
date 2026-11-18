@@ -1,21 +1,25 @@
 module UpdateState where
 
 import Control.Monad
+import Control.Exception (catchJust)
 import Data.Aeson
 import Data.Aeson.Types (Parser)
 import qualified Data.Aeson.KeyMap as K
 import qualified Data.ByteString.Lazy as B
+import Data.Char (toLower)
 import qualified Data.Text as T
 import qualified Data.UUID as UUID
 import System.Directory
+import System.Environment (getExecutablePath, lookupEnv)
 import System.FilePath
+import System.IO.Error (isDoesNotExistError)
 
 newtype Version = Version { versionName :: String } deriving (Eq,Show)
 data Previous = Previous { previousVersion :: Version, previousBackup :: Version, previousDigest :: String } deriving (Eq,Show)
 data Selection = Selection { current :: Version, previous :: Maybe Previous } deriving (Eq,Show)
 data PendingUpdate = PendingUpdate
  { original :: Selection, target :: Version, attempt :: Version
- , dataRoot :: FilePath, configRoot :: FilePath, backupDigest :: String
+ , dataRoot :: FilePath, configRoot :: FilePath, dataIdentity :: String, configIdentity :: String, backupDigest :: String
  } deriving (Eq,Show)
 data UpdateState = Settled Selection | Pending PendingUpdate deriving (Eq,Show)
 
@@ -44,7 +48,8 @@ instance ToJSON UpdateState where
  toJSON (Settled s) = object ["format" .= (1::Int),"state" .= ("Settled"::String),"selection" .= s]
  toJSON (Pending p) = object
   ["format" .= (1::Int),"state" .= ("Pending"::String),"original" .= original p
-  ,"target" .= target p,"attempt" .= attempt p,"data" .= dataRoot p,"config" .= configRoot p,"backup" .= backupDigest p]
+  ,"target" .= target p,"attempt" .= attempt p,"data" .= dataRoot p,"config" .= configRoot p
+  ,"dataIdentity" .= dataIdentity p,"configIdentity" .= configIdentity p,"backup" .= backupDigest p]
 instance FromJSON UpdateState where
  parseJSON = withObject "update state" $ \o -> do
   format <- o .: "format" :: Parser Int
@@ -53,10 +58,12 @@ instance FromJSON UpdateState where
   case tag of
    "Settled" -> exact ["format","state","selection"] o >> Settled <$> o .: "selection"
    "Pending" -> do
-    exact ["format","state","original","target","attempt","data","config","backup"] o
-    p <- PendingUpdate <$> o .: "original" <*> o .: "target" <*> o .: "attempt" <*> o .: "data" <*> o .: "config" <*> o .: "backup"
+    exact ["format","state","original","target","attempt","data","config","dataIdentity","configIdentity","backup"] o
+    p <- PendingUpdate <$> o .: "original" <*> o .: "target" <*> o .: "attempt" <*> o .: "data" <*> o .: "config"
+     <*> o .: "dataIdentity" <*> o .: "configIdentity" <*> o .: "backup"
     unless (target p /= current (original p) && Just (target p) /= (previousVersion <$> previous (original p))
-      && all isAbsolute [dataRoot p,configRoot p] && validDigest (backupDigest p)) (fail "Invalid pending update")
+      && all isAbsolute [dataRoot p,configRoot p] && all (not . null) [dataIdentity p,configIdentity p]
+      && validDigest (backupDigest p)) (fail "Invalid pending update")
     pure (Pending p)
    _ -> fail "Unknown update decision"
 
@@ -67,12 +74,44 @@ statePath :: FilePath -> FilePath
 statePath root = root </> "update-state.json"
 versionPath :: FilePath -> Version -> FilePath
 versionPath root v = root </> "versions" </> versionName v
-backupPath :: FilePath -> PendingUpdate -> FilePath
-backupPath root p = root </> "backups" </> versionName (attempt p)
+backupPath :: FilePath -> Version -> FilePath
+backupPath root nonce = root </> "backups" </> versionName nonce
 readUpdateState :: FilePath -> IO UpdateState
 readUpdateState root = do
  bytes <- B.readFile (statePath root)
  either (fail . ("Invalid update-state.json; launch refused: "++)) pure (eitherDecode bytes)
+
+reservationName :: FilePath
+reservationName = ".sapiens-update-owner"
+
+configOwnerName :: FilePath
+configOwnerName = ".sapiens-config-owner"
+
+readBinding :: FromJSON a => FilePath -> IO (Maybe a)
+readBinding path = do
+ binding <- catchJust (\e -> if isDoesNotExistError e then Just () else Nothing)
+  (Just <$> eitherDecodeFileStrict path) (const (pure Nothing))
+ traverse (either fail pure) binding
+
+-- The caller owns this Corpora's writer lock. Any inherited reservation is read-only here.
+assertDataAvailable :: FilePath -> IO ()
+assertDataAvailable = check True
+ where
+ check ownsLock directory = do
+  binding <- readBinding (directory </> reservationName)
+  forM_ binding $ \(owner,nonce) -> do
+   unless (isAbsolute owner) (fail "Invalid Data Root update owner")
+   state <- readUpdateState owner
+   case state of
+    Pending pending | attempt pending == nonce -> do
+     home <- getExecutablePath >>= installationOf
+     ticket <- lookupEnv "SAPIENS_UPDATE_ATTEMPT"
+     unless (home == Just (owner,target pending) && ticket == Just (versionName nonce)) $
+      fail "This Data Root has an unfinished Sapiens update. Launch its original installed shortcut to recover."
+    _ -> when ownsLock (removeFile (directory </> reservationName))
+  let container = takeDirectory directory
+  when (map toLower (takeFileName container) == "corporas" && UUID.fromString (takeFileName directory) /= Nothing) $
+   check False (takeDirectory container)
 
 installationOf :: FilePath -> IO (Maybe (FilePath,Version))
 installationOf executable = do

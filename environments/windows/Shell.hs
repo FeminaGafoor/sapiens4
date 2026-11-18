@@ -26,7 +26,7 @@ import Numeric
 import Browser
 import Host
 import qualified Update as Update
-import Installation (withInstalledVersion, freshVersion, outsideInstallation)
+import Installation (claimConfigRoot, freshVersion, outsideInstallation, withInstalledVersion)
 import UpdateState (versionName)
 import Native
 import qualified Navigation as Navigation
@@ -58,6 +58,7 @@ desktopSession memory probe = do
   host <- prepareHost args
   configRoot <- configDirectory
   outsideInstallation configRoot
+  claimConfigRoot configRoot
   dataEnv <- lookupEnv "SAPIENS_DATA_DIR"
   let explicit = listToMaybe [value | (key,value) <- zip args (drop 1 args), key=="--data-dir"] `mplus` dataEnv
   saved <- try (startupDataDirectory explicit) :: IO (Either IOException (Maybe FilePath))
@@ -406,7 +407,8 @@ desktopSession memory probe = do
                 case decodeStrict (TE.encodeUtf8 $ T.pack raw) of
                   Nothing -> pure ()
                   Just message
-                    | isNothing base && bootstrapSource source && bootstrapSource current -> chooseStorage message
+                    | isNothing base && bootstrapSource source && bootstrapSource current ->
+                        Update.preparingUpdate >>= \preparing -> unless preparing (chooseStorage message)
                     | Navigation.trusted base source && Navigation.trusted base current -> do
                         case field "preferencesFlush" message of
                           JSON.Object response -> do

@@ -15,10 +15,13 @@ void *d2_lease(const wchar_t *path, int exclusive) {
         FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (h == INVALID_HANDLE_VALUE) return NULL;
     OVERLAPPED range = {0};
-    DWORD flags = exclusive ? LOCKFILE_EXCLUSIVE_LOCK : 0;
-    if (exclusive == 2) flags |= LOCKFILE_FAIL_IMMEDIATELY;
-    if (!LockFileEx(h, flags, 0, 1, 0, &range)) {
-        CloseHandle(h); return NULL;
+    DWORD flags = (exclusive ? LOCKFILE_EXCLUSIVE_LOCK : 0) | LOCKFILE_FAIL_IMMEDIATELY;
+    ULONGLONG deadline = GetTickCount64() + 15000;
+    while (!LockFileEx(h, flags, 0, 1, 0, &range)) {
+        if (GetLastError() != ERROR_LOCK_VIOLATION || exclusive == 2 || GetTickCount64() >= deadline) {
+            CloseHandle(h); return NULL;
+        }
+        Sleep(50);
     }
     return h;
 }
@@ -29,14 +32,14 @@ DWORD d2_downgrade(void *h) {
     if (!UnlockFileEx(h, 0, 1, 0, &range)) return GetLastError();
     return 0;
 }
-DWORD d2_publish(const wchar_t *path, const wchar_t *temporary, const BYTE *bytes, DWORD size) {
+DWORD d2_publish(const wchar_t *path, const wchar_t *temporary, const BYTE *bytes, DWORD size, int replace) {
     HANDLE h = CreateFileW(temporary, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
     if (h == INVALID_HANDLE_VALUE) return GetLastError();
     DWORD written = 0, error = 0;
     if (!WriteFile(h, bytes, size, &written, NULL) || written != size || !FlushFileBuffers(h)) error = GetLastError();
     if (!error && written != size) error = ERROR_WRITE_FAULT;
     if (!CloseHandle(h) && !error) error = GetLastError();
-    if (!error && !MoveFileExW(temporary, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) error = GetLastError();
+    if (!error && !MoveFileExW(temporary, path, MOVEFILE_WRITE_THROUGH | (replace ? MOVEFILE_REPLACE_EXISTING : 0))) error = GetLastError();
     if (error) DeleteFileW(temporary);
     return error;
 }
@@ -52,6 +55,20 @@ static DWORD inspect(const wchar_t *path, BY_HANDLE_FILE_INFORMATION *info) {
     return error;
 }
 DWORD d2_validate(const wchar_t *path) { BY_HANDLE_FILE_INFORMATION info; return inspect(path, &info); }
+DWORD d2_open_root(const wchar_t *path, HANDLE *root, uint64_t *identity) {
+    HANDLE h = CreateFileW(path, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+        OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    if (h == INVALID_HANDLE_VALUE) return GetLastError();
+    BY_HANDLE_FILE_INFORMATION info;
+    DWORD error = GetFileInformationByHandle(h, &info) ? 0 : GetLastError();
+    if (!error && (!(info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ||
+        (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT))) error = ERROR_DIRECTORY;
+    if (error) { CloseHandle(h); return error; }
+    identity[0] = info.dwVolumeSerialNumber;
+    identity[1] = ((uint64_t)info.nFileIndexHigh << 32) | info.nFileIndexLow;
+    *root = h;
+    return 0;
+}
 static DWORD security(const wchar_t *source, const wchar_t *destination) {
     PSID owner = NULL, group = NULL; PACL dacl = NULL; PSECURITY_DESCRIPTOR sd = NULL, dest = NULL;
     DWORD flags = OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION;
@@ -84,10 +101,10 @@ static DWORD attributes(const wchar_t *source, const wchar_t *destination, BOOL 
         NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
     if (h == INVALID_HANDLE_VALUE) return GetLastError();
     if (!SetFileTime(h, &info.ftCreationTime, NULL, &info.ftLastWriteTime)) error = GetLastError();
-    if (!error && flush && !FlushFileBuffers(h)) error = GetLastError();
-    CloseHandle(h);
     if (!error) error = security(source, destination);
     if (!SetFileAttributesW(destination, info.dwFileAttributes) && !error) error = GetLastError();
+    if (!error && flush && !FlushFileBuffers(h)) error = GetLastError();
+    if (!CloseHandle(h) && !error) error = GetLastError();
     return error;
 }
 DWORD d2_copy(const wchar_t *source, const wchar_t *destination) {
@@ -241,9 +258,13 @@ DWORD d2_job(void *job, int commit) {
     }
     if (!TerminateJobObject(job,1)) return GetLastError();
     JOBOBJECT_BASIC_ACCOUNTING_INFORMATION accounting;
+    ULONGLONG deadline = GetTickCount64() + 30000;
     do {
         if (!QueryInformationJobObject(job,JobObjectBasicAccountingInformation,&accounting,sizeof(accounting),NULL)) return GetLastError();
-        if (accounting.ActiveProcesses) Sleep(10);
+        if (accounting.ActiveProcesses) {
+            if (GetTickCount64() >= deadline) return ERROR_TIMEOUT;
+            Sleep(10);
+        }
     } while (accounting.ActiveProcesses);
     return 0;
 }

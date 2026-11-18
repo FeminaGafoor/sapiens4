@@ -3,6 +3,7 @@ module UpdateBackup (snapshot, restoreSnapshot, withRootLocks, validateRoots) wh
 import Control.Exception
 import Control.Monad
 import Data.Aeson
+import Data.Aeson.Types (parseEither)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as L
 import qualified Crypto.Hash.SHA256 as SHA
@@ -23,29 +24,26 @@ instance ToJSON Inventory where
 hash :: B.ByteString -> String
 hash = concatMap (\b -> let s=showHex b "" in replicate (2-length s) '0' ++ s) . B.unpack . SHA.hash
 
-managedRoots :: FilePath -> IO [FilePath]
-managedRoots root = do
+managedChildren :: FilePath -> IO [FilePath]
+managedChildren root = do
  validatePath root
  let path = root </> "host-corpora.json"
  exists <- pathPresent path
- children <- if not exists then pure [] else do
+ if not exists then pure [] else do
   value <- B.readFile path >>= either fail pure . eitherDecodeStrict
-  names <- either fail pure (parseEitherLocals value)
+  names <- either fail pure (parseEither (withObject "Corpora registry" (\o -> o .:? "locals" .!= [])) value)
   forM names $ \name -> case UUID.fromText name of
    Just ident | UUID.toText ident == name -> pure (root </> "corporas" </> T.unpack name)
    _ -> fail "Invalid registered child Corpora"
- (root:) . concat <$> mapM managedRoots children
- where
- parseEitherLocals value = case fromJSON value :: Result (DataMap) of
-  Error problem -> Left problem
-  Success (DataMap names) -> Right names
-newtype DataMap = DataMap [T.Text]
-instance FromJSON DataMap where parseJSON = withObject "Corpora registry" (\o -> DataMap <$> o .:? "locals" .!= [])
+
+managedRoots :: FilePath -> IO [FilePath]
+managedRoots root = managedChildren root >>= fmap ((root:) . concat) . mapM managedRoots
 
 withRootLocks :: FilePath -> IO a -> IO a
 withRootLocks root action = withLock (root </> "host.lock") $ do
- roots <- managedRoots root
- foldr withLock action [p </> "host.lock" | p <- sort (nub (drop 1 roots))]
+ assertDataAvailable root
+ children <- managedChildren root
+ foldr withRootLocks action (sort (nub children))
 
 withLock :: FilePath -> IO a -> IO a
 withLock path action = do
@@ -101,10 +99,11 @@ inventories dataPath configPath sourceData sourceConfig = do
  corpora <- managedRoots sourceData
  let locks = map (makeRelative sourceData . (</> "host.lock")) corpora
      relative child = if child == sourceData then "" else makeRelative sourceData child
-     profiles = [relative child </> profile | child <- corpora, profile <- profileExclusions]
+     profiles = [relative child </> profile | child <- corpora, profile <- reservationName:profileExclusions]
  dataEntries <- inventory sourceData locks profiles
- configEntries <- inventory sourceConfig [] profileExclusions
- pure [Inventory dataPath locks profiles dataEntries,Inventory configPath [] profileExclusions configEntries]
+ let configExcluded = configOwnerName:profileExclusions
+ configEntries <- inventory sourceConfig [] configExcluded
+ pure [Inventory dataPath locks profiles dataEntries,Inventory configPath [] configExcluded configEntries]
 
 copyTree :: FilePath -> FilePath -> [Entry] -> IO ()
 copyTree source destination entries = do
@@ -114,16 +113,26 @@ copyTree source destination entries = do
  forM_ entries $ \(relative,_,_) ->
   copyMetadata (source </> relative) (destination </> relative)
 
-restoreSnapshot :: FilePath -> PendingUpdate -> IO ()
-restoreSnapshot installation pending = do
- let backup = backupPath installation pending
+restoreSnapshot :: FilePath -> PendingUpdate -> IO () -> IO ()
+restoreSnapshot installation pending settle = do
+ let backup = backupPath installation (attempt pending)
      originalData = dataRoot pending
      originalConfig = configRoot pending
  validateRoots installation originalData originalConfig
- original <- inventories (dataRoot pending) (configRoot pending) (backup </> "0") (backup </> "1")
- unless (hash (L.toStrict (encode original)) == backupDigest pending) (fail "Backup changed or is incomplete; recovery refused")
- let childLocks = nub [root </> lock | Inventory root locks _ _ <- original, lock <- drop 1 locks]
- withLock (originalData </> "host.lock") $ foldr withSurvivingLock (restore backup original) childLocks
+ withRootIdentity originalData $ \dataId -> withRootIdentity originalConfig $ \configId -> do
+  unless (dataId == dataIdentity pending && configId == configIdentity pending) $
+   fail "The original Data or Config directory was replaced. Recovery refused; backup retained."
+  configOwner <- readBinding (originalConfig </> configOwnerName)
+  unless (configOwner == Just installation) $
+   fail "Config ownership changed. Recovery refused; backup retained."
+  original <- inventories originalData originalConfig (backup </> "0") (backup </> "1")
+  unless (hash (L.toStrict (encode original)) == backupDigest pending) (fail "Backup changed or is incomplete; recovery refused")
+  let childLocks = nub [root </> lock | Inventory root locks _ _ <- original, lock <- drop 1 locks]
+  withLock (originalData </> "host.lock") $ do
+   reservation <- readBinding (originalData </> reservationName)
+   unless (reservation == Just (installation,attempt pending)) $
+    fail "Data Root update ownership changed. Recovery refused; backup retained."
+   foldr withSurvivingLock (restore backup original >> settle) childLocks
  where
  restore backup original = do
   live <- forM original $ \(Inventory root locks excluded _) -> tree root locks excluded

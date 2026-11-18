@@ -64,6 +64,43 @@ existing Corpora locks for surviving directories. Missing child directories
 are reconstructed from the backup, which remains available until the original
 selection has been republished.
 
+An update reserves the Data Root under its existing writer locks before it
+publishes Pending. Another installation may open that Data Root or a registered
+child once the attempt has settled. Config can also be reused between
+installations after the previous owner has closed and its decision is Settled.
+Use a separate Config folder for simultaneously running installations. Keep
+earlier builds that do not understand D2 ownership away from roots undergoing
+an update. Recovery refuses if either physical root was replaced, even when the
+folder name is unchanged.
+
+Installation lease acquisition waits up to 15 seconds. The ready deadline is
+one hour to allow migrations, followed by 60 seconds for activation. Closing
+the candidate before commit, if its window responds, cancels the attempt.
+After a precommit failure, recovery waits for the candidate's job to terminate.
+
+### Persistent failure after commit
+
+Use the installed shortcut once to retry the selected release. If it still
+fails, close every Sapiens process using these roots. Before any repair, copy
+the live Data and Config trees to fresh private directories, preserving
+metadata, and save the installation's `update-state.json`. Keep that capture
+and the retained Previous bundle and backup until the repair is verified.
+Use a clean installation with separate Data and Config to test a repaired
+release against disposable copies of the capture. Set `SAPIENS_DATA_DIR` and
+`SAPIENS_CONFIG_DIR` to those copies before launching its shortcut. Remove the
+copied `.sapiens-config-owner` only in the new Config copy so the clean
+installation can claim it. Verify the work created after commit before moving
+users to the repaired installation.
+
+If a return to the earlier release is required, use the matching retained
+release and a separate copy of the Previous backup alongside the saved live
+capture. Leave the committed installation and its live roots intact. The
+Previous backup predates work accepted by the committed release.
+
+On Windows, copied file metadata is applied before flushing the file handle.
+Directory metadata and whole-snapshot survival across physical power loss
+still require qualification on the supported volume layouts.
+
 The snapshot covers Corpora databases, app-owned files and attachment drafts,
 remote pairing and provider configuration, and Config. Native client preferences
 store workspace settings, unsent text drafts, the active Corpora and theme in

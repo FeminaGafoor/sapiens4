@@ -11,6 +11,7 @@ import System.Environment
 import System.FilePath
 import System.IO.Error (catchIOError, isDoesNotExistError)
 import System.Info
+import UpdateState (configOwnerName, installationOf, readBinding)
 
 newtype Profile = Profile String
 instance FromJSON Profile where
@@ -88,7 +89,12 @@ configDirectory :: IO FilePath
 configDirectory = do
  supplied <- lookupEnv "SAPIENS_CONFIG_DIR"
  when (supplied==Just "") $ fail "SAPIENS_CONFIG_DIR must not be empty"
- maybe ((</> "config") <$> profileRoot) makeAbsolute supplied >>= externalStoragePath
+ directory <- maybe ((</> "config") <$> profileRoot) makeAbsolute supplied >>= externalStoragePath
+ owner <- readBinding (directory </> configOwnerName) :: IO (Maybe FilePath)
+ forM_ owner $ \_ -> do
+  installed <- getExecutablePath >>= installationOf
+  when (null installed) (fail "This Config folder belongs to an installed Sapiens. Choose a separate Config folder.")
+ pure directory
 
 defaultDataDirectory :: IO FilePath
 defaultDataDirectory = do
