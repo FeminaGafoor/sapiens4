@@ -8,7 +8,7 @@ import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Set as Set
 import Data.String as S
 import Foreign.Object as O
-import Libs4.Browser as B
+import Sapiens.BrowserFFI as B
 import Sapiens.Action (Action(..), Success(..))
 import Sapiens.Conversation as C
 import Sapiens.Data as D

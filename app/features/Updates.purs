@@ -10,7 +10,7 @@ import Effect.Class (liftEffect)
 import Effect.Exception as Exception
 import Effect.Ref as Ref
 import Halogen.Subscription as HS
-import Libs4.Browser as B
+import Sapiens.BrowserFFI as B
 import Sapiens.Data as D
 
 data Freshness = Applied Number | Pending Number

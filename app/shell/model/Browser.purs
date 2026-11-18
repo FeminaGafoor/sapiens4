@@ -7,7 +7,7 @@ import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.String as S
 import Data.Tuple (Tuple(..))
 import Foreign.Object as O
-import Libs4.Browser as B
+import Sapiens.BrowserFFI as B
 import Sapiens.Data as D
 
 type Key = {key :: String, tag :: String, composing :: Boolean, shift :: Boolean, ctrl :: Boolean, meta :: Boolean}

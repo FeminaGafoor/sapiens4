@@ -6,7 +6,7 @@ import Data.Argonaut.Core (Json)
 import Data.Array as A
 import Data.String as S
 import Effect (Effect)
-import Libs4.Browser as B
+import Sapiens.BrowserFFI as B
 import Sapiens.Data as D
 import Sapiens.Environment (Environment)
 import Sapiens.Browser as Browser

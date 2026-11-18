@@ -7,7 +7,7 @@ import Sapiens.Data as D
 import Sapiens.Environment (Environment, clientDetails)
 import Sapiens.Domain as X
 import Data.String as S
-import Libs4.Browser as B
+import Sapiens.BrowserFFI as B
 
 browserConsentKey :: String
 browserConsentKey = "s4.telemetry.browser.enabled"

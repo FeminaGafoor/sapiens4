@@ -14,7 +14,7 @@ import Effect.Exception (Error, error, message)
 import Halogen as H
 import Sapiens.Browser as Browser
 import Sapiens.Platform as Platform
-import Libs4.Browser as B
+import Sapiens.BrowserFFI as B
 import Sapiens.Action (Action(..))
 import Sapiens.Connections as C
 import Sapiens.Data as D

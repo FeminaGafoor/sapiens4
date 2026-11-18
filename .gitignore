@@ -36,3 +36,6 @@ environments/windows/obj/
 tmp/
 
 spec/.lake/
+
+.spago/
+build/purescript/output/

@@ -7,7 +7,7 @@ import Data.Foldable (traverse_)
 import Data.String as S
 import Effect (Effect)
 import Effect.Aff (Aff)
-import Libs4.Browser as B
+import Sapiens.BrowserFFI as B
 import Sapiens.Browser as Browser
 
 cache :: String

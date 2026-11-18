@@ -15,7 +15,7 @@ import Effect.Exception (error)
 import Effect.Exception as Exception
 import Effect.Ref as Ref
 import Foreign.Object as O
-import Libs4.Browser as B
+import Sapiens.BrowserFFI as B
 import Sapiens.Data as D
 import Sapiens.Domain as X
 import Sapiens.Remote as R

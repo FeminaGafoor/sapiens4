@@ -9,7 +9,7 @@ import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.String as S
 import Data.Tuple (Tuple(..))
 import Foreign.Object as O
-import Libs4.Browser as B
+import Sapiens.BrowserFFI as B
 import Sapiens.Action as Intent
 import Sapiens.Action (Action(..), Success(..))
 import Sapiens.Data as D

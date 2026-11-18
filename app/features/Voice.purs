@@ -12,7 +12,7 @@ import Effect.Exception (message)
 import Foreign.Object as O
 import Halogen as H
 import Halogen.Subscription as HS
-import Libs4.Browser as B
+import Sapiens.BrowserFFI as B
 import Sapiens.Action (Action(..))
 import Sapiens.Connections as C
 import Sapiens.Data as D

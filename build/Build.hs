@@ -71,7 +71,7 @@ main = do
    _ -> fail ("Unsupported Windows architecture: "<>arch)
   -- Windows PowerShell must not inherit PowerShell 7's incompatible modules.
   unsetEnv "PSModulePath"
-  callProcess "powershell" ["-NoProfile","-ExecutionPolicy","Bypass","-File",root</>"submodules/libs4/windows/webview2.ps1","-Runtime",runtime,"-Destination",root</>".build/bin"]
+  callProcess "powershell" ["-NoProfile","-ExecutionPolicy","Bypass","-File",root</>"environments/windows/webview2.ps1","-Runtime",runtime,"-Destination",root</>".build/bin"]
  callProcess (root </> ".build/bin/sapiens4"<>suffix) ["build-ui"]
 trim :: String -> String
 trim = dropWhileEnd (`elem` "\r\n \t") . dropWhile (`elem` "\r\n \t")
