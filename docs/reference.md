@@ -1,120 +1,37 @@
-# Usage and operations
+# Usage
 
-See the [README](../README.md) for startup and platform requirements.
+Choose a corpora in the header. **Pause** and **Activate** control its execution.
+Chat with ChiefSapi to delegate work, manage specialists or schedule routines.
+**Stop** cannot undo completed external actions; inspect results before retrying.
 
-## Work and conversations
+## Models
 
-ChiefSapi manages the team and can delegate to specialists. Specialists can refer
-work to Chief; accepted handoffs retain task identity and return the responsible
-Sapi's result to the original chat. When Chief needs clarification, it asks in the
-chat; answer there like any other message.
-Creating a Sapi or Group does not itself start work.
-
-Personal Tasks offers Upcoming and Past, with read-only YAML specifications and
-results. Scheduled routines can be created, edited, paused and resumed through
-Chief. Group tasks have shared ownership, revision checks and explicit execution;
-saving or restoring a task does not run it. Groups require at least two active
-members and one Lead, with up to eleven active memberships per Sapi.
-
-Each Sapi or Group has its own chat, files, Notes and browser workspace. Group
-chat defaults to the Lead; explicit mentions address members. Personal and other
-Groups' histories remain separate. Retirement and archival preserve saved data.
-
-Stop terminates the runner and child commands but cannot undo completed external
-actions. Never-started queued work resumes after restart; previously running work
-becomes interrupted and requires explicit retry. Inspect uncertain external
-outcomes before retrying. The shared computer allows one owner at a time.
-
-## Notes and files
-
-Memo reads `workspaces/<id>/Notes.html`. Its wiki has `about`, `map` and `content`
-sections; about/map enter model context and the model reads relevant content as
-needed. Store media as separate files. Link to them from Notes.html with a relative workspace
-path or an HTTP(S) URL. Inline images and data URLs are unsupported.
-
-A restored tab loads its native browser view the first time it becomes visible. After an uninterrupted hour in the background, Workspace can release a local read-only text preview with an existing file and no back or forward history. Its tab, bookmark and zoom remain in the owning Sapi's workspace. Selecting it reloads the file from disk and can reset its scroll position. Websites, HTML documents, media and pages of unknown type keep their views.
-
-Native desktop tabs open websites, local files and bookmarks. Text/source files
-render literally; HTML, PDF and media use the native browser. Closing a tab does
-not delete its file. Remote clients can preview text files and control the host's
-tabs, but do not stream native browser views.
-
-Local Workspace windows receive change notifications over a same-origin WebSocket and fetch a snapshot when needed. A hidden window disconnects and catches up when shown. While the socket is unavailable, unchanged snapshots double the HTTP polling interval up to 10 seconds. Changed content, clicks and keystrokes reset it to 750 ms. Socket retries start at 2 seconds and double up to 30 seconds. Remote relay connections keep their existing refresh behavior.
-
-## Configuration
-
-Default model: `gpt-6-astra`, reasoning `medium`, until Models settings are saved. A call's
-30-minute limit is shared across its decision steps. Environment overrides:
+Open **Workspace & settings → Models** for defaults and per-Sapi choices.
+Use **AI Connections** to sign in to an installed provider CLI.
+Provider definitions are in `corpora/providers.json`.
 
 | Variable | Purpose |
 | --- | --- |
-| `SAPIENS_DATA_DIR` | Data directory |
-| `SAPIENS_CONFIG_DIR` | Configuration directory exposed to native hosts and integrations |
-| `SAPIENS_<ID>_BINARY` | Provider executable, for example `SAPIENS_CODEX_BINARY` |
-| `SAPIENS_BLINDLY_BINARY` | Blindly4 executable |
+| `SAPIENS_DATA_DIR` | Data folder |
+| `SAPIENS_CONFIG_DIR` | Configuration folder |
+| `SAPIENS_<ID>_BINARY` | Provider executable, such as `SAPIENS_CODEX_BINARY` |
+| `SAPIENS_BLINDLY_BINARY` | Computer-control executable |
 
-Decision templates live in `corpora/prompts/`. **Edit decision prompts** saves local
-`decision-prompts/*.md` overrides for subsequent invocations; past decision
-records retain the prompt they used. Context, Usage and legacy budget settings
-are inactive. Global Codex configuration is unchanged.
+## Data
 
-## Data and updates
+Choose an empty folder for new data or a complete Data Root to open saved data.
+Defaults: `~/Library/Application Support/Sapiens4/data` on macOS,
+`%LOCALAPPDATA%\Sapiens4\data` on Windows, `.sapiens4` for source CLI runs.
 
-Installed applications use `~/Library/Application Support/Sapiens4/data` on macOS
-and `%LOCALAPPDATA%\Sapiens4\data` on Windows, with a sibling `config` directory.
-Source CLI execution keeps the checkout’s `.sapiens4` default. Explicit
-`--data-dir` overrides `SAPIENS_DATA_DIR`; `SAPIENS_CONFIG_DIR` is independent.
-The installed package manifest selects the stable or development profile. Choose data and configuration folders outside the installed app. Back up the complete data directory
-while the host is stopped, including:
+Stop the host before backing up the **whole data folder**. Keep backups private.
+Never run two hosts against the same folder.
+Notes and files live in `workspaces/<id>/`; link media from `Notes.html` rather
+than embedding it. Closing a workspace tab does not delete its file.
 
-- `corpora.sqlite3`: agents, workloads, Groups, preferences and attachments.
-- `agentpy/`: persisted chat state and archives; the legacy path remains in use.
-- `workspaces/`: Notes, files and deliverables.
-- `decision-prompts/`: local prompt overrides.
-- `corpora-identity.json`, registry and remote credential files: identity and trust.
+## Integrations
 
-A database-only backup is incomplete. Protect backups as credentials and private
-data. Copying a backup retains its corpora identity; it does not create an
-independent corpora or synchronize simultaneous hosts. Never run two hosts against
-one data directory. Install new versions manually using the platform setup guide.
+MCP: `.build/bin/sapiens4 mcp --url http://127.0.0.1:4174`.
+HTTP: `/api/health`, `/api/state`, `/api/model-settings`, `/api/providers`.
+Local writes require JSON and `X-Sapiens-Local: 1`.
 
-The header corpora picker changes the viewed workspace; Pause and Activate control
-execution separately. Drafts and layout are stored on the viewing device. Cached
-remote snapshots are read-only until reconnection. See [remote setup](remote.md)
-for pairing, revocation and relay deployment.
-
-## HTTP API
-
-The host binds to loopback. Writes require JSON and `X-Sapiens-Local: 1`;
-a supplied Origin must match the loopback Host. Common entrypoints:
-
-| Method | Path | Purpose |
-| --- | --- | --- |
-| GET | `/api/health`, `/api/state` | Readiness and current state |
-| WebSocket | `/api/host/corpora/<id>/api/updates` | Current revision on subscribe and after local changes. Compare with `updates_revision` in the state response. |
-| POST / PUT | `/api/agents`, `/api/agents/<id>` | Create/update Sapis |
-| POST | `/api/agents/<id>/messages`, `/api/agents/<id>/attachments` | Submit chat or attachments |
-| GET | `/api/agents/<id>/notes` | Memo and file metadata |
-| GET | `/api/agents/<id>/tasks` | YAML export; `?format=json` returns task metadata |
-| GET | `/api/agents/<id>/decisions` | Decision records |
-| POST | `/api/agents/<id>/control` | Authorized team/workspace operations |
-| POST | `/api/agents/<id>/turns/<id>/retry`, `/api/agents/<id>/turns/<id>/cancel` | Explicit recovery |
-| GET / PUT | `/api/decision-prompts`, `/api/decision-prompts/<node>` | Inspect/edit templates |
-
-Group notes, messages, attachments, tasks and calls use `/api/groups/<id>`.
-Updates require the relevant revision. [RSpec scenarios](../spec) exercise the
-public contracts; see [Testing](testing.md) to run them.
-
-### Models and providers
-
-`GET /api/model-settings` returns the corpora default and per-Sapi overrides;
-`PUT /api/model-settings` saves them with the current revision (a stale revision
-gets 409). Until the first save, GET returns the default from
-`corpora/providers.json`. A run captures its model and effort when it starts.
-
-`corpora/providers.json` lists each provider CLI: executable, extra install paths,
-login and status commands, run arguments, output format, the recommended model and
-effort picked when a provider is chosen, and models with efforts.
-`GET /api/providers` returns them. An empty effort sends no effort flag. The
-executable is `SAPIENS_<ID>_BINARY`, else PATH, else the listed paths. Sign-in
-stays in each CLI. A new output format needs one `EventFormat` instance.
+[Remote control](remote.md) · [Tests](testing.md)

@@ -101,5 +101,5 @@ starter args = do
    state <- readUpdateState root
    case state of
     Settled selected -> launchVersion root (current selected) []
-    Pending pending -> launchVersion root (current (original pending)) ["--d2-recover"]
+    Pending pending -> launchVersion root (current (original pending)) ["--update-recover"]
   _ -> fail "Unsupported Starter command"

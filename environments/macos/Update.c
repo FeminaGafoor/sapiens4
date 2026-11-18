@@ -15,7 +15,7 @@
 #include <stdint.h>
 #include <time.h>
 
-int d2_validate(const char *path) {
+int sapiens_update_validate(const char *path) {
     struct stat st;
     if (lstat(path, &st)) return errno;
     if ((!S_ISREG(st.st_mode) && !S_ISDIR(st.st_mode)) ||
@@ -25,7 +25,7 @@ int d2_validate(const char *path) {
     if (statfs(path, &fs)) return errno;
     return strcmp(fs.f_fstypename, "apfs") ? ENOTSUP : 0;
 }
-int d2_open_root(const char *path, int *root, uint64_t *identity) {
+int sapiens_update_open_root(const char *path, int *root, uint64_t *identity) {
     int fd = open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
     if (fd < 0) return errno;
     struct stat st;
@@ -39,7 +39,7 @@ int d2_open_root(const char *path, int *root, uint64_t *identity) {
     *root = fd;
     return 0;
 }
-int d2_lease(const char *path, int mode) {
+int sapiens_update_lease(const char *path, int mode) {
     int fd = open(path, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
     if (fd < 0) return -1;
     struct flock lock = {.l_whence = SEEK_SET, .l_type = mode ? F_WRLCK : F_RDLCK};
@@ -54,11 +54,11 @@ int d2_lease(const char *path, int mode) {
     }
     return fd;
 }
-int d2_downgrade(int fd) {
+int sapiens_update_downgrade(int fd) {
     struct flock lock = {.l_whence = SEEK_SET, .l_type = F_RDLCK};
     return fcntl(fd, F_SETLK, &lock);
 }
-int d2_hangup(void) {
+int sapiens_update_hangup(void) {
     struct pollfd fd = {STDIN_FILENO, 0, 0};
     return poll(&fd, 1, 0) > 0 && (fd.revents & POLLHUP);
 }
@@ -70,10 +70,10 @@ static int flush_path(const char *path, int flags, int full) {
     close(fd);
     return error;
 }
-int d2_flush(const char *path, int full) {
+int sapiens_update_flush(const char *path, int full) {
     return flush_path(path, O_NOFOLLOW, full);
 }
-int d2_publish(const char *path, const char *temporary, const void *bytes, size_t count, int replace) {
+int sapiens_update_publish(const char *path, const char *temporary, const void *bytes, size_t count, int replace) {
     int fd = open(temporary, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
     if (fd < 0) return errno;
     int error = 0;
@@ -101,8 +101,8 @@ int d2_publish(const char *path, const char *temporary, const void *bytes, size_
     if (error) unlink(temporary);
     return error;
 }
-int d2_copy(const char *source, const char *destination, int metadata) {
-    int error = d2_validate(source);
+int sapiens_update_copy(const char *source, const char *destination, int metadata) {
+    int error = sapiens_update_validate(source);
     if (error) return error;
     if (copyfile(source, destination, NULL, (metadata ? COPYFILE_METADATA : COPYFILE_ALL) | COPYFILE_NOFOLLOW)) return errno;
     struct stat original;
@@ -118,9 +118,9 @@ int d2_copy(const char *source, const char *destination, int metadata) {
     return error;
 }
 static int compare(const void *a, const void *b) { return strcmp(*(const char **)a, *(const char **)b); }
-int d2_metadata(const char *path, unsigned char *digest) {
+int sapiens_update_metadata(const char *path, unsigned char *digest) {
     struct stat st;
-    int error = d2_validate(path);
+    int error = sapiens_update_validate(path);
     if (error) return error;
     if (lstat(path, &st)) return errno;
     CC_SHA256_CTX hash;

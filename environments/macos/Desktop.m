@@ -1,8 +1,8 @@
 #import <Foundation/Foundation.h>
 #include <errno.h>
-extern int d2_publish(const char *, const char *, const void *, size_t);
+extern int sapiens_update_publish(const char *, const char *, const void *, size_t, int);
 
-int d2_preferences(const char *name, const char *path, const char *temporary, int restore) {
+int sapiens_update_preferences(const char *name, const char *path, const char *temporary, int restore) {
     @autoreleasepool {
         NSString *domain = [NSString stringWithUTF8String:name];
         NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:domain];
@@ -17,7 +17,7 @@ int d2_preferences(const char *name, const char *path, const char *temporary, in
         } else {
             NSDictionary *value = [defaults persistentDomainForName:domain] ?: @{};
             NSData *data = [NSPropertyListSerialization dataWithPropertyList:value format:NSPropertyListBinaryFormat_v1_0 options:0 error:nil];
-            result = data ? d2_publish(path, temporary, data.bytes, data.length) : EINVAL;
+            result = data ? sapiens_update_publish(path, temporary, data.bytes, data.length, 1) : EINVAL;
         }
         if (![defaults synchronize] && !result) result = EIO;
         [defaults release];
@@ -26,7 +26,7 @@ int d2_preferences(const char *name, const char *path, const char *temporary, in
 }
 
 #import <AppKit/AppKit.h>
-int d2_activate(const char *executable) {
+int sapiens_update_activate(const char *executable) {
     @autoreleasepool {
         NSString *path = [[NSString stringWithUTF8String:executable] stringByResolvingSymlinksInPath];
         for (NSRunningApplication *app in [[NSWorkspace sharedWorkspace] runningApplications]) {
@@ -39,7 +39,7 @@ int d2_activate(const char *executable) {
     }
 }
 
-void d2_error(const char *message) {
+void sapiens_update_error(const char *message) {
     @autoreleasepool {
         [NSApplication sharedApplication];
         [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];

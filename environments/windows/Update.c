@@ -10,7 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-void *d2_lease(const wchar_t *path, int exclusive) {
+void *sapiens_update_lease(const wchar_t *path, int exclusive) {
     HANDLE h = CreateFileW(path, GENERIC_READ | GENERIC_WRITE,
         FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (h == INVALID_HANDLE_VALUE) return NULL;
@@ -25,14 +25,14 @@ void *d2_lease(const wchar_t *path, int exclusive) {
     }
     return h;
 }
-void d2_close(void *h) { CloseHandle(h); }
-DWORD d2_downgrade(void *h) {
+void sapiens_update_close(void *h) { CloseHandle(h); }
+DWORD sapiens_update_downgrade(void *h) {
     OVERLAPPED range = {0};
     if (!LockFileEx(h, 0, 0, 1, 0, &range)) return GetLastError();
     if (!UnlockFileEx(h, 0, 1, 0, &range)) return GetLastError();
     return 0;
 }
-DWORD d2_publish(const wchar_t *path, const wchar_t *temporary, const BYTE *bytes, DWORD size, int replace) {
+DWORD sapiens_update_publish(const wchar_t *path, const wchar_t *temporary, const BYTE *bytes, DWORD size, int replace) {
     HANDLE h = CreateFileW(temporary, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
     if (h == INVALID_HANDLE_VALUE) return GetLastError();
     DWORD written = 0, error = 0;
@@ -54,8 +54,8 @@ static DWORD inspect(const wchar_t *path, BY_HANDLE_FILE_INFORMATION *info) {
     if (!error && !(info->dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && info->nNumberOfLinks != 1) error = ERROR_NOT_SUPPORTED;
     return error;
 }
-DWORD d2_validate(const wchar_t *path) { BY_HANDLE_FILE_INFORMATION info; return inspect(path, &info); }
-DWORD d2_open_root(const wchar_t *path, HANDLE *root, uint64_t *identity) {
+DWORD sapiens_update_validate(const wchar_t *path) { BY_HANDLE_FILE_INFORMATION info; return inspect(path, &info); }
+DWORD sapiens_update_open_root(const wchar_t *path, HANDLE *root, uint64_t *identity) {
     HANDLE h = CreateFileW(path, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
         OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, NULL);
     if (h == INVALID_HANDLE_VALUE) return GetLastError();
@@ -107,7 +107,7 @@ static DWORD attributes(const wchar_t *source, const wchar_t *destination, BOOL 
     if (!CloseHandle(h) && !error) error = GetLastError();
     return error;
 }
-DWORD d2_copy(const wchar_t *source, const wchar_t *destination) {
+DWORD sapiens_update_copy(const wchar_t *source, const wchar_t *destination) {
     BY_HANDLE_FILE_INFORMATION info;
     DWORD error = inspect(source, &info);
     if (error) return error;
@@ -120,7 +120,7 @@ static wchar_t *streamPath(const wchar_t *path, const wchar_t *stream) {
     if (result) { wcscpy(result,path); wcscat(result,stream); }
     return result;
 }
-DWORD d2_directory_metadata(const wchar_t *source, const wchar_t *destination) {
+DWORD sapiens_update_directory_metadata(const wchar_t *source, const wchar_t *destination) {
     BY_HANDLE_FILE_INFORMATION info;
     DWORD error = inspect(source,&info);
     if (!error) error = inspect(destination,&info);
@@ -166,10 +166,10 @@ DWORD d2_directory_metadata(const wchar_t *source, const wchar_t *destination) {
     } else if (GetLastError()!=ERROR_HANDLE_EOF) error=GetLastError();
     return error ? error : attributes(source,destination,FALSE);
 }
-DWORD d2_copy_metadata(const wchar_t *source, const wchar_t *destination) {
+DWORD sapiens_update_copy_metadata(const wchar_t *source, const wchar_t *destination) {
     DWORD kind = GetFileAttributesW(source);
     if (kind == INVALID_FILE_ATTRIBUTES) return GetLastError();
-    return (kind & FILE_ATTRIBUTE_DIRECTORY) ? d2_directory_metadata(source,destination) : attributes(source,destination,TRUE);
+    return (kind & FILE_ATTRIBUTE_DIRECTORY) ? sapiens_update_directory_metadata(source,destination) : attributes(source,destination,TRUE);
 }
 static BOOL digest(const wchar_t *path, BYTE result[32]) {
     HANDLE file = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
@@ -189,7 +189,7 @@ static BOOL digest(const wchar_t *path, BYTE result[32]) {
     if (alg) BCryptCloseAlgorithmProvider(alg, 0);
     CloseHandle(file); return ok;
 }
-DWORD d2_metadata(const wchar_t *path, BYTE *out, DWORD capacity) {
+DWORD sapiens_update_metadata(const wchar_t *path, BYTE *out, DWORD capacity) {
     BY_HANDLE_FILE_INFORMATION info; DWORD used = 0;
     if (inspect(path, &info)) return 0;
 #define APPEND(p,n) do { DWORD length_ = (DWORD)(n); if (used + length_ > capacity) goto failed; memcpy(out+used,(p),length_); used += length_; } while(0)
@@ -238,7 +238,7 @@ static DWORD trusted(const wchar_t *path, PCCERT_CONTEXT *identity) {
     data.dwStateAction = WTD_STATEACTION_CLOSE; WinVerifyTrust(NULL,&policy,&data);
     return (DWORD)status;
 }
-DWORD d2_trust(const wchar_t *current, const wchar_t *payload) {
+DWORD sapiens_update_trust(const wchar_t *current, const wchar_t *payload) {
     PCCERT_CONTEXT a = NULL, b = NULL;
     DWORD error = trusted(current,&a);
     if (!error) error = trusted(payload,&b);
@@ -249,7 +249,7 @@ DWORD d2_trust(const wchar_t *current, const wchar_t *payload) {
     if (b) CertFreeCertificateContext(b);
     return error;
 }
-DWORD d2_job(void *job, int commit) {
+DWORD sapiens_update_job(void *job, int commit) {
     if (commit) {
         JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits = {0};
         if (!QueryInformationJobObject(job,JobObjectExtendedLimitInformation,&limits,sizeof(limits),NULL)) return GetLastError();

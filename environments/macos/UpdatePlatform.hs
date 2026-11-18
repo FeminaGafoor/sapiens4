@@ -22,18 +22,18 @@ import System.Timeout
 import UpdateState
 
 newtype Lease = Lease CInt
-foreign import ccall safe "d2_validate" cValidate :: CString -> IO CInt
-foreign import ccall safe "d2_open_root" cOpenRoot :: CString -> Ptr CInt -> Ptr Word64 -> IO CInt
-foreign import ccall safe "d2_lease" cLease :: CString -> CInt -> IO CInt
+foreign import ccall safe "sapiens_update_validate" cValidate :: CString -> IO CInt
+foreign import ccall safe "sapiens_update_open_root" cOpenRoot :: CString -> Ptr CInt -> Ptr Word64 -> IO CInt
+foreign import ccall safe "sapiens_update_lease" cLease :: CString -> CInt -> IO CInt
 foreign import ccall unsafe "close" cClose :: CInt -> IO CInt
-foreign import ccall safe "d2_downgrade" cDowngrade :: CInt -> IO CInt
-foreign import ccall safe "d2_publish" cPublish :: CString -> CString -> Ptr Word8 -> CSize -> CInt -> IO CInt
-foreign import ccall safe "d2_flush" cFlush :: CString -> CInt -> IO CInt
-foreign import ccall safe "d2_copy" cCopy :: CString -> CString -> CInt -> IO CInt
-foreign import ccall safe "d2_metadata" cMetadata :: CString -> Ptr Word8 -> IO CInt
-foreign import ccall safe "d2_error" cError :: CString -> IO ()
-foreign import ccall safe "d2_activate" cActivate :: CString -> IO CInt
-foreign import ccall unsafe "d2_hangup" cHangup :: IO CInt
+foreign import ccall safe "sapiens_update_downgrade" cDowngrade :: CInt -> IO CInt
+foreign import ccall safe "sapiens_update_publish" cPublish :: CString -> CString -> Ptr Word8 -> CSize -> CInt -> IO CInt
+foreign import ccall safe "sapiens_update_flush" cFlush :: CString -> CInt -> IO CInt
+foreign import ccall safe "sapiens_update_copy" cCopy :: CString -> CString -> CInt -> IO CInt
+foreign import ccall safe "sapiens_update_metadata" cMetadata :: CString -> Ptr Word8 -> IO CInt
+foreign import ccall safe "sapiens_update_error" cError :: CString -> IO ()
+foreign import ccall safe "sapiens_update_activate" cActivate :: CString -> IO CInt
+foreign import ccall unsafe "sapiens_update_hangup" cHangup :: IO CInt
 
 check :: String -> CInt -> IO ()
 check operation code = unless (code == 0) (fail (operation ++ " failed (macOS error " ++ show code ++ ")"))

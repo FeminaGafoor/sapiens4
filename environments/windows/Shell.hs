@@ -66,7 +66,8 @@ desktopSession memory probe = Update.withUpdateCache $ \cache -> do
   activeRoot <- newIORef (dataDirectory host)
   bootstrapPath <- canonicalizePath (runtimeDirectory host </> "app/shell/bootstrap.html")
   let filePath = '/' : map (\c -> if c=='\\' then '/' else c) bootstrapPath
-      bootstrapURL = "file://" ++ escapeURIString (\c -> isUnreserved c || c `elem` ("/:" :: String)) filePath
+      fileAddress path = "file://" ++ escapeURIString (\c -> isUnreserved c || c `elem` ("/:" :: String)) ('/' : map (\c -> if c=='\\' then '/' else c) path)
+      bootstrapURL = fileAddress bootstrapPath
       bootstrapSource address = case parseURI address of
         Just uri -> uriScheme uri=="file:" && maybe True (\auth -> null (uriRegName auth) && null (uriUserInfo auth) && null (uriPort auth)) (uriAuthority uri)
           && equalFilePath (unEscapeString $ uriPath uri) filePath && null (uriQuery uri) && null (uriFragment uri)
@@ -224,7 +225,7 @@ desktopSession memory probe = Update.withUpdateCache $ \cache -> do
             let guarded = readIORef closing >>= \closed -> unless closed action
             unless dead $ atomicModifyIORef' pending (\xs -> (guarded:xs, ())) >> void (postMessage hwnd 0x802A 0 0)
           failStart message = do
-            Update.preparingUpdate >>= \preparing -> when preparing (putStrLn "D2: failed" >> hFlush stdout)
+            Update.preparingUpdate >>= \preparing -> when preparing (putStrLn "update: failed" >> hFlush stdout)
             modifyIORef' generation (+1)
             cleanup <- try (closeViews `finally` closeHost host)
             let detail = case cleanup of
@@ -238,12 +239,12 @@ desktopSession memory probe = Update.withUpdateCache $ \cache -> do
           storageScript source = readIORef shellRef >>= mapM_ (\view -> execute memory view source (const $ pure ()))
           storageError :: String -> IO ()
           storageError message = do
-            Update.preparingUpdate >>= \preparing -> when preparing (putStrLn "D2: failed" >> hFlush stdout)
+            Update.preparingUpdate >>= \preparing -> when preparing (putStrLn "update: failed" >> hFlush stdout)
             closeHost host
             writeIORef starting False
             storageScript ("window.storageError(" ++ T.unpack (TE.decodeUtf8 $ L.toStrict $ encode message) ++ ")")
           recoverStartup message = do
-            Update.preparingUpdate >>= \preparing -> when preparing (putStrLn "D2: failed" >> hFlush stdout)
+            Update.preparingUpdate >>= \preparing -> when preparing (putStrLn "update: failed" >> hFlush stdout)
             modifyIORef' storageAttempt (+1)
             writeIORef (origin host) Nothing
             atomicModifyIORef' workerRef (\old -> (Nothing,old)) >>= mapM_ cancel
@@ -342,8 +343,7 @@ desktopSession memory probe = Update.withUpdateCache $ \cache -> do
                 Right identity -> do
                   writeIORef preferenceScript (Just identity)
                   navigate view url
-          startSelected = startSelectedWithConsent Nothing
-          startSelectedWithConsent consent requestedChoice directory = mask $ \unmask -> do
+          startSelected requestedChoice directory = mask $ \unmask -> do
             busy <- atomicModifyIORef' starting (\value -> (True,value))
             unless busy $ do
               modifyIORef' storageAttempt (+1)
@@ -357,27 +357,30 @@ desktopSession memory probe = Update.withUpdateCache $ \cache -> do
                   let selected = host {dataDirectory=selectedDirectory}
                   guestScript <- B.readFile (runtimeDirectory host </> ".build/web/guest.js")
                   when (B.all (`elem` (" \t\r\n" :: String)) guestScript) $ ioError $ userError "The packaged guest.js is empty. Reinstall the complete Sapiens4 app."
-                  url <- startHost consent choice selected
+                  url <- startHost choice selected
                   post $ installStorage selected url `catch` (\(e :: SomeException) -> recoverStartup $ storageMessage e)
               writeIORef workerRef (Just worker)
           chooseStorage message = do
-            let consent = case field "telemetry" message of Bool enabled -> Just enabled; _ -> Nothing
             busy <- readIORef starting
             unless busy $ case field "storage" message of
-              String "new" -> startSelectedWithConsent consent (Just StartNew) (dataDirectory host)
-              String "pick" -> do
-                picking <- atomicModifyIORef' starting (\value -> (True,value))
-                unless picking $ do
-                  post $ do
-                    result <- try (pickDirectory hwnd) `finally` writeIORef starting False
-                    case result of
-                      Left (e :: SomeException) -> storageError (storageMessage e)
-                      Right selected -> storageScript ("window.storagePicked?.(" ++ T.unpack (TE.decodeUtf8 $ L.toStrict $ encode selected) ++ ")")
-              String "existing" -> do
-                let directory=string (field "directory" message)
-                if isAbsolute directory then startSelectedWithConsent consent Nothing directory
-                  else storageError "Choose a folder before continuing."
-              _ -> pure ()
+              String "document" -> forM_ (DesktopStorage.legalDocument (T.pack (string (field "document" message)))) $ \file ->
+                void (createProcess (proc "rundll32.exe" ["url.dll,FileProtocolHandler",fileAddress (runtimeDirectory host </> file)]))
+              _ -> forM_ (DesktopStorage.storageAction message) $ \action -> (do
+                DesktopStorage.acceptTerms message
+                case action of
+                  DesktopStorage.StartFresh -> startSelected (Just StartNew) (dataDirectory host)
+                  DesktopStorage.ChooseFolder -> do
+                    picking <- atomicModifyIORef' starting (\value -> (True,value))
+                    unless picking $ do
+                      post $ do
+                        result <- try (pickDirectory hwnd) `finally` writeIORef starting False
+                        case result of
+                          Left (e :: SomeException) -> storageError (storageMessage e)
+                          Right selected -> storageScript ("window.storagePicked?.(" ++ T.unpack (TE.decodeUtf8 $ L.toStrict $ encode selected) ++ ")")
+                  DesktopStorage.UseFolder directory -> do
+                    if isAbsolute directory then startSelected Nothing directory
+                      else storageError "Choose a folder before continuing."
+                ) `catch` \(e :: IOException) -> storageError (storageMessage e)
           loaded attempt onLoaded result = do
             view <- either (ioError . userError) pure result
             dead <- readIORef closing
@@ -449,7 +452,7 @@ desktopSession memory probe = Update.withUpdateCache $ \cache -> do
                   void $ showWindow label 0
                   current <- getString (core view) 4
                   if bootstrapSource current then do
-                    DesktopStorage.bootstrapConsentScript >>= storageScript . T.unpack
+                    DesktopStorage.bootstrapTermsScript >>= storageScript . T.unpack
                     atomicModifyIORef' workerRef (\old -> (Nothing,old)) >>= mapM_ cancel
                     recovered <- atomicModifyIORef' recoveryError (\value -> (Nothing,value))
                     writeIORef starting False
@@ -459,10 +462,11 @@ desktopSession memory probe = Update.withUpdateCache $ \cache -> do
                         first <- atomicModifyIORef' initialStorage (\value -> (False,value))
                         unless first $ storageScript "window.showStorageSetup?.()"
                         when first $ do
-                          case saved of
-                            Left e -> storageError (storageMessage e)
-                            Right Nothing -> storageScript "window.showStorageSetup?.()"
-                            Right (Just directory) -> startSelected (Just AttachExisting) directory
+                          accepted <- DesktopStorage.termsAccepted
+                          if not accepted then storageScript "window.showStorageSetup?.()" else case saved of
+                              Left e -> storageError (storageMessage e)
+                              Right Nothing -> storageScript "window.showStorageSetup?.()"
+                              Right (Just directory) -> startSelected (Just AttachExisting) directory
                   else do
                     selection <- readIORef selectedRoot
                     forM_ selection $ \(directory,url) -> when (current==url) $ do

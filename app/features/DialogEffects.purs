@@ -17,7 +17,7 @@ import Effect.Exception (error, message)
 import Effect.Ref as Ref
 import Foreign.Object as O
 import Halogen as H
-import Libs4.Browser as B
+import Sapiens.BrowserFFI as B
 import Sapiens.Action as Intent
 import Sapiens.Action (Action(..), Success(..))
 import Sapiens.Connections as C

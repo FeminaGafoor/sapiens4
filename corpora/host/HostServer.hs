@@ -13,6 +13,7 @@ import qualified Service as Service
 import Assets
 import HTTP
 import Bridge
+import BrowserCrypto
 import Registry
 import qualified Onboarding as O
 import Voice (startTranscriber)
@@ -27,7 +28,7 @@ import Data.IORef
 import qualified Data.Map.Strict as M
 import Data.Aeson (encode,Value(..))
 import System.Directory (getModificationTime)
-import Network.Wai.Handler.WebSockets (websocketsOr)
+import Network.Wai.Handler.WebSockets (websocketsOr, isWebSocketsReq)
 import qualified Network.WebSockets as WS
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
@@ -60,10 +61,10 @@ startHostWith consent choice root port managed = do
  preparing <- maybe False (const True) <$> lookupEnv "SAPIENS_UPDATE_ATTEMPT"
  gate <- newAdmission preparing
  activations <- newMVar []
- startHostUsing gate activations Nothing consent choice root port managed
+ startHostUsing gate activations Nothing Nothing consent choice root port managed
 
-startHostUsing :: Admission -> MVar [(Service,IO (),IO Bool)] -> Maybe Telemetry.Telemetry -> Maybe Bool -> StorageChoice -> FilePath -> Int -> Bool -> IO Host
-startHostUsing gate activations inherited consent choice root requested managed = mask $ \restore -> do
+startHostUsing :: Admission -> MVar [(Service,IO (),IO Bool)] -> Maybe Telemetry.Telemetry -> Maybe BrowserCrypto -> Maybe Bool -> StorageChoice -> FilePath -> Int -> Bool -> IO Host
+startHostUsing gate activations inherited inheritedCrypto consent choice root requested managed = mask $ \restore -> do
  args <- getArgs
  desktopPid <- lookupEnv "SAPIENS_DESKTOP_PID"
  let desktop = "--desktop" `elem` args || desktopPid/=Nothing
@@ -82,9 +83,10 @@ startHostUsing gate activations inherited consent choice root requested managed 
   (socket,port) <- listenLoopback requested
   flip onException (Socket.close socket) $ do
    Service.attachEndpoint service ("http://127.0.0.1:"<>T.pack (show port))
-   bridge <- newBridge service
+   browser <- maybe newBrowserCrypto pure inheritedCrypto
+   bridge <- newBridge browser service
    let child selection path = do
-        host <- startHostUsing gate activations reporter Nothing selection path 0 True
+        host <- startHostUsing gate activations reporter (Just browser) Nothing selection path 0 True
         pure (hostService host,hostBridge host,hostStop host)
    registry <- Just <$> newRegistry service bridge child
    onboarding <- if managed then pure Nothing else Just <$> O.openOnboarding (repositoryRoot service)
@@ -105,7 +107,7 @@ startHostUsing gate activations inherited consent choice root requested managed 
          when (choice==StartNew) (emitTelemetry service Telemetry.CorporaCreated KM.empty)
          task <- async (forever $ do
           threadDelay (floor (nominalDiffTimeToSeconds Telemetry.heartbeatInterval * 1000000))
-          forM_ reporter $ \telemetry -> Telemetry.emit telemetry Telemetry.AppHeartbeat Nothing KM.empty)
+          forM_ reporter $ \telemetry -> Telemetry.emit telemetry Telemetry.PulseId Nothing KM.empty)
          modifyMVar_ heartbeat (const (pure (Just task)))
         startBridge bridge
         startTranscriber service >>= \stopVoice -> modifyMVar_ transcriber (const (pure stopVoice))
@@ -165,6 +167,19 @@ localRequest port write headers = do
 
 application :: Service -> Bridge -> Maybe Registry -> Maybe O.Onboarding -> Int -> Application
 application service bridge registry onboarding port req respond
+ | ["api","host","crypto"] <- pathInfo req = do
+    result <- try $ do
+     validated (localRequest port False (requestHeaders req))
+     require (requestMethod req == "GET" && B.null (rawQueryString req)) 403 "Local crypto endpoint required"
+     when (isWebSocketsReq req) $
+      require (lookup hOrigin (requestHeaders req) /= Nothing) 403 "Same-origin crypto window required"
+    case result of
+     Left (APIError code message) -> respond (jsonResponse code (obj [("error",str message)]))
+     Right () -> websocketsOr WS.defaultConnectionOptions
+      {WS.connectionMessageDataSizeLimit=WS.SizeLimit 24000000,WS.connectionFramePayloadSizeLimit=WS.SizeLimit 24000000}
+      (cryptoSocket (bridgeCrypto bridge)) (\_ send -> do
+       connected <- browserConnected (bridgeCrypto bridge)
+       send (jsonResponse 200 (obj [("browser_crypto",Bool True),("connected",Bool connected)]))) req respond
  | ["api","host","corpora",owner,"api","updates"] <- pathInfo req = do
     let headers = requestHeaders req
     result <- try $ admitted service False $ do

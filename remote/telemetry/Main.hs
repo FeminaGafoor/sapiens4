@@ -8,7 +8,7 @@ import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as BC
 import Data.Aeson (eitherDecodeFileStrict)
 import Data.String (fromString)
-import Data.Time (getCurrentTime)
+import Data.Time.Clock.POSIX (getPOSIXTime)
 import Network.Wai.Handler.Warp
 import System.Environment (getArgs, getEnv)
 import System.Posix.Signals (installHandler, sigTERM, sigINT, Handler(Catch))
@@ -24,7 +24,7 @@ main = do
  let settings = setInstallShutdownHandler installShutdown $ setGracefulShutdownTimeout (Just 5) $ setHost (fromString (bindAddress config)) $ setPort (listenPort config) defaultSettings
      flushExpired = forever $ do
       threadDelay 1000000
-      now <- getCurrentTime
+      now <- getPOSIXTime
       flushCollector collector (due config now)
  (bracket (forkIOWithUnmask (\unmask -> unmask flushExpired)) killThread $ \_ -> runSettings settings (collectorApplication collector))
   `finally` flushCollector collector (const True)

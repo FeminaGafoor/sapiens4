@@ -5,9 +5,9 @@ import Data.Aeson
 import qualified Data.Aeson.Key as K
 import qualified Data.Aeson.KeyMap as KM
 import Data.Aeson.Types (Parser)
+import Data.Int (Int64)
 import Data.Text (Text)
 import qualified Data.Text as T
-import Data.Time (UTCTime)
 import qualified Data.UUID as UUID
 import qualified Data.Vector as V
 
@@ -43,16 +43,18 @@ boundedObject = withObject "bounded object" $ \o -> do
 envelope :: Value -> Parser (Object, [Object])
 envelope = withObject "telemetry envelope" $ \o -> do
  context <- o .: "context" >>= boundedObject
- mapM_ (\key -> do value <- context .: key; unless (not (T.null value) && T.length value<=200) (fail "Invalid context field")) ["app_version","host_os","host_arch","runtime_kind"]
+ version <- context .: "app_version"
+ unless (not (T.null version) && T.length version<=200) (fail "Invalid app_version")
+ installation <- context .: "installation_id" >>= uuidText
  events <- o .: "events"
  unless (not (V.null events) && V.length events<=batchLimit) (fail "Expected 1..10 events")
  rows <- mapM event (V.toList events)
- pure (context,rows)
+ pure (KM.insert "installation_id" (String installation) context,rows)
  where
  event value = do
   row <- boundedObject value
   _ <- row .: "event_id" >>= uuidText
   kind <- row .: "event_type"
   unless (not (T.null kind) && T.length kind<=200) (fail "Invalid event_type")
-  _ <- row .: "occurred_at" :: Parser UTCTime
+  _ <- row .: "timestamp" :: Parser Int64
   pure row

@@ -24,17 +24,17 @@ import UpdateState
 newtype Lease = Lease (Ptr ())
 foreign import ccall safe "MessageBoxW" cMessageBox :: Ptr () -> CWString -> CWString -> Word32 -> IO CInt
 foreign import ccall safe "WaitForSingleObject" waitProcess :: Ptr () -> Word32 -> IO Word32
-foreign import ccall safe "d2_validate" cValidate :: CWString -> IO Word32
-foreign import ccall safe "d2_open_root" cOpenRoot :: CWString -> Ptr (Ptr ()) -> Ptr Word64 -> IO Word32
-foreign import ccall safe "d2_lease" cLease :: CWString -> CInt -> IO (Ptr ())
-foreign import ccall unsafe "d2_close" cClose :: Ptr () -> IO ()
-foreign import ccall safe "d2_downgrade" cDowngrade :: Ptr () -> IO Word32
-foreign import ccall safe "d2_publish" cPublish :: CWString -> CWString -> Ptr Word8 -> Word32 -> CInt -> IO Word32
-foreign import ccall safe "d2_copy" cCopy :: CWString -> CWString -> IO Word32
-foreign import ccall safe "d2_metadata" cMetadata :: CWString -> Ptr Word8 -> Word32 -> IO Word32
-foreign import ccall safe "d2_copy_metadata" cCopyMetadata :: CWString -> CWString -> IO Word32
-foreign import ccall safe "d2_trust" cTrust :: CWString -> CWString -> IO Word32
-foreign import ccall safe "d2_job" cJob :: Ptr () -> CInt -> IO Word32
+foreign import ccall safe "sapiens_update_validate" cValidate :: CWString -> IO Word32
+foreign import ccall safe "sapiens_update_open_root" cOpenRoot :: CWString -> Ptr (Ptr ()) -> Ptr Word64 -> IO Word32
+foreign import ccall safe "sapiens_update_lease" cLease :: CWString -> CInt -> IO (Ptr ())
+foreign import ccall unsafe "sapiens_update_close" cClose :: Ptr () -> IO ()
+foreign import ccall safe "sapiens_update_downgrade" cDowngrade :: Ptr () -> IO Word32
+foreign import ccall safe "sapiens_update_publish" cPublish :: CWString -> CWString -> Ptr Word8 -> Word32 -> CInt -> IO Word32
+foreign import ccall safe "sapiens_update_copy" cCopy :: CWString -> CWString -> IO Word32
+foreign import ccall safe "sapiens_update_metadata" cMetadata :: CWString -> Ptr Word8 -> Word32 -> IO Word32
+foreign import ccall safe "sapiens_update_copy_metadata" cCopyMetadata :: CWString -> CWString -> IO Word32
+foreign import ccall safe "sapiens_update_trust" cTrust :: CWString -> CWString -> IO Word32
+foreign import ccall safe "sapiens_update_job" cJob :: Ptr () -> CInt -> IO Word32
 
 check :: String -> Word32 -> IO ()
 check operation code = unless (code == 0) (fail (operation ++ " failed (Windows error " ++ show code ++ ")"))

@@ -21,7 +21,7 @@ import Control.Monad.Rec.Class (forever)
 import Sapiens.Telemetry as Telemetry
 import Halogen as H
 import Halogen.Subscription as HS
-import Libs4.Browser as B
+import Sapiens.BrowserFFI as B
 import Sapiens.Action (Action(..), Success(..))
 import Sapiens.Connections as C
 import Sapiens.CorporaEffects as Corpora

@@ -4,7 +4,7 @@ module Update (UpdateCache, UpdateBusy(..), withUpdateCache, updateAndRestartCac
 import Control.Exception
 import Control.Monad
 import qualified Data.ByteString as B
-#ifdef D2_FIXTURE
+#ifdef UPDATE_FIXTURE
 import qualified Data.ByteString.Lazy as BSL
 #endif
 import Data.Aeson
@@ -36,7 +36,7 @@ candidateReady :: IO () -> IO ()
 candidateReady activate = do
  preparing <- preparingUpdate
  when preparing $ do
-  putStrLn "D2: ready" >> hFlush stdout
+  putStrLn "update: ready" >> hFlush stdout
   command <- getLine `catch` \(_::IOException) -> pure ""
   unless (command `elem` ["commit", ""]) (fail "Invalid Coordinator activation message")
   (root,version) <- installed
@@ -44,7 +44,7 @@ candidateReady activate = do
   unless (case state of Settled s -> current s == version; _ -> False) (fail "Candidate is not durably selected")
   activate
   unsetEnv "SAPIENS_UPDATE_ATTEMPT"
-  (putStrLn "D2: active" >> hFlush stdout) `catch` \(_::IOException) -> pure ()
+  (putStrLn "update: active" >> hFlush stdout) `catch` \(_::IOException) -> pure ()
 
 installed :: IO (FilePath,Version)
 installed = installation >>= maybe (fail "Updates require an installed Sapiens version") pure
@@ -80,10 +80,10 @@ updateAndRestartCached cache preparing command flushPreferences stop dataDirecto
   (root,owner) <- installed
   validateRoots root dataDirectory configDirectory
   next <- requestUpdate cache root owner
-  withCandidate (versionExecutable root owner) ["--d2-update",versionName next,dataDirectory,configDirectory] [] $ \coordinator ->
+  withCandidate (versionExecutable root owner) ["--update-coordinate",versionName next,dataDirectory,configDirectory] [] $ \coordinator ->
    (do
     preparing
-    await 15 coordinator "D2: coordinator"
+    await 15 coordinator "update: coordinator"
     let quiet = command "quiesce" >>= \reply -> case reply of
          "quiet" -> pure ()
          "busy" -> throwIO UpdateBusy
@@ -102,9 +102,9 @@ requestUpdate cache@(UpdateCache ref) root owner = do
  let destination = versionPath root nonce
      publisher = verifyPublisher (versionExecutable root owner)
  validatePath (root </> "versions")
-#ifdef D2_FIXTURE
- fixture <- lookupEnv "SAPIENS_D2_FIXTURE_PAYLOAD"
- fixtureRelease <- lookupEnv "SAPIENS_D2_FIXTURE_RELEASE"
+#ifdef UPDATE_FIXTURE
+ fixture <- lookupEnv "SAPIENS_UPDATE_FIXTURE_PAYLOAD"
+ fixtureRelease <- lookupEnv "SAPIENS_UPDATE_FIXTURE_RELEASE"
 #else
  let fixture = Nothing
      fixtureRelease = Nothing
@@ -156,8 +156,8 @@ discoverRelease manager root owner = do
      latest = do
       request <- parseRequest ("https://api.github.com/repos/" ++ repository ++ "/releases/latest")
       responseBody <$> httpLbs request {requestHeaders=[("User-Agent","Sapiens4-Updater"),("Accept","application/vnd.github+json")]} manager
-#ifdef D2_FIXTURE
- fixture <- lookupEnv "SAPIENS_D2_FIXTURE_RELEASE"
+#ifdef UPDATE_FIXTURE
+ fixture <- lookupEnv "SAPIENS_UPDATE_FIXTURE_RELEASE"
  body <- maybe latest (fmap BSL.fromStrict . B.readFile) fixture
 #else
  body <- latest
@@ -189,13 +189,13 @@ parseReleaseVersion input = do
 
 updateMode :: [String] -> IO Bool
 updateMode args = case args of
- ["--d2-update",name,dataDirectory,configDirectory] -> do
+ ["--update-coordinate",name,dataDirectory,configDirectory] -> do
   version <- either fail pure (parseEither parseJSON (toJSON name))
-  putStrLn "D2: coordinator" >> hFlush stdout
+  putStrLn "update: coordinator" >> hFlush stdout
   command <- getLine `catch` \(_::IOException) -> pure ""
   when (command == "handoff") $ report (coordinate (Just (version,dataDirectory,configDirectory)))
   pure True
- ["--d2-recover"] -> report (coordinate Nothing) >> pure True
+ ["--update-recover"] -> report (coordinate Nothing) >> pure True
  _ -> pure False
  where
  report action = tryUpdate action >>= either (\problem -> showUpdateError (displayException problem) >> exitFailure) pure
@@ -266,7 +266,7 @@ runCandidate :: FilePath -> PendingUpdate -> IO ()
 runCandidate root pending = withCandidate (versionExecutable root (target pending)) []
  [("SAPIENS_UPDATE_ATTEMPT",versionName (attempt pending)),("SAPIENS_DATA_DIR",dataRoot pending),("SAPIENS_CONFIG_DIR",configRoot pending)] $ \candidate -> do
   (do
-   await (60 * 60) candidate "D2: ready"
+   await (60 * 60) candidate "update: ready"
    alive <- candidateAlive candidate
    unless alive (fail "Candidate exited before commit")
    state <- readUpdateState root
@@ -276,7 +276,7 @@ runCandidate root pending = withCandidate (versionExecutable root (target pendin
     candidateOwnership candidate True)
    `onException` (tryUpdate (candidateOwnership candidate False) >>= either (throwIO . CandidateNotJoined) pure)
   sendCandidate candidate "commit"
-  await 60 candidate "D2: active"
+  await 60 candidate "update: active"
 
 await :: Int -> Candidate -> String -> IO ()
 await seconds candidate expected =
@@ -284,5 +284,5 @@ await seconds candidate expected =
  where
  loop = do
   message <- candidateMessage candidate
-  when (message == "D2: failed") (fail "Candidate could not prepare the workspace")
+  when (message == "update: failed") (fail "Candidate could not prepare the workspace")
   unless (message == expected) loop

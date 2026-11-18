@@ -14,9 +14,8 @@ cd "$root"
     git submodule status --recursive
     sha256sum .build/bin/sapiens-linux "${SAPIENS_TEST_BLINDLY4:-submodules/blindly4/.build/release/blindly4}"
 } > "$report/environment.txt"
-export SAPIENS_TEST_LINUX_DESKTOP=1 SAPIENS_TEST_LINUX_AUTOMATION=1 SAPIENS_TEST_LINUX_VIRTUAL=1
+export SAPIENS_TEST_RESULTS="$report/results.json"
 status=0
-sh environments/linux/virtual.sh ruby submodules/libs4/ruby/bundle.rb exec rspec \
-    --format documentation --format json --out "$report/results.json" > "$report/run.log" 2>&1 || status=$?
+(cd spec && sh ../environments/linux/virtual.sh lake test) > "$report/run.log" 2>&1 || status=$?
 printf 'Qualification exit status: %s; evidence: %s\n' "$status" "$report"
 exit "$status"
