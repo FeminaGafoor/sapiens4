@@ -13,8 +13,7 @@ main = do
  args <- getArgs
  root <- getCurrentDirectory >>= buildPath
  when (os=="darwin") $ setEnv "MACOSX_DEPLOYMENT_TARGET" "13.0"
- let vendor = root </> "submodules/libs4/haskell"
-     cache = vendor </> ".cabal"
+ let cache = root </> ".build/cabal"
      platformBuild = root </> ".build" </> (if os=="darwin" then "haskell-macos-13.0" else "haskell")
      build = platformBuild </> "browser-crypto"
      suffix = if os=="mingw32" then ".exe" else ""

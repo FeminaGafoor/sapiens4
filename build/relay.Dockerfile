@@ -5,7 +5,6 @@ COPY --from=node /usr/local/bin/node /usr/local/bin/node
 COPY --from=node /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
 RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm
 WORKDIR /app
-COPY submodules/libs4/ ./submodules/libs4/
 COPY sapiens-domain.cabal ./
 COPY environments/ ./environments/
 COPY build/ ./build/

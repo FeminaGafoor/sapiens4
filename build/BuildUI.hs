@@ -20,7 +20,7 @@ filesUnder root = do
  concat <$> mapM (\entry -> let p=root</>entry in doesDirectoryExist p >>= \d -> if d then filesUnder p else pure [p]) entries
 buildUI :: FilePath -> IO ()
 buildUI root = do
- let libs=root</>"submodules/libs4"; work=root</>"build/purescript"; output=root</>".build/web"; stamp=output</>"source.sha256"
+ let libs=root</>"build/dependencies"; work=root</>"build/purescript"; output=root</>".build/web"; stamp=output</>"source.sha256"
  source <- filter ((`elem` [".purs",".js"]).takeExtension) <$> filesUnder (root</>"app")
  let inputs = sort source ++ [work</>"spago.yaml",work</>"spago.lock",libs</>"package.json",root</>"build/BuildUI.hs",root</>"build/vendor.cjs"]
  raw <- B.concat <$> mapM (\p -> (TE.encodeUtf8 (T.pack (makeRelative root p)) <>) <$> B.readFile p) inputs
@@ -66,7 +66,7 @@ buildUI root = do
  readTool name args = command name args >>= \(program,arguments) -> readProcess program arguments ""
  command name args
   | os=="mingw32", Just entry <- lookup name [("spago","spago/bin/bundle.js"),("esbuild","esbuild/bin/esbuild")] =
-     pure ("node",(root</>"submodules/libs4/node_modules"</>entry):args)
+     pure ("node",(root</>"build/dependencies/node_modules"</>entry):args)
   | os=="mingw32" && name=="npm" = do
      script <- findExecutable (name<>".cmd") >>= maybe (ioError $ userError $ "Missing build tool: "<>name) pure
      pure ("cmd.exe",["/d","/c",script]++args)

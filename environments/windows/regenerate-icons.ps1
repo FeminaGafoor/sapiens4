@@ -1,6 +1,6 @@
 $ErrorActionPreference = 'Stop'
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
-& npm install --package-lock=false --include=dev --prefix (Join-Path $repo 'submodules/libs4')
+& npm install --package-lock=false --include=dev --prefix (Join-Path $repo 'build/dependencies')
 if ($LASTEXITCODE -ne 0) { throw 'Icon dependency installation failed' }
 $paths = @()
 foreach ($icon in @(@('favicon.svg','AppIcon.ico'),@('favicon-dark.svg','AppIconDark.ico'))) {

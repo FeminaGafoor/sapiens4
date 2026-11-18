@@ -3,7 +3,7 @@ param(
     [Parameter(Mandatory)][string]$Destination
 )
 $ErrorActionPreference = 'Stop'
-$dependencies = Join-Path $PSScriptRoot '../../submodules/libs4/windows'
+$dependencies = Join-Path $PSScriptRoot '../../build/dependencies'
 $pin = Get-Content -Raw (Join-Path $dependencies 'webview2.json') | ConvertFrom-Json
 $version = $pin.version
 $cache = Join-Path $dependencies ".cache/webview2-$version"

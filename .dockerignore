@@ -12,13 +12,8 @@
 !app/**
 !license/
 !license/**
-!submodules/
-!submodules/libs4/
-submodules/libs4/**
-!submodules/libs4/package.json
-!submodules/libs4/haskell/
-!submodules/libs4/haskell/cabal.project.freeze
-!submodules/libs4/haskell/vendor/
-!submodules/libs4/haskell/vendor/**
+**/node_modules/
+**/.cache/
+**/.build/
 **/.spago/
 build/purescript/output/

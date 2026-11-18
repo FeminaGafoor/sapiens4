@@ -1,5 +1,5 @@
 const fs = require('node:fs');
-const sharp = require('../../submodules/libs4/node_modules/sharp');
+const sharp = require('../../build/dependencies/node_modules/sharp');
 
 (async () => {
   const [source, destination] = process.argv.slice(2);

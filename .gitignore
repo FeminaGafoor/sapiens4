@@ -28,6 +28,7 @@ dist-newstyle/
 
 # Optional frontend build dependencies
 node_modules/
+build/dependencies/.cache/
 
 # Windows build output
 environments/windows/bin/
