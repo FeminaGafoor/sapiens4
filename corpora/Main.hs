@@ -2,7 +2,7 @@
 module Main where
 
 import Types
-#ifdef mingw32_HOST_OS
+#if defined(mingw32_HOST_OS) || defined(darwin_HOST_OS)
 import Installation (withInstalledVersion)
 #endif
 import DataRoot
@@ -41,7 +41,7 @@ import qualified GHC.ConsoleHandler as Console
 
 main :: IO ()
 main =
-#ifdef mingw32_HOST_OS
+#if defined(mingw32_HOST_OS) || defined(darwin_HOST_OS)
  withInstalledVersion
 #endif
  run `catches` [Handler (\(code::ExitCode) -> throwIO code), Handler report]

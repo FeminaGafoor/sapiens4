@@ -88,6 +88,13 @@ common host
     c-sources: environments/windows/Update.c
     extra-libraries: user32, advapi32, bcrypt, crypt32, wintrust
 
+  if os(osx)
+    hs-source-dirs: environments/macos
+    other-modules: Installation, UpdateState, UpdatePlatform
+    c-sources: environments/macos/Update.c, environments/macos/Desktop.m
+    frameworks: Cocoa
+    cc-options: -Wno-deprecated-declarations
+
 executable sapiens4
   import: runtime, host
   main-is: Main.hs
@@ -120,11 +127,17 @@ executable sapiens-macos
     Application,
     Browser,
     Icon,
-    ObjC
+    ObjC,
+    Installation,
+    UpdateState,
+    UpdatePlatform,
+    Update,
+    UpdateBackup
   main-is: MacMain.hs
   if os(osx)
-    c-sources: submodules/libs4/haskell/native/cocoa.c, environments/macos/Process.c
+    c-sources: submodules/libs4/haskell/native/cocoa.c, environments/macos/Process.c, environments/macos/Update.c, environments/macos/Desktop.m
     frameworks: Cocoa, WebKit, CoreGraphics
+    cc-options: -Wno-deprecated-declarations
     extra-libraries: objc
   else
     buildable: False
@@ -198,5 +211,17 @@ executable sapiens-starter
     c-sources: environments/windows/Update.c
     extra-libraries: user32, advapi32, bcrypt, crypt32, wintrust
     ghc-options: -optl-mwindows
+  else
+    buildable: False
+
+executable sapiens-macos-starter
+  import: runtime
+  hs-source-dirs: environments/macos, environments/update
+  main-is: Starter.hs
+  other-modules: Installation, UpdateState, UpdatePlatform
+  if os(osx)
+    c-sources: environments/macos/Update.c, environments/macos/Desktop.m
+    frameworks: Cocoa
+    cc-options: -Wno-deprecated-declarations
   else
     buildable: False
