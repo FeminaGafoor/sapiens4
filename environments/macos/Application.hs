@@ -471,7 +471,7 @@ loadBootstrap :: Application -> IO ()
 loadBootstrap application = do
     view <- readIORef (browser application) >>= readIORef . shell
     file <- fileURL (T.pack (bootstrapPath application))
-    parent <- obj0 file "URLByDeletingLastPathComponent" >>= (`obj0` "URLByDeletingLastPathComponent")
+    parent <- fileURL (T.pack (runtime application))
     void (obj2 view "loadFileURL:allowingReadAccessToURL:" file parent)
 
 showStorageError :: Application -> Text -> IO ()

@@ -26,6 +26,7 @@
             "prelude",
             "refs",
             "strings",
+            "tailrec",
             "tuples",
             "web-dom",
             "web-events",

@@ -1,0 +1,15 @@
+export const decodeBytes = value => { try { return Uint8Array.from(atob(value), c => c.charCodeAt(0)); } catch { return null; } };
+export const encodeBytes = bytes => { let text=''; for(let i=0;i<bytes.length;i+=32768)text+=String.fromCharCode(...bytes.subarray(i,i+32768)); return btoa(text); };
+export const bytesLength = bytes => bytes.length;
+export const textBytes = text => new TextEncoder().encode(text);
+export const bytesText = bytes => { try { return new TextDecoder('utf-8',{fatal:true}).decode(bytes); } catch { return null; } };
+export const nativeKeyPair = () => globalThis.RemoteVendor.nacl.box.keyPair();
+export const nativePublicKey = secret => { try { return globalThis.RemoteVendor.nacl.box.keyPair.fromSecretKey(secret).publicKey; } finally { secret.fill(0); } };
+export const nativeRandom = size => () => globalThis.RemoteVendor.nacl.randomBytes(size);
+export const lowOrder = peer => secret => { const shared=globalThis.RemoteVendor.nacl.scalarMult(secret,peer); try { const invalid=shared.every(byte=>byte===0);if(invalid)secret.fill(0);return invalid; } finally { shared.fill(0); } };
+export const wipe = bytes => () => { bytes.fill(0); };
+export const sealBytes = message => nonce => peer => secret => { try { return globalThis.RemoteVendor.nacl.box(message,nonce,peer,secret); } finally { secret.fill(0); } };
+export const openBytes = message => nonce => peer => secret => { try { return globalThis.RemoteVendor.nacl.box.open(message,nonce,peer,secret); } finally { secret.fill(0); } };
+export const attemptValue = action => { try { return action(); } catch { return null; } };
+export const failValue = message => { throw new Error(message); };
+export const publish = api => () => { globalThis.SapiensCrypto=Object.freeze({keyPair:api.keyPair,publicKey:api.publicKey,randomBytes:n=>api.randomBytes(n)(),box:(t,n,p,s)=>api.box(t)(n)(p)(s),unbox:(t,n,p,s)=>api.unbox(t)(n)(p)(s),perform:(op,input)=>api.perform(op)(input)(),startHost:api.startHost}); };

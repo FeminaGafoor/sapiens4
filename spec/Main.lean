@@ -7,6 +7,7 @@ import jobs.system.Access
 import jobs.system.PrivateData
 import jobs.system.Recovery
 import jobs.system.RemoteCrypto
+import jobs.system.Browser
 import jobs.founder.Governance
 import jobs.founder.DeviceConsent
 import jobs.founder.Accountability
@@ -16,6 +17,7 @@ open Lean Spec
 abbrev Job := String × IO Unit
 
 def headlessJobs : List Job := [
+  ("Preserve onboarding, preferences, storage and audio through browser bindings", SystemJobs.preserveBrowserApplicationBehavior),
   ("Use shared browser crypto and require an open host window", SystemJobs.requireAnOpenBrowserForRemoteCrypto),
   ("Resume queued remote work when the host browser reopens", Founder.resumeRemoteWorkWhenBrowserReopens),
   ("Preserve model settings and reject invalid changes across restart", User.retainModelSettingsAcrossRestart),
