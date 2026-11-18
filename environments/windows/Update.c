@@ -23,7 +23,6 @@ void *d2_lease(const wchar_t *path, int exclusive) {
 void d2_close(void *h) { CloseHandle(h); }
 DWORD d2_downgrade(void *h) {
     OVERLAPPED range = {0};
-    /* Same-handle overlap retains shared ownership while removing exclusive. */
     if (!LockFileEx(h, 0, 0, 1, 0, &range)) return GetLastError();
     if (!UnlockFileEx(h, 0, 1, 0, &range)) return GetLastError();
     return 0;
@@ -64,8 +63,6 @@ static DWORD security(const wchar_t *source, const wchar_t *destination) {
     flags = DACL_SECURITY_INFORMATION | ((control & SE_DACL_PROTECTED) ? PROTECTED_DACL_SECURITY_INFORMATION : UNPROTECTED_DACL_SECURITY_INFORMATION);
     if (!EqualSid(owner, destOwner)) flags |= OWNER_SECURITY_INFORMATION;
     if (!EqualSid(group, destGroup)) flags |= GROUP_SECURITY_INFORMATION;
-    /* Keep the source's inheritance model: NamedSecurityInfo converts legacy
-       descriptors to AUTO_INHERITED; SetFileSecurity clears that marker. */
     if (control & SE_DACL_AUTO_INHERITED)
         error = SetNamedSecurityInfoW((wchar_t *)destination, SE_FILE_OBJECT, flags, owner, group, dacl, NULL);
     else if (!SetFileSecurityW(destination, flags, sd)) error = GetLastError();
@@ -173,8 +170,6 @@ static BOOL digest(const wchar_t *path, BYTE result[32]) {
     if (alg) BCryptCloseAlgorithmProvider(alg, 0);
     CloseHandle(file); return ok;
 }
-/* Stable inventory: supported attributes/times, owner/group/DACL, all NTFS streams.
-   File IDs are deliberately excluded; backup copies must have independent IDs. */
 DWORD d2_metadata(const wchar_t *path, BYTE *out, DWORD capacity) {
     BY_HANDLE_FILE_INFORMATION info; DWORD used = 0;
     if (inspect(path, &info)) return 0;

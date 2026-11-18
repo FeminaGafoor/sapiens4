@@ -342,7 +342,6 @@ whisper manager base path = do
   Just value | String raw <- get value "text" -> pure (T.unwords (T.words raw))
   _ -> failure 502 "Whisper returned no text"
 
--- A recording can be accepted before it has produced a transcribable part.
 busyVoice :: Service -> IO Bool
 busyVoice s = do
  pending <- DB.pendingVoices s

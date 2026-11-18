@@ -210,7 +210,6 @@ function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   Result := '';
 #ifdef StagePayload
-  { Payload extraction is never an in-place install. A failed extraction is abandoned. }
   if ExpandConstant('{param:DIR|}') = '' then begin
     Result := 'Payload staging requires an explicit new /DIR destination.';
     Exit;

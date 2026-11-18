@@ -3,8 +3,6 @@ module Admission (Admission, newAdmission, withAdmission, closeAdmission, openAd
 import Control.Concurrent.STM
 import Control.Exception
 
--- Shared by every corpus in one host. Closing admission waits for requests
--- already accepted; it never cancels them or the work they have submitted.
 data Phase = Preparing | Open | Closed deriving Eq
 newtype Admission = Admission (TVar (Phase, Int))
 

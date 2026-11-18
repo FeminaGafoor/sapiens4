@@ -16,7 +16,6 @@ import System.FileLock
 import UpdatePlatform
 import UpdateState
 
--- Relative names, directory flag and a digest of bytes, streams and metadata.
 type Entry = (FilePath, Bool, String)
 data Inventory = Inventory FilePath [FilePath] [FilePath] [Entry] deriving (Eq,Show)
 instance ToJSON Inventory where
@@ -89,8 +88,6 @@ snapshot destination dataDirectory configDirectory = do
  unless (copied == original) (fail "Backup verification failed; original data are unchanged")
  pure (hash (L.toStrict (encode original)))
 
--- Only the aggregate is persisted in the decision. The relative inventory is
--- reconstructed from the immutable original during each restoration attempt.
 inventories :: FilePath -> FilePath -> FilePath -> FilePath -> IO [Inventory]
 inventories dataPath configPath sourceData sourceConfig = do
  corpora <- managedRoots sourceData
@@ -106,8 +103,6 @@ copyTree source destination entries = do
  forM_ entries $ \(relative,directory,_) -> if directory
   then createDirectoryIfMissing True (destination </> relative)
   else copyOwned (source </> relative) (destination </> relative)
- -- All directory entries exist before restoring timestamps. Parent ACLs must
- -- precede child ACLs because native inheritance can modify descendants.
  forM_ entries $ \(relative,_,_) ->
   copyMetadata (source </> relative) (destination </> relative)
 

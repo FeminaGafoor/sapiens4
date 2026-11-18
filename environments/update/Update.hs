@@ -18,8 +18,6 @@ import UpdatePlatform
 import UpdateBackup
 import Installation
 
--- Preparation is transient permission carried through private process creation.
--- Only update-state.json grants permission to admit work.
 candidateReady :: IO () -> IO ()
 candidateReady activate = do
  preparing <- preparingUpdate
@@ -49,8 +47,6 @@ updateAndRestart command flushPreferences stop dataDirectory configDirectory = t
   quiet
   flushPreferences
   (root,owner) <- installed
-  -- Start and acknowledge the Coordinator while A is still usable. Failed
-  -- process creation never shuts down A. The Coordinator waits for handoff.
   withCandidate (versionExecutable root owner) ["--d2-update",versionName next,dataDirectory,configDirectory] [] $ \coordinator -> do
    (await coordinator "D2: coordinator" >> stop >> candidateOwnership coordinator True >> sendCandidate coordinator "handoff")
     `onException` candidateOwnership coordinator False
@@ -142,7 +138,7 @@ coordinate requested = do
  case dispatch of
   Running -> pure ()
   Launch version -> launchVersion root version []
-  Recover -> coordinate Nothing -- reacquire exclusive ownership and reread authority
+  Recover -> coordinate Nothing
 
 runCandidate :: FilePath -> PendingUpdate -> IO ()
 runCandidate root pending = withCandidate (versionExecutable root (target pending)) []

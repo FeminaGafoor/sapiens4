@@ -66,8 +66,6 @@ verifyPublisher current payload = withCWString current $ \s -> withCWString payl
 showUpdateError :: String -> IO ()
 showUpdateError message = withCWString message $ \body -> withCWString "Sapiens update" $ \title -> void (cMessageBox nullPtr body title 0x10)
 
--- This module is selected by Cabal. It contains Windows operations, never
--- update/commit/recovery decisions.
 validatePath :: FilePath -> IO ()
 validatePath path = do
  withCWString path cValidate >>= check "Owned path validation"
@@ -108,8 +106,6 @@ withCandidate executable args overrides = bracket acquire close
  where
  acquire = do
   inherited <- getEnvironment
-  -- Inherit native diagnostics: cancelling a reader on a discarded stderr pipe
-  -- can block until the candidate exits, retaining the installation lease.
   (Just input,Just output,_,child) <- createProcess (proc executable args)
    {std_in=CreatePipe,std_out=CreatePipe,std_err=Inherit,use_process_jobs=True,create_group=True,close_fds=True
    ,env=Just (overrides ++ filter (\(key,_) -> key `notElem` map fst overrides) inherited)}

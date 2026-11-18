@@ -195,7 +195,6 @@ stopServer quiet server = mask_ $ do
 closeStream :: Handle -> IO ()
 closeStream stream = hClose stream `catch` \(_ :: IOException) -> pure ()
 
--- Private inherited pipes, never an HTTP activation endpoint.
 updateCommand :: Host -> String -> IO String
 updateCommand host command = do
  server <- readIORef (serverProcess host) >>= maybe (fail "Application server unavailable") pure

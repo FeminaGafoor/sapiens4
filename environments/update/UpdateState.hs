@@ -74,7 +74,6 @@ readUpdateState root = do
  bytes <- B.readFile (statePath root)
  either (fail . ("Invalid update-state.json; launch refused: "++)) pure (eitherDecode bytes)
 
--- A state file is mandatory for installed versions; absence never means reset.
 installationOf :: FilePath -> IO (Maybe (FilePath,Version))
 installationOf executable = do
  path <- canonicalizePath executable

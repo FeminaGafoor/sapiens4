@@ -110,7 +110,6 @@ startService s = do
  locked s (D.pendingWorks s >> GC.dispatchGroups s)
  E.startExecution s
 
--- Queued and output-pending work is accepted work even without a live process.
 busyService :: Service -> IO Bool
 busyService s = locked s $ do
  runs <- readMVar (serviceRuns s)
