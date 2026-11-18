@@ -9,6 +9,7 @@ import Data.Aeson
 import qualified Data.Aeson.KeyMap as KM
 import qualified Data.Aeson.Key as K
 import Data.Aeson.Types (parseEither)
+import Data.Int (Int64)
 import qualified Data.ByteArray as BA
 import Data.ByteArray.Encoding (Base(Base16), convertToBase)
 import qualified Data.ByteString as B
@@ -18,7 +19,8 @@ import qualified Data.ByteString.Lazy as BL
 import qualified Data.Set as S
 import Data.Text (Text)
 import qualified Data.Text.Encoding as TE
-import Data.Time
+import Data.Time (NominalDiffTime, defaultTimeLocale, formatTime)
+import Data.Time.Clock.POSIX (POSIXTime, getPOSIXTime, posixSecondsToUTCTime)
 import qualified Data.UUID as UUID
 import qualified Data.UUID.V4 as UUID
 import qualified Data.Vector as V
@@ -30,6 +32,8 @@ import qualified Parquet.Write as P
 import System.Directory
 import System.FilePath
 import System.IO
+import System.IO.Error (isAlreadyExistsError)
+import System.Posix.Files (createLink)
 import TelemetryWire
 
 data Config = Config
@@ -56,14 +60,14 @@ instance FromJSON Config where
   pure config
 
 type Row = Object
-data Buffer = Buffer { bufferedRows :: [Row], bufferedCount :: Int, bufferedBytes :: Int, bufferedColumns :: S.Set K.Key, firstRowAt :: Maybe UTCTime }
+data Buffer = Buffer { bufferedRows :: [Row], bufferedCount :: Int, bufferedBytes :: Int, bufferedColumns :: S.Set K.Key, firstRowAt :: Maybe POSIXTime }
 emptyBuffer :: Buffer
 emptyBuffer = Buffer [] 0 0 S.empty Nothing
 data Collector = Collector { collectorConfig :: Config, collectorSecret :: B.ByteString, collectorBuffer :: MVar Buffer }
 
 newCollector :: Config -> B.ByteString -> IO Collector
 newCollector config secret = do
- createDirectoryIfMissing True (outputDirectory config)
+ createDirectoryIfMissing True (outputDirectory config </> "logs")
  Collector config secret <$> newMVar emptyBuffer
 
 passwordFor :: B.ByteString -> Text -> B.ByteString
@@ -79,10 +83,10 @@ authenticate secret header = do
  let canonical = UUID.toText parsed
  if not (B.null rest) && ident==canonical && BA.constEq (B.drop 1 rest) (passwordFor secret ident) then Just ident else Nothing
 
-normalizeRows :: UTCTime -> Text -> Object -> [Object] -> [Row]
+normalizeRows :: POSIXTime -> Text -> Object -> [Object] -> [Row]
 normalizeRows received ident context = map (\row -> KM.union reserved (KM.union commonContext (KM.union row context)))
  where
- reserved = KM.fromList [("installation_id",String ident),("received_at",toJSON received)]
+ reserved = KM.fromList [("installation_id",String ident),("received_at",toJSON (floor received :: Int64))]
  commonContext = KM.filterWithKey (\key _ -> key `elem` ["app_version","host_os","host_arch","runtime_kind"]) context
 
 cell :: Value -> Maybe B.ByteString
@@ -90,26 +94,43 @@ cell Null = Nothing
 cell (String value) = Just (TE.encodeUtf8 value)
 cell value = Just (BL.toStrict (encode value))
 
+timeCell :: Value -> Maybe Int64
+timeCell value = case fromJSON value of
+ Success seconds -> Just seconds
+ Error _ -> Nothing
+
 encodeRows :: [Row] -> B.ByteString
 encodeRows rows = P.encodeParquetMixed P.defaultWriteOptions {P.writeCompression=P.Uncompressed} schema [columns]
  where
  names = S.toAscList (S.unions (map (S.fromList . KM.keys) rows))
  root = P.SchemaElement "schema" Nothing Nothing (Just (fromIntegral (length names))) Nothing Nothing Nothing Nothing
- leaf name = P.SchemaElement (K.toText name) (Just P.Optional) (Just P.PTByteArray) Nothing (Just P.CTUtf8) (Just P.LTString) Nothing Nothing
+ isTime name = name `elem` ["timestamp","received_at"]
+ leaf name = if isTime name
+  then P.SchemaElement (K.toText name) (Just P.Optional) (Just P.PTInt64) Nothing Nothing Nothing Nothing Nothing
+  else P.SchemaElement (K.toText name) (Just P.Optional) (Just P.PTByteArray) Nothing (Just P.CTUtf8) (Just P.LTString) Nothing Nothing
  schema = V.fromList (root : map leaf names)
- columns = V.fromList [P.PCOptional (P.OptByteArray (V.fromList [KM.lookup name row >>= cell | row<-rows])) | name<-names]
+ column name = if isTime name
+  then P.PCOptional (P.OptInt64 (V.fromList [KM.lookup name row >>= timeCell | row<-rows]))
+  else P.PCOptional (P.OptByteArray (V.fromList [KM.lookup name row >>= cell | row<-rows]))
+ columns = V.fromList (map column names)
 
 writeRows :: Config -> [Row] -> IO ()
 writeRows config rows = do
- ident <- UUID.toString <$> UUID.nextRandom
- let folder = outputDirectory config
+ name <- formatTime defaultTimeLocale "telemetry-%Y-%m-%d-%H-%s" . posixSecondsToUTCTime <$> getPOSIXTime
+ let folder = outputDirectory config </> "logs"
  bracketOnError (openBinaryTempFile folder ".telemetry.tmp") (\(path,handle) -> hClose handle `finally` removeFile path) $ \(path,handle) -> do
   B.hPut handle (encodeRows rows)
   hClose handle
-  renameFile path (folder </> ident <.> "parquet")
+  let publish :: Int -> IO ()
+      publish index = do
+       let suffix = if index==0 then "" else "-"<>show index
+       createLink path (folder </> name<>suffix <.> "parquet") `catch` \(errorValue::IOException) ->
+        if isAlreadyExistsError errorValue then publish (index+1) else throwIO errorValue
+  publish 0
+  removeFile path
 
-due :: Config -> UTCTime -> Buffer -> Bool
-due config now buffer = bufferedCount buffer>=flushRows config || bufferedBytes buffer>=flushBytes config || maybe False ((>=flushAgeSeconds config) . diffUTCTime now) (firstRowAt buffer)
+due :: Config -> POSIXTime -> Buffer -> Bool
+due config now buffer = bufferedCount buffer>=flushRows config || bufferedBytes buffer>=flushBytes config || maybe False (\started -> now-started>=flushAgeSeconds config) (firstRowAt buffer)
 
 flushBuffer :: Config -> Buffer -> IO Bool
 flushBuffer config buffer = if bufferedCount buffer==0 then pure True else do
@@ -124,7 +145,7 @@ flushCollector collector shouldFlush = modifyMVar_ (collectorBuffer collector) $
   saved <- flushBuffer (collectorConfig collector) buffer
   pure (if saved then emptyBuffer else buffer)
 
-admit :: Collector -> UTCTime -> [Row] -> IO Bool
+admit :: Collector -> POSIXTime -> [Row] -> IO Bool
 admit collector now rows = modifyMVar (collectorBuffer collector) $ \prior -> do
  let config = collectorConfig collector
      bytes = sum [fromIntegral (BL.length (encode row)) | row<-rows]
@@ -169,9 +190,11 @@ collectorApplication collector req respond = do
     Left () -> errorReply status413 "Request too large"
     Right raw -> case eitherDecode raw >>= parseEither envelope of
      Left _ -> errorReply status400 "Invalid telemetry envelope"
-     Right (context,events) -> case KM.lookup "app_version" context of
-      Just (String version) | S.member version (blockedVersions config) -> errorReply status403 "Version blocked"
-      _ -> do
-       now <- getCurrentTime
-       accepted <- admit collector now (normalizeRows now ident context events)
-       if accepted then reply status202 (object ["accepted" .= length events]) else errorReply status503 "Telemetry buffer full"
+     Right (context,events)
+      | KM.lookup "installation_id" context/=Just (String ident) -> errorReply status403 "Installation ID does not match credentials"
+      | otherwise -> case KM.lookup "app_version" context of
+       Just (String version) | S.member version (blockedVersions config) -> errorReply status403 "Version blocked"
+       _ -> do
+        now <- getPOSIXTime
+        accepted <- admit collector now (normalizeRows now ident context events)
+        if accepted then reply status202 (object ["accepted" .= length events]) else errorReply status503 "Telemetry buffer full"

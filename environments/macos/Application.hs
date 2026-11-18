@@ -66,8 +66,9 @@ check application = do
                 unless (T.null readyAddress) (loadURL view readyAddress)
               else recoverStartup application "The application server stopped. Choose a folder to try again."
 
-startServer :: Application -> Maybe Bool -> StorageChoice -> FilePath -> FilePath -> IO (ServerProcess, Text)
-startServer application consent choice runtime destination = do
+startServer :: Application -> StorageChoice -> FilePath -> FilePath -> IO (ServerProcess, Text)
+startServer application choice runtime destination = do
+    telemetryArguments <- startupTelemetryArguments
     configRoot <- configDirectory
     let binary = runtime </> ".build/bin/sapiens4"
     present <- doesFileExist binary
@@ -79,7 +80,7 @@ startServer application consent choice runtime destination = do
             ["/usr/bin","/bin","/usr/sbin","/sbin","/opt/homebrew/bin","/usr/local/bin"] ++
             filter isAbsolute (maybe [] splitSearchPath $ lookup "PATH" environment)
         overrides = [("PATH",toolPath),("SAPIENS_REPOSITORY",runtime),("SAPIENS_CONFIG_DIR",configRoot),("SAPIENS_DATA_DIR",destination),("SAPIENS_DESKTOP_PID",show pid),("SAPIENS_STORAGE_MODE",storageMode choice)]
-    let command = (proc binary (["--port","0","--data-dir",destination,"--desktop"] ++ startupConsentArguments consent))
+    let command = (proc binary (["--port","0","--data-dir",destination,"--desktop"] ++ telemetryArguments))
             { cwd = Just runtime, env = Just (overrides ++ filter ((`notElem` map fst overrides) . fst) environment) }
     launchServer application destination command
 
@@ -276,7 +277,7 @@ installMethods application = do
         unless (fixture application || closing) $ do
             path <- obj0 view "URL" >>= (\u -> textProp u "path")
             when (path==T.pack (bootstrapPath application)) $ do
-                bootstrapConsentScript >>= script view
+                bootstrapTermsScript >>= script view
                 loaded <- atomicModifyIORef' (localLoaded application) (\old -> (True,old))
                 writeIORef (recovering application) False
                 problem <- atomicModifyIORef' (recoveryError application) (\old -> (Nothing,old))
@@ -284,12 +285,14 @@ installMethods application = do
                 forM_ problem (showStorageError application)
                 when (loaded && isNothing problem) $ script view "window.showStorageSetup?.()"
                 unless (loaded || isJust problem) $ do
-                    explicit <- lookupEnv "SAPIENS_DATA_DIR"
-                    selection <- try (startupDataDirectory explicit)
-                    case selection of
-                        Left (e :: IOException) -> showStorageError application (T.pack (storageMessage e))
-                        Right Nothing -> script view "window.showStorageSetup?.()"
-                        Right (Just directory) -> startSelected application (Just AttachExisting) directory
+                    accepted <- termsAccepted
+                    if not accepted then script view "window.showStorageSetup?.()" else do
+                        explicit <- lookupEnv "SAPIENS_DATA_DIR"
+                        selection <- try (startupDataDirectory explicit)
+                        case selection of
+                            Left (e :: IOException) -> showStorageError application (T.pack (storageMessage e))
+                            Right Nothing -> script view "window.showStorageSetup?.()"
+                            Right (Just directory) -> startSelected application (Just AttachExisting) directory
             sh <- withBrowser (readIORef . shell)
             readyAddress <- readIORef (address application)
             trusted <- obj0 view "URL" >>= (\u -> withBrowser (sameOrigin u . origin))
@@ -503,20 +506,24 @@ receiveMessage application message = do
         when (sourceView==sh && mainFrame && scheme=="file" && path==T.pack (bootstrapPath application)) $ do
             raw <- obj0 message "body" >>= jsonObject
             forM_ raw $ \input -> do
-              let consent = case field "telemetry" input of Bool enabled -> Just enabled; _ -> Nothing
               case text (field "storage" input) of
-                "new" -> (defaultDataDirectory >>= startSelectedWithConsent application consent (Just StartNew))
-                    `catch` \(e :: IOException) -> showStorageError application (T.pack (storageMessage e))
-                "pick" -> do
-                    busy <- atomicModifyIORef' (starting application) (\old -> (True,old))
-                    unless busy $ do
-                        selected <- chooseDataDirectory `finally` writeIORef (starting application) False
-                        script sh ("window.storagePicked?.(" <> jsonText (maybe Null (String . T.pack) selected) <> ")")
-                "existing" -> do
-                    let directory=T.unpack (text (field "directory" input))
-                    if isAbsolute directory then startSelectedWithConsent application consent Nothing directory
-                      else showStorageError application "Choose a folder before continuing."
-                _ -> pure ()
+                "document" -> forM_ (legalDocument (text (field "document" input))) $ \file -> do
+                    target <- fileURL (T.pack (runtime application </> file))
+                    workspace <- cls "NSWorkspace" >>= \c -> obj0 c "sharedWorkspace"
+                    void (obj1 workspace "openURL:" target)
+                _ -> forM_ (storageAction input) $ \action -> (do
+                    acceptTerms input
+                    case action of
+                        StartFresh -> defaultDataDirectory >>= startSelected application (Just StartNew)
+                        ChooseFolder -> do
+                            busy <- atomicModifyIORef' (starting application) (\old -> (True,old))
+                            unless busy $ do
+                                selected <- chooseDataDirectory `finally` writeIORef (starting application) False
+                                script sh ("window.storagePicked?.(" <> jsonText (maybe Null (String . T.pack) selected) <> ")")
+                        UseFolder directory -> do
+                            if isAbsolute directory then startSelected application Nothing directory
+                              else showStorageError application "Choose a folder before continuing."
+                    ) `catch` \(e :: IOException) -> showStorageError application (T.pack (storageMessage e))
 
 chooseDataDirectory :: IO (Maybe FilePath)
 chooseDataDirectory = do
@@ -613,10 +620,7 @@ recoverStartup application message = do
         writeIORef (startup application) (Just worker)
 
 startSelected :: Application -> Maybe StorageChoice -> FilePath -> IO ()
-startSelected application = startSelectedWithConsent application Nothing
-
-startSelectedWithConsent :: Application -> Maybe Bool -> Maybe StorageChoice -> FilePath -> IO ()
-startSelectedWithConsent application consent requestedChoice directory = mask $ \unmask -> do
+startSelected application requestedChoice directory = mask $ \unmask -> do
     closing <- readIORef (quitting application)
     busy <- atomicModifyIORef' (starting application) (\old -> (True,old))
     unless (closing || busy) $ do
@@ -635,7 +639,7 @@ startSelectedWithConsent application consent requestedChoice directory = mask $ 
                 guestScript <- TIO.readFile (runtime application </> ".build/web/guest.js")
                 when (T.null (T.strip guestScript)) $ ioError (userError "The packaged guest.js is empty. Reinstall the complete Sapiens4 app.")
                 mask $ \restore -> do
-                    (_,readyAddress) <- restore (startServer application consent choice (runtime application) selected)
+                    (_,readyAddress) <- restore (startServer application choice (runtime application) selected)
                     postCurrent $ do
                         writeIORef (address application) readyAddress
                         installServer application readyAddress guestScript selected

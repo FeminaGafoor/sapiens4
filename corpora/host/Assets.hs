@@ -10,7 +10,9 @@ data Asset = Asset { assetRoute :: Text, assetMime :: Text, assetFile :: FilePat
 
 publicAssets :: [(Text,Text,FilePath)]
 publicAssets =
- [("/remote-vendor.js","text/javascript",".build/web/remote-vendor.js"),
+ [("/terms-of-service.html","text/html","app/shell/terms-of-service.html"),
+  ("/privacy-policy.html","text/html","app/shell/privacy-policy.html"),
+  ("/remote-vendor.js","text/javascript",".build/web/remote-vendor.js"),
   ("/remote-crypto.js","text/javascript","app/features/remote-crypto.js"),
   ("/voice-worklet.js","text/javascript","app/features/voice-worklet.js"),
   ("/corpora.css","text/css","app/theme/corpora.css"),
