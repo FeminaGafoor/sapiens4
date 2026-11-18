@@ -8,12 +8,14 @@ import Control.Monad
 import qualified Data.ByteString as B
 import Data.Char (toLower)
 import Data.List (isPrefixOf)
+import Data.Maybe (catMaybes)
 import Foreign hiding (void)
 import Foreign.C
 import System.Directory hiding (executable)
 import System.Environment
 import System.FilePath
 import System.IO
+import System.IO.Error (isDoesNotExistError)
 import System.Posix.Process (getProcessID)
 import System.Posix.Signals
 import System.Process
@@ -145,12 +147,21 @@ withCandidate executable args overrides = bracket acquire close
  where
  acquire = do
   inherited <- getEnvironment
-  (Just input,Just output,_,child) <- createProcess (proc executable args)
+  bracketOnError (createProcess (proc executable args)
    {std_in=CreatePipe,std_out=CreatePipe,std_err=Inherit,close_fds=True,new_session=True
-   ,env=Just (overrides ++ filter ((`notElem` map fst overrides) . fst) inherited)}
-  mapM_ (\stream -> hSetEncoding stream utf8 >> hSetNewlineMode stream universalNewlineMode) [input,output]
-  pure (Candidate child input output)
- close (Candidate _ input output) = mapM_ (\h -> hClose h `catch` \(_::IOException) -> pure ()) [input,output]
+   ,env=Just (overrides ++ filter ((`notElem` map fst overrides) . fst) inherited)}) abort $
+   \pipes -> case pipes of
+    (Just input,Just output,Nothing,child) -> do
+     mapM_ (\stream -> hSetEncoding stream utf8 >> hSetNewlineMode stream universalNewlineMode) [input,output]
+     pure (Candidate child input output)
+    _ -> fail "Candidate process pipes are unavailable"
+ abort (input,output,errors,child) =
+  (do
+   getPid child >>= mapM_ (\pid -> catchJust (guard . isDoesNotExistError) (signalProcessGroup sigKILL pid) (const (pure ())))
+   void (waitForProcess child))
+  `finally` closeStreams (catMaybes [input,output,errors])
+ close (Candidate _ input output) = closeStreams [input,output]
+ closeStreams = mapM_ (\h -> hClose h `catch` \(_::IOException) -> pure ())
 candidateMessage :: Candidate -> IO String
 candidateMessage (Candidate _ _ output) = hGetLine output
 candidateAlive :: Candidate -> IO Bool
