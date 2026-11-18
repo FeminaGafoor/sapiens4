@@ -35,7 +35,15 @@ executable sapiens-domain
   default-language: Haskell2010
   ghc-options: -O2 -Wall -Werror
 
+common macos-update
+  if os(osx)
+    other-modules: Installation, UpdatePlatform
+    c-sources: environments/macos/Update.c, environments/macos/Desktop.m
+    frameworks: Cocoa
+    cc-options: -Wno-deprecated-declarations
+
 common host
+  import: macos-update
   hs-source-dirs: corpora, corpora/state, corpora/work, corpora/work/schedule, corpora/host, corpora/telemetry, remote/relay, remote/control, remote/protocol, build, environments/update
   other-modules:
     Command,
@@ -89,6 +97,9 @@ common host
     c-sources: environments/windows/Update.c
     extra-libraries: user32, advapi32, bcrypt, crypt32, wintrust
 
+  if os(osx)
+    hs-source-dirs: environments/macos
+
 executable sapiens4
   import: runtime, host
   main-is: Main.hs
@@ -105,7 +116,7 @@ executable sapiens-linux
     buildable: False
 
 executable sapiens-macos
-  import: runtime
+  import: runtime, macos-update
   hs-source-dirs: environments/macos, environments, environments/update, corpora/state, corpora/telemetry
   other-modules:
     Admission,
@@ -122,11 +133,13 @@ executable sapiens-macos
     Application,
     Browser,
     Icon,
-    ObjC
+    ObjC,
+    Update,
+    UpdateBackup
   main-is: MacMain.hs
   if os(osx)
     c-sources: submodules/libs4/haskell/native/cocoa.c, environments/macos/Process.c
-    frameworks: Cocoa, WebKit, CoreGraphics
+    frameworks: WebKit, CoreGraphics
     extra-libraries: objc
   else
     buildable: False
@@ -201,4 +214,12 @@ executable sapiens-starter
     extra-libraries: user32, advapi32, bcrypt, crypt32, wintrust
     ghc-options: -optl-mwindows
   else
+    buildable: False
+
+executable sapiens-macos-starter
+  import: runtime, macos-update
+  hs-source-dirs: environments/macos, environments/update
+  main-is: Starter.hs
+  other-modules: UpdateState
+  if !os(osx)
     buildable: False

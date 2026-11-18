@@ -1,3 +1,7 @@
 packages: ..
 import: ../submodules/libs4/haskell/cabal.project.freeze
 index-state: 2026-10-26T00:00:00Z
+
+if os(darwin)
+  package *
+    ghc-options: -optc-mmacosx-version-min=13.0 -optl-mmacosx-version-min=13.0

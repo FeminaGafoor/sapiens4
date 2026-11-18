@@ -49,6 +49,8 @@ data Action
   | GlobalEvent String Event
   | DrainNative
   | NativeReport Browser.NativeReport
+  | AppUpdateStatus Json
+  | StartAppUpdate
   | MentionChoice Int
   | MentionCursor
   | RefreshTheme

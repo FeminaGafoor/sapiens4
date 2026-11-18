@@ -2,7 +2,7 @@
 module Main where
 
 import Types
-#ifdef mingw32_HOST_OS
+#if defined(mingw32_HOST_OS) || defined(darwin_HOST_OS)
 import Installation (checkCandidateData, claimConfigRoot, withInstalledVersion)
 #endif
 import DataRoot
@@ -41,7 +41,7 @@ import qualified GHC.ConsoleHandler as Console
 
 main :: IO ()
 main =
-#ifdef mingw32_HOST_OS
+#if defined(mingw32_HOST_OS) || defined(darwin_HOST_OS)
  withInstalledVersion
 #endif
  run `catches` [Handler (\(code::ExitCode) -> throwIO code), Handler report]
@@ -112,7 +112,7 @@ hostMain root args = do
     else defaultDataDirectory
  void (asset root "/")
  void (asset root "/workspace/app.js")
-#ifdef mingw32_HOST_OS
+#if defined(mingw32_HOST_OS) || defined(darwin_HOST_OS)
  checkCandidateData directory
  claimConfigRoot =<< configDirectory
 #endif

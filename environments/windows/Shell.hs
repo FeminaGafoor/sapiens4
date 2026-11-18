@@ -52,7 +52,7 @@ runDesktop probe = withInstalledVersion $ runInBoundThread $
       withWide "Sapiens4 could not start" $ \title -> void (messageBox nullPtr message title 0x10)
 
 desktopSession :: Arena -> Bool -> IO ()
-desktopSession memory probe = do
+desktopSession memory probe = Update.withUpdateCache $ \cache -> do
   void $ setDpiAwareness (-4)
   args <- desktopArgs <$> getArgs
   host <- prepareHost args
@@ -109,10 +109,15 @@ desktopSession memory probe = do
       runPending = do
         actions <- atomicModifyIORef' pending (\actions -> ([], reverse actions))
         sequence_ actions
+      postUpdate hwnd action = do
+        atomicModifyIORef' pending (\actions -> (action:actions,()))
+        void (postMessage hwnd 0x802A 0 0)
+      reportUpdate state = readIORef shellRef >>= mapM_ (\view ->
+        execute memory view ("window.sapiensAppUpdate?.(" ++ jsonString state ++ ")") (const (pure ())))
       beginUpdate hwnd = do
-        already <- atomicModifyIORef' updating (\old -> (True,old))
         preparing <- Update.preparingUpdate
-        unless (already || preparing) $ void $ async $ do
+        already <- if preparing then pure True else atomicModifyIORef' updating (\old -> (True,old))
+        unless already $ void $ async $ do
           result <- Update.tryUpdate $ do
             directory <- readIORef activeRoot
             let flush = do
@@ -120,13 +125,13 @@ desktopSession memory probe = do
                   writeIORef preferenceFlushNonce (Just nonce)
                   void (tryTakeMVar preferencesFlushed)
                   let export = readIORef shellRef >>= mapM_ (\view -> execute memory view ("window.dispatchEvent(new CustomEvent('sapiens-preferences-flush',{detail:" ++ jsonString nonce ++ "}))") (const (pure ())))
-                  atomicModifyIORef' pending (\actions -> (export:actions,()))
-                  void (postMessage hwnd 0x802A 0 0)
+                  postUpdate hwnd export
                   saved <- timeout 10000000 (takeMVar preferencesFlushed)
                   case saved of
                     Just (Right ()) -> writeIORef preferenceFlushNonce Nothing
                     _ -> fail "Native preferences could not be saved; update cancelled."
-            Update.updateAndRestart (updateCommand host) flush (stopQuietHost host) directory configRoot
+            Update.updateAndRestartCached cache (postUpdate hwnd $ reportUpdate "updating")
+              (updateCommand host) flush (stopQuietHost host) directory configRoot
             writeIORef closing True
           let complete = case result of
                 Right () -> closeViews >> void (destroyWindow hwnd)
@@ -143,9 +148,9 @@ desktopSession memory probe = do
                       closeViews >> void (destroyWindow hwnd)
                   let report = "window.dispatchEvent(new Event('sapiens-preferences-resume'));"
                         ++ "window.dispatchEvent(new ErrorEvent('error',{message:" ++ jsonString (storageMessage e) ++ "}))"
+                  reportUpdate (case fromException e of Just Update.UpdateBusy -> "busy"; Nothing -> "error")
                   readIORef shellRef >>= mapM_ (\view -> execute memory view report (const (pure ())))
-          atomicModifyIORef' pending (\actions -> (complete:actions,()))
-          void (postMessage hwnd 0x802A 0 0)
+          postUpdate hwnd complete
       procedure hwnd message wparam lparam = case message of
         0x0112 | wparam .&. 0xfff0 == 0x7000 -> beginUpdate hwnd >> pure 0
         0x06 | wparam .&. 0xffff == 0 -> focusedWindow >>= writeIORef focusRef >> defaultProc hwnd message wparam lparam
@@ -425,6 +430,12 @@ desktopSession memory probe = do
                           _ -> pure ()
                         candidate <- Update.preparingUpdate
                         when (field "workspaceReady" message==Bool True || candidate && field "workspaceShellReady" message==Bool True) $ commitWorkspace DesktopStorage.WorkspaceReady
+                        unless candidate $ case field "appUpdate" message of
+                          String "check" -> void $ async $ do
+                            available <- Update.updateAvailable
+                            post $ reportUpdate (if available then "available" else "none")
+                          String "start" -> beginUpdate hwnd
+                          _ -> pure ()
                         applyWindowTheme hwnd light dark lastTheme message
                         case field "clientPreferences" message of
                           input@(JSON.Object _) -> savePreferences input

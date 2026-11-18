@@ -261,11 +261,36 @@ packageMac root version outputInput public = do
   relocate app
   audit app
   sign root app identity
-  image <- diskImage app temporary identity
+  forM_ profile $ \credentials -> do
+   let archive=temporary</>"notarize.zip"
+   run "ditto" ["-c","-k","--keepParent",app,archive]
+   run "xcrun" ["notarytool","submit",archive,"--keychain-profile",credentials,"--wait"]
+   run "xcrun" ["stapler","staple",app]
+  let payloadDirectory=temporary</>"payload"
+  createDirectory payloadDirectory
+  payload <- diskImage app payloadDirectory identity
+  let payloadArtifact=product</>"Sapiens-Payload-mac-arm64.dmg"
+  copyFile payload payloadArtifact
+  let launcher=temporary</>"starter"</>"Sapiens4.app"
+      launcherResources=launcher</>"Contents/Resources"
+  createDirectoryIfMissing True (launcher</>"Contents/MacOS")
+  createDirectory launcherResources
+  copy (root</>".build/bin/sapiens-macos-starter") (launcher</>"Contents/MacOS/Sapiens4")
+  copy payload (launcherResources</>"Seed.dmg")
+  copy (resources</>"AppIcon.icns") (launcherResources</>"AppIcon.icns")
+  plist <- readFile (app</>"Contents/Info.plist")
+  writeFile (launcher</>"Contents/Info.plist") (T.unpack (T.replace "com.sapiens4.desktop" "com.sapiens4.starter" (T.pack plist)))
+  run "plutil" ["-insert","LSUIElement","-bool","YES",launcher</>"Contents/Info.plist"]
+  relocate launcher
+  audit launcher
+  sign root launcher identity
+  image <- diskImage launcher temporary identity
   let artifact=product</>"Sapiens.dmg"
   renameFile image artifact
-  checksum <- capture "shasum" ["-a","256",artifact]
-  writeFile (product</>"SHA256SUMS") (take 64 checksum++"  Sapiens.dmg\n")
+  checksums <- forM [artifact,payloadArtifact] $ \file -> do
+   checksum <- capture "shasum" ["-a","256",file]
+   pure (take 64 checksum++"  "++takeFileName file++"\n")
+  writeFile (product</>"SHA256SUMS") (concat checksums)
   renameNew product output
   putStrLn ("Installer "++output</>"Sapiens.dmg")
 #else
