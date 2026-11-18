@@ -238,7 +238,8 @@ packageMac root version outputInput public = do
  unless (length (splitVersion version)==3 && all (\v -> not (null v) && all isDigit v) (splitVersion version)) $ fail "Version must be MAJOR.MINOR.PATCH"
  identity <- if public then mfilter (not . null) <$> lookupEnv "SAPIENS_MAC_SIGN_IDENTITY" else pure Nothing
  profile <- if public then mfilter (not . null) <$> lookupEnv "SAPIENS_MAC_NOTARY_PROFILE" else pure Nothing
- unless (isJust identity==isJust profile) $ fail "Set both the signing identity and notary profile, or leave both unset"
+ when (public && (isNothing identity || isNothing profile)) $
+  fail "Public releases require SAPIENS_MAC_SIGN_IDENTITY and SAPIENS_MAC_NOTARY_PROFILE"
  output <- makeAbsolute outputInput
  exists output >>= flip when (fail "Output must be a new directory")
  when (inside output root) $ fail "Output must not contain the source checkout"

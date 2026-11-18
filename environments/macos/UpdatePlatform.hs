@@ -6,11 +6,14 @@ import Control.Concurrent.Async
 import Control.Exception
 import Control.Monad
 import qualified Data.ByteString as B
+import Data.Char (isAsciiUpper, isDigit)
+import Data.List (stripPrefix)
 import Data.Maybe (catMaybes)
 import Foreign hiding (void)
 import Foreign.C
 import System.Directory hiding (executable)
 import System.Environment
+import System.Exit (ExitCode(..))
 import System.FilePath
 import System.IO
 import System.IO.Error (isDoesNotExistError)
@@ -102,19 +105,42 @@ appBundle = takeDirectory . takeDirectory . takeDirectory
 verifyBundle :: FilePath -> IO ()
 verifyBundle path = callProcess "/usr/bin/codesign" ["--verify","--deep","--strict",path]
 
-stagePayload :: FilePath -> FilePath -> IO ()
-stagePayload payload destination = do
+verifyPublisher :: FilePath -> FilePath -> IO (FilePath -> IO ())
+verifyPublisher installedExecutable payload = do
+ let installed = appBundle installedExecutable
+ (status,_,details) <- readProcessWithExitCode "/usr/bin/codesign" ["--display","--verbose=4",installed] ""
+ team <- case [value | Just value <- map (stripPrefix "TeamIdentifier=") (lines details)] of
+  [value] | status == ExitSuccess, length value == 10, all (\c -> isAsciiUpper c || isDigit c) value -> pure value
+  _ -> fail "The installed app has no Developer ID publisher for updates"
+ let publisher = "anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists"
+              ++ " and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = " ++ show team
+     verify requirement flags path = callProcess "/usr/bin/codesign" (["--verify","--strict","-R=" ++ requirement] ++ flags ++ [path])
+     verifyApp = verify ("identifier \"com.sapiens4.desktop\" and " ++ publisher) ["--deep"]
+ verifyApp installed
+ verify publisher [] payload
+ pure verifyApp
+
+stagePayload :: FilePath -> FilePath -> FilePath -> IO ()
+stagePayload installed payload destination = do
+ verifyApp <- verifyPublisher installed payload
+ stageVerifiedPayload verifyApp payload destination
+
+stageSeed :: FilePath -> FilePath -> IO ()
+stageSeed = stageVerifiedPayload verifyBundle
+
+stageVerifiedPayload :: (FilePath -> IO ()) -> FilePath -> FilePath -> IO ()
+stageVerifiedPayload verifyApp payload destination = do
  createDirectory destination
  let mount = destination </> "mount"
  createDirectory mount
  bracket_ (void (readProcess "/usr/bin/hdiutil" ["attach","-readonly","-nobrowse","-mountpoint",mount,payload] ""))
   (void (readProcess "/usr/bin/hdiutil" ["detach",mount] "")) $ do
    let source = mount </> "Sapiens4.app"
-   verifyBundle source
+   verifyApp source
    callProcess "/usr/bin/ditto" [source,destination </> "Sapiens4.app"]
  removeDirectory mount
  let app = destination </> "Sapiens4.app"
- verifyBundle app
+ verifyApp app
  ident <- readProcess "/usr/libexec/PlistBuddy" ["-c","Print :CFBundleIdentifier",app </> "Contents/Info.plist"] ""
  unless (lines ident == ["com.sapiens4.desktop"]) (fail "Unexpected application identity")
  release <- readProcess "/usr/libexec/PlistBuddy" ["-c","Print :CFBundleShortVersionString",app </> "Contents/Info.plist"] ""

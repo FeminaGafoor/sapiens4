@@ -4,6 +4,7 @@ module UpdatePlatform where
 import Control.Exception
 import Control.Monad
 import qualified Data.ByteString as B
+import Data.Char (toLower)
 import Data.Word
 import Foreign hiding (void)
 import Foreign.C
@@ -21,6 +22,7 @@ import UpdateState
 
 newtype Lease = Lease (Ptr ())
 foreign import ccall safe "MessageBoxW" cMessageBox :: Ptr () -> CWString -> CWString -> Word32 -> IO CInt
+foreign import ccall unsafe "GetSystemDirectoryW" cSystemDirectory :: CWString -> Word32 -> IO Word32
 foreign import ccall safe "WaitForSingleObject" waitProcess :: Ptr () -> Word32 -> IO Word32
 foreign import ccall safe "sapiens_update_validate" cValidate :: CWString -> IO Word32
 foreign import ccall safe "sapiens_update_open_root" cOpenRoot :: CWString -> Ptr (Ptr ()) -> Ptr Word64 -> IO Word32
@@ -93,8 +95,34 @@ versionExecutable root version = versionPath root version </> "Sapiens4.exe"
 starterDirectory :: IO FilePath
 starterDirectory = getExecutablePath >>= canonicalizePath . takeDirectory
 
-stagePayload :: FilePath -> FilePath -> IO ()
-stagePayload payload destination = do
+verifyPublisher :: FilePath -> FilePath -> IO ()
+verifyPublisher installed payload = do
+ system <- allocaArray 260 $ \buffer -> do
+  count <- cSystemDirectory buffer 260
+  unless (count > 0 && count < 260) (fail "Cannot locate system Windows PowerShell")
+  peekCWStringLen (buffer,fromIntegral count)
+ inherited <- getEnvironment
+ let powershell = system </> "WindowsPowerShell/v1.0/powershell.exe"
+     overrides = [("PSModulePath",takeDirectory powershell </> "Modules"),("SAPIENS_SIGNED_APP",installed),("SAPIENS_UPDATE_INSTALLER",payload)]
+     environment = overrides ++ filter ((`notElem` map (map toLower . fst) overrides) . map toLower . fst) inherited
+     signature = "Microsoft.PowerShell.Security\\Get-AuthenticodeSignature -LiteralPath "
+     script = unlines
+      [ "$ErrorActionPreference = 'Stop'"
+      , "$installed = " ++ signature ++ "$env:SAPIENS_SIGNED_APP"
+      , "$payload = " ++ signature ++ "$env:SAPIENS_UPDATE_INSTALLER"
+      , "if ($installed.Status -ne 'Valid' -or $payload.Status -ne 'Valid' -or"
+      , "    $installed.SignatureType -ne 'Authenticode' -or $payload.SignatureType -ne 'Authenticode' -or"
+      , "    [Convert]::ToBase64String($installed.SignerCertificate.RawData) -cne [Convert]::ToBase64String($payload.SignerCertificate.RawData)) { exit 1 }"
+      , "'verified'"
+      ]
+ (code,output,_) <- readCreateProcessWithExitCode ((proc powershell ["-NoProfile","-NonInteractive","-WindowStyle","Hidden","-Command",script])
+  {env=Just environment,close_fds=True}) ""
+ unless (code == ExitSuccess && words output == ["verified"]) $
+  fail "Update installer Authenticode signature or Sapiens publisher verification failed"
+
+stagePayload :: FilePath -> FilePath -> FilePath -> IO ()
+stagePayload installed payload destination = do
+ verifyPublisher installed payload
  createDirectory destination
  (_,_,_,child) <- createProcess (proc payload ["/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/DIR="++destination]) {close_fds=True}
  code <- waitForProcess child

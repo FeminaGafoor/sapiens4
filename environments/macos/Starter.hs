@@ -25,6 +25,6 @@ main = (do
    let seed = takeDirectory executable </> "../Resources/Seed.dmg"
    version <- freshVersion
    createDirectoryIfMissing True (root </> "versions")
-   stagePayload seed (versionPath root version)
+   stageSeed seed (versionPath root version)
    writeUpdateState root (Settled (Selection version Nothing))
  starter args) `catch` \(problem::IOException) -> showUpdateError (displayException problem) >> exitFailure

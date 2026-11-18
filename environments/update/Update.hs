@@ -42,8 +42,8 @@ candidateReady send = do
   prepared <- send "prepare-ready"
   unless (prepared == "prepared") (fail "Candidate could not prepare the Workspace")
   putStrLn "update: ready" >> hFlush stdout
-  command <- getLine `catch` \(_::IOException) -> pure ""
-  unless (command `elem` ["commit", ""]) (fail "Invalid Coordinator activation message")
+  command <- getLine
+  unless (command == "commit") (fail "Invalid Coordinator activation message")
   (root,version) <- installed
   state <- readUpdateState root
   unless (case state of Settled s -> current s == version; _ -> False) (fail "Candidate is not durably selected")
@@ -142,7 +142,7 @@ requestUpdate cache@(UpdateCache ref) root owner next = do
    pure path
  validatePath payload
  verifyPayloadDigest (releaseDigest release) payload
- stagePayload payload (versionPath root next)
+ stagePayload (versionExecutable root owner) payload (versionPath root next)
  staged <- installedVersion root next
  unless (staged == releaseVersion release) (fail "Update payload version differs from the release tag")
 
@@ -263,7 +263,7 @@ coordinate requested = do
       hPutStrLn stderr ("Sapiens update: " ++ displayException problem) `catch` \(_::IOException) -> pure ()
       case decision of
        Settled selection | current selection == next ->
-        fail ("The update was committed, but activation failed. Relaunch Sapiens with its installed shortcut. " ++ displayException problem)
+        fail ("The update was committed, but activation failed. Quit Sapiens, then open it from the installed shortcut to start the selected version. " ++ displayException problem)
        Settled selection -> pure (Launch (current selection))
        Pending _ | Just (_::CandidateNotJoined) <- fromException problem -> throwIO problem
        Pending _ -> pure Recover
@@ -294,5 +294,5 @@ await seconds candidate expected =
  where
  loop = do
   message <- candidateMessage candidate
-  when (message == "update: failed") (fail "Candidate could not prepare the workspace")
+  when (message == "update: failed") (fail ("Candidate failed before " ++ expected))
   unless (message == expected) loop
