@@ -42,6 +42,17 @@ int d2_hangup(void) {
     struct pollfd fd = {STDIN_FILENO, 0, 0};
     return poll(&fd, 1, 0) > 0 && (fd.revents & POLLHUP);
 }
+static int flush_path(const char *path, int flags, int full) {
+    int fd = open(path, O_RDONLY | O_CLOEXEC | flags);
+    if (fd < 0) return errno;
+    int error = 0;
+    if (fsync(fd) || (full && fcntl(fd, F_FULLFSYNC))) error = errno;
+    close(fd);
+    return error;
+}
+int d2_flush(const char *path, int full) {
+    return flush_path(path, O_NOFOLLOW, full);
+}
 int d2_publish(const char *path, const char *temporary, const void *bytes, size_t count) {
     int fd = open(temporary, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
     if (fd < 0) return errno;
@@ -58,13 +69,12 @@ int d2_publish(const char *path, const char *temporary, const void *bytes, size_
     if (!error && rename(temporary, path)) error = errno;
     if (!error) {
         char *parent = strdup(path);
-        char *slash = strrchr(parent, '/');
-        if (!slash) error = EINVAL;
+        char *slash = parent ? strrchr(parent, '/') : NULL;
+        if (!parent) error = ENOMEM;
+        else if (!slash) error = EINVAL;
         else {
             *slash = 0;
-            int directory = open(*parent ? parent : "/", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-            if (directory < 0) error = errno;
-            else { if (fsync(directory) || fcntl(directory, F_FULLFSYNC)) error = errno; close(directory); }
+            error = flush_path(*parent ? parent : "/", O_DIRECTORY, 1);
         }
         free(parent);
     }
@@ -136,14 +146,5 @@ int d2_metadata(const char *path, unsigned char *digest) {
         close(fd);
     }
     CC_SHA256_Final(digest, &hash);
-    return error;
-}
-
-int d2_flush(const char *path, int full) {
-    int fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
-    if (fd < 0) return errno;
-    int error = 0;
-    if (fsync(fd) || (full && fcntl(fd, F_FULLFSYNC))) error = errno;
-    close(fd);
     return error;
 }

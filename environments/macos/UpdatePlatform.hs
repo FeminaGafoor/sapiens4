@@ -15,6 +15,7 @@ import System.Directory hiding (executable)
 import System.Environment
 import System.FilePath
 import System.IO
+import System.Posix.Process (getProcessID)
 import System.Posix.Signals
 import System.Process
 import System.Timeout
@@ -87,18 +88,25 @@ starterDirectory = do
  override <- lookupEnv "SAPIENS_INSTALL_DIR"
  maybe ((</> "Library/Application Support/Sapiens4/installation") <$> getHomeDirectory) makeAbsolute override
 
+appBundle :: FilePath -> FilePath
+appBundle = takeDirectory . takeDirectory . takeDirectory
+
+verifyBundle :: FilePath -> IO ()
+verifyBundle path = callProcess "/usr/bin/codesign" ["--verify","--deep","--strict",path]
+
 verifyPublisher :: FilePath -> FilePath -> IO ()
 verifyPublisher current payload = do
- let app executable = takeDirectory (takeDirectory (takeDirectory executable))
- callProcess "/usr/bin/codesign" ["--verify","--deep","--strict",app current]
- (_,_,description) <- readProcessWithExitCode "/usr/bin/codesign" ["-d","--verbose=4",app current] ""
+ let installedApp = appBundle current
+ verifyBundle installedApp
+ (_,_,description) <- readProcessWithExitCode "/usr/bin/codesign" ["-d","--verbose=4",installedApp] ""
  team <- case mapMaybe (stripPrefix "TeamIdentifier=") (lines description) of
   [value] | length value == 10 && all (`elem` ['A'..'Z']++['0'..'9']) value -> pure value
   _ -> fail "Automatic updates require an installed Developer ID signed app"
- let target = if takeExtension payload == ".dmg" then payload else app payload
+ let image = takeExtension payload == ".dmg"
+     target = if image then payload else appBundle payload
  callProcess "/usr/bin/codesign" ["--verify","--deep","--strict","-R=anchor apple generic and certificate leaf[subject.OU] = \""++team++"\" and certificate leaf[field.1.2.840.113635.100.6.1.13] exists",target]
- when (takeExtension payload /= ".dmg") $ do
-  (_,_,requirement) <- readProcessWithExitCode "/usr/bin/codesign" ["-d","-r-",app current] ""
+ unless image $ do
+  (_,_,requirement) <- readProcessWithExitCode "/usr/bin/codesign" ["-d","-r-",installedApp] ""
   dr <- case mapMaybe (stripPrefix "designated => ") (lines requirement) of
    [value] -> pure value
    _ -> fail "Installed app has no designated requirement"
@@ -113,11 +121,11 @@ stagePayload payload destination = do
  bracket_ (void (readProcess "/usr/bin/hdiutil" ["attach","-readonly","-nobrowse","-mountpoint",mount,payload] ""))
   (void (readProcess "/usr/bin/hdiutil" ["detach",mount] "")) $ do
    let source = mount </> "Sapiens4.app"
-   callProcess "/usr/bin/codesign" ["--verify","--deep","--strict",source]
+   verifyBundle source
    callProcess "/usr/bin/ditto" [source,destination </> "Sapiens4.app"]
  removeDirectory mount
  let app = destination </> "Sapiens4.app"
- callProcess "/usr/bin/codesign" ["--verify","--deep","--strict",app]
+ verifyBundle app
  ident <- readProcess "/usr/libexec/PlistBuddy" ["-c","Print :CFBundleIdentifier",app </> "Contents/Info.plist"] ""
  unless (lines ident == ["com.sapiens4.desktop"]) (fail "Unexpected application identity")
  release <- readProcess "/usr/libexec/PlistBuddy" ["-c","Print :CFBundleShortVersionString",app </> "Contents/Info.plist"] ""
@@ -134,10 +142,10 @@ stagePayload payload destination = do
 launchVersion :: FilePath -> Version -> [String] -> IO ()
 launchVersion root version args = do
  let executable = versionExecutable root version
- callProcess "/usr/bin/codesign" ["--verify","--deep","--strict",takeDirectory (takeDirectory (takeDirectory executable))]
+ verifyBundle (appBundle executable)
  active <- if null args then withCString executable cActivate else pure 0
  inherited <- getEnvironment
- when (active == 0) $ void $ createProcess (proc (versionExecutable root version) args)
+ when (active == 0) $ void $ createProcess (proc executable args)
   {env=Just (filter ((/= "SAPIENS_UPDATE_ATTEMPT") . fst) inherited),close_fds=True,new_session=True}
 
 data Candidate = Candidate ProcessHandle Handle Handle
@@ -177,7 +185,4 @@ watchCoordinator = do
    Just (root,version) -> readUpdateState root >>= \state -> pure $ case state of
     Settled s -> current s == version
     Pending _ -> False) `catch` \(_::IOException) -> pure False
-  unless selected (signalProcess sigTERM =<< getProcessID')
- where
- getProcessID' = fromIntegral <$> cGetPid
-foreign import ccall unsafe "getpid" cGetPid :: IO CInt
+  unless selected (signalProcess sigTERM =<< getProcessID)

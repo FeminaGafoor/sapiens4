@@ -164,37 +164,37 @@ killServerGroup process = withServerHandle process $ \state -> case state of
             when (group==pid) (signalProcessGroup sigKILL group)
     _ -> pure ()
 
-stopServer :: ServerProcess -> IO ()
+stopServer :: ServerProcess -> IO Bool
 stopServer server = mask_ $ do
-    stop
+    graceful <- timeout 10000000 $ do
+        sent <- (hPutStrLn input "stop" >> hFlush input >> pure True) `catch` (\(_ :: IOException) -> pure False)
+        close input
+        let await = serverExited process >>= \ended -> unless ended (threadDelay 50000 >> await)
+        await
+        pure sent
+    confirmed <- timeout 5000000 $ do
+        signal (killServerGroup process)
+        let sweep = do
+                owned <- serverProcesses server
+                unless (null owned) $ do
+                    withServerHandle process $ \state -> case state of
+                        OpenHandle root | root==serverSession server -> forM_ owned $ \pid -> do
+                            session <- processSession pid
+                            when (session==root) (signal (signalProcess sigKILL pid))
+                        _ -> pure ()
+                    threadDelay 50000
+                    sweep
+        sweep
+        void (waitForProcess process)
+    when (isNothing confirmed) (ioError (userError "The application server session could not be stopped."))
     (cancel (serverErrors server) `finally` mapM_ cancel (serverDrain server))
-        `finally` mapM_ (\h -> hClose h `catch` (\(_ :: IOException) -> pure ())) [serverInput server,serverOutput server]
+        `finally` mapM_ close [input,serverOutput server]
+    pure (graceful == Just True)
     where
         process=serverHandle server
         input=serverInput server
+        close h = hClose h `catch` (\(_ :: IOException) -> pure ())
         signal action = action `catch` (\(e :: IOException) -> unless (isDoesNotExistError e) (throwIO e))
-        stop = do
-            void $ timeout 10000000 $ do
-                (hPutStrLn input "stop" >> hFlush input >> hClose input) `catch` (\(_ :: IOException) -> pure ())
-                let await = do
-                        ended <- serverExited process
-                        unless ended (threadDelay 50000 >> await)
-                await
-            confirmed <- timeout 5000000 $ do
-                signal (killServerGroup process)
-                let sweep = do
-                        owned <- serverProcesses server
-                        unless (null owned) $ do
-                            withServerHandle process $ \state -> case state of
-                                OpenHandle root | root==serverSession server -> forM_ owned $ \pid -> do
-                                    session <- processSession pid
-                                    when (session==root) (signal (signalProcess sigKILL pid))
-                                _ -> pure ()
-                            threadDelay 50000
-                            sweep
-                sweep
-                void (waitForProcess process)
-            when (isNothing confirmed) (ioError (userError "The application server session could not be stopped."))
 
 alert :: Text -> IO ()
 alert message = void $ prompt message ["OK"]
@@ -501,7 +501,7 @@ closeApplication :: Application -> IO ()
 closeApplication application = do
     unless (fixture application) (flushPreferences application)
     atomicModifyIORef' (startup application) (\old -> (Nothing,old)) >>= mapM_ cancel
-    stopOwnedServer application
+    void (stopOwnedServer application)
 
 receiveMessage :: Application -> Obj -> IO ()
 receiveMessage application message = do
@@ -577,11 +577,12 @@ installClientPreferences application view readyAddress directory = unless (fixtu
     injection <- allocated "WKUserScript" >>= \o -> obj3 o "initWithSource:injectionTime:forMainFrameOnly:" content (int 0) (int 1)
     void (obj1 user "addUserScript:" injection)
 
-stopOwnedServer :: Application -> IO ()
+stopOwnedServer :: Application -> IO Bool
 stopOwnedServer application = mask_ $ do
     current <- readIORef (child application)
-    mapM_ stopServer current
+    graceful <- maybe (pure False) stopServer current
     writeIORef (child application) Nothing
+    pure graceful
 
 replaceBrowser :: Application -> Text -> Text -> IO Obj
 replaceBrowser application destination guestScript = do
@@ -625,7 +626,7 @@ recoverStartup application message = do
             stopped <- try (stopOwnedServer application)
             let detail = case stopped of
                     Left (e :: SomeException) -> message <> " Cleanup failed: " <> T.pack (storageMessage e)
-                    Right () -> message
+                    Right _ -> message
             post application $ do
                 writeIORef (address application) ""
                 void (replaceBrowser application "about:blank" "")
@@ -651,7 +652,7 @@ startSelectedWithConsent application consent requestedChoice directory = mask $ 
         worker <- async $ handle (\(e :: SomeException) -> case fromException e :: Maybe SomeAsyncException of
             Just _ -> throwIO e
             Nothing -> postCurrent (recoverStartup application (T.pack (storageMessage e)))) $ unmask $ do
-                stopOwnedServer application
+                void (stopOwnedServer application)
                 selected <- canonicalizePath directory
                 choice <- maybe (storageChoiceForDirectory selected) pure requestedChoice
                 guestScript <- TIO.readFile (runtime application </> ".build/web/guest.js")
@@ -734,12 +735,8 @@ beginUpdate application = do
                     config <- configDirectory
                     let stop = do
                             writeIORef (address application) ""
-                            hPutStrLn (serverInput server) "stop" >> hFlush (serverInput server)
-                            let await = serverExited (serverHandle server) >>= \done -> unless done (threadDelay 50000 >> await)
-                            graceful <- timeout 10000000 await
-                            stopOwnedServer application
-                            when (isNothing graceful) (fail "The idle backend did not shut down cleanly; update cancelled")
-                            writeIORef (address application) ""
+                            graceful <- stopOwnedServer application
+                            unless graceful (fail "The idle backend did not shut down cleanly; update cancelled")
                     Update.updateAndRestart (updateCommand application)
                         (mirrorPreferences (preferenceDomain application) False) stop (serverDirectory server) config
                 post application $ case result of

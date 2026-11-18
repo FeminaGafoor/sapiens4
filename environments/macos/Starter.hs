@@ -8,7 +8,6 @@ import UpdateState
 import System.Directory
 import System.Environment
 import System.FilePath
-import System.Process
 import System.Exit
 
 main :: IO ()
@@ -22,7 +21,7 @@ main = (do
   exists <- doesFileExist (statePath root)
   unless exists $ do
    executable <- getExecutablePath
-   callProcess "/usr/bin/codesign" ["--verify","--deep","--strict",takeDirectory (takeDirectory (takeDirectory executable))]
+   verifyBundle (appBundle executable)
    let seed = takeDirectory executable </> "../Resources/Seed.dmg"
    version <- freshVersion
    createDirectoryIfMissing True (root </> "versions")
