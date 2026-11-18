@@ -7,15 +7,12 @@ import Control.Exception
 import Control.Monad
 import qualified Crypto.Hash.SHA256 as SHA256
 import qualified Data.ByteString as B
-#ifdef UPDATE_FIXTURE
 import qualified Data.ByteString.Lazy as BSL
-#endif
 import Data.Aeson
 import Data.Aeson.Types (parseEither)
 import Data.Char (isSpace)
 import Data.List (stripPrefix)
 import Data.IORef
-import Data.Maybe (isNothing)
 import Data.Unique (hashUnique, newUnique)
 import Text.Read (readMaybe)
 import Network.HTTP.Client
@@ -37,17 +34,20 @@ tryUpdate = tryJust $ \problem -> case fromException problem :: Maybe SomeAsyncE
  Just _ -> Nothing
  Nothing -> Just problem
 
-candidateReady :: IO () -> IO ()
-candidateReady activate = do
+candidateReady :: (String -> IO String) -> IO ()
+candidateReady send = do
  preparing <- preparingUpdate
  when preparing $ do
+  prepared <- send "prepare-ready"
+  unless (prepared == "prepared") (fail "Candidate could not prepare the Workspace")
   putStrLn "update: ready" >> hFlush stdout
   command <- getLine `catch` \(_::IOException) -> pure ""
   unless (command `elem` ["commit", ""]) (fail "Invalid Coordinator activation message")
   (root,version) <- installed
   state <- readUpdateState root
   unless (case state of Settled s -> current s == version; _ -> False) (fail "Candidate is not durably selected")
-  activate
+  active <- send "activate"
+  unless (active == "active") (fail "Candidate could not activate")
   unsetEnv "SAPIENS_UPDATE_ATTEMPT"
   (putStrLn "update: active" >> hFlush stdout) `catch` \(_::IOException) -> pure ()
 
@@ -57,9 +57,9 @@ installed = installation >>= maybe (fail "Updates require an installed Sapiens v
 data Release = Release
  { releaseVersion :: [Integer]
  , releaseURL :: String
- , releaseDigest :: Maybe String
+ , releaseDigest :: String
  } deriving Eq
-newtype UpdateCache = UpdateCache (IORef (Maybe (Maybe Release,FilePath)))
+newtype UpdateCache = UpdateCache (IORef (Maybe (Release,FilePath)))
 
 withUpdateCache :: (UpdateCache -> IO a) -> IO a
 withUpdateCache = bracket (UpdateCache <$> newIORef Nothing) clearUpdateCache
@@ -126,15 +126,9 @@ requestUpdate :: UpdateCache -> FilePath -> Version -> Version -> IO ()
 requestUpdate cache@(UpdateCache ref) root owner nonce = do
  let destination = versionPath root nonce
  validatePath (root </> "versions")
-#ifdef UPDATE_FIXTURE
- fixture <- lookupEnv "SAPIENS_UPDATE_FIXTURE_PAYLOAD"
- fixtureRelease <- lookupEnv "SAPIENS_UPDATE_FIXTURE_RELEASE"
-#else
- let fixture = Nothing
-     fixtureRelease = Nothing
-#endif
+ fixture <- updateFixture
  manager <- newManager tlsManagerSettings
- release <- if isNothing fixture || not (isNothing fixtureRelease) then Just <$> discoverRelease manager root owner else pure Nothing
+ release <- discoverRelease manager root owner (fst <$> fixture)
  existing <- readIORef ref
  payload <- case existing of
   Just (cached,path) | release == cached -> pure path
@@ -142,23 +136,19 @@ requestUpdate cache@(UpdateCache ref) root owner nonce = do
    clearUpdateCache cache
    let path = root </> (versionName nonce ++ "-" ++ payloadName)
    writeIORef ref (Just (release,path))
-   case (fixture,release) of
-    (Just file,_) -> copyFile file path
-    (Nothing,Just available) -> do
-     transfer <- parseRequest (releaseURL available)
+   case snd <$> fixture of
+    Just file -> copyFile file path
+    Nothing -> do
+     transfer <- parseRequest (releaseURL release)
      withResponse transfer manager $ \result -> withBinaryFile path WriteMode $ \file ->
       let loop = do chunk <- brRead (responseBody result); unless (B.null chunk) (B.hPut file chunk >> loop)
       in loop
-    _ -> fail "No update payload is available"
    pure path
  validatePath payload
- when (isNothing fixture) $ do
-  expected <- maybe (fail "Missing update payload SHA-256") pure (release >>= releaseDigest)
-  verifyPayloadDigest expected payload
+ verifyPayloadDigest (releaseDigest release) payload
  stagePayload payload destination
- forM_ release $ \available -> do
-  staged <- installedVersion root nonce
-  unless (staged == releaseVersion available) (fail "Update payload version differs from the release tag")
+ staged <- installedVersion root nonce
+ unless (staged == releaseVersion release) (fail "Update payload version differs from the release tag")
 
 verifyPayloadDigest :: String -> FilePath -> IO ()
 verifyPayloadDigest expected path = do
@@ -175,27 +165,35 @@ updateAvailable :: IO Bool
 updateAvailable = do
  result <- tryUpdate $ do
   (root,owner) <- installed
+  fixture <- updateFixture
   manager <- newManager tlsManagerSettings
-  void (discoverRelease manager root owner)
+  void (discoverRelease manager root owner (fst <$> fixture))
  pure (either (const False) (const True) result)
 
 installedVersion :: FilePath -> Version -> IO [Integer]
 installedVersion root version = readFile (versionPath root version </> "sapiens-release.version") >>= parseReleaseVersion
 
-discoverRelease :: Manager -> FilePath -> Version -> IO Release
-discoverRelease manager root owner = do
+updateFixture :: IO (Maybe (FilePath,FilePath))
+#ifdef UPDATE_FIXTURE
+updateFixture = do
+ manifest <- lookupEnv "SAPIENS_UPDATE_FIXTURE_RELEASE"
+ payload <- lookupEnv "SAPIENS_UPDATE_FIXTURE_PAYLOAD"
+ case (manifest,payload) of
+  (Nothing,Nothing) -> pure Nothing
+  (Just release,Just file) -> pure (Just (release,file))
+  _ -> fail "Set both the update fixture manifest and package paths"
+#else
+updateFixture = pure Nothing
+#endif
+
+discoverRelease :: Manager -> FilePath -> Version -> Maybe FilePath -> IO Release
+discoverRelease manager root owner fixtureManifest = do
  installedRelease <- installedVersion root owner
  let repository = "aleski-green/sapiens4"
      latest = do
       request <- parseRequest ("https://api.github.com/repos/" ++ repository ++ "/releases/latest")
       responseBody <$> httpLbs request {requestHeaders=[("User-Agent","Sapiens4-Updater"),("Accept","application/vnd.github+json")]} manager
-#ifdef UPDATE_FIXTURE
- fixture <- lookupEnv "SAPIENS_UPDATE_FIXTURE_RELEASE"
- body <- maybe latest (fmap BSL.fromStrict . B.readFile) fixture
-#else
- let fixture = Nothing :: Maybe FilePath
- body <- latest
-#endif
+ body <- maybe latest BSL.readFile fixtureManifest
  value <- either fail pure (eitherDecode body)
  tag <- either fail pure (parseEither (withObject "release" (\o -> o .: "tag_name")) value)
  available <- parseReleaseVersion tag
@@ -205,9 +203,9 @@ discoverRelease manager root owner = do
  entries <- forM assets (either fail pure . parseEither asset) :: IO [(String,(String,Maybe String))]
  (url,publishedDigest) <- maybe (fail "No update payload for this platform is available in the latest release") pure (lookup payloadName entries)
  unless (url == "https://github.com/" ++ repository ++ "/releases/download/" ++ tag ++ "/" ++ payloadName) (fail "Unexpected update download origin")
- let digest = publishedDigest >>= stripPrefix "sha256:"
- when (maybe (isNothing fixture) (not . validDigest) digest) (fail "Missing or invalid update payload SHA-256")
- pure (Release available url digest)
+ case publishedDigest >>= stripPrefix "sha256:" of
+  Just digest | validDigest digest -> pure (Release available url digest)
+  _ -> fail "Missing or invalid update payload SHA-256"
 
 parseReleaseVersion :: String -> IO [Integer]
 parseReleaseVersion input = do

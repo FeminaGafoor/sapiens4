@@ -1,7 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE CPP #-}
-module Service (Service, APIError(..), openService, openServiceWith, busyService, prepareService, startService, closeService, serviceRoot, attachEndpoint, dispatch, snapshot, corporaIdentity) where
+module Service (Service, APIError(..), openService, openServiceWith, busyService, prepareService, prepareUpdatedService, startService, closeService, serviceRoot, attachEndpoint, dispatch, corporaIdentity) where
 
 import Control.Concurrent
 import Admission
@@ -106,7 +106,17 @@ attachEndpoint s url = locked s $ do
  writeIORef (serviceEndpoint s) url
  DB.agents s >>= mapM_ (Mgt.prepare s . (`at` "id"))
 prepareService :: Service -> IO ()
-prepareService s = locked s (D.pendingWorks s >> GC.projectQueuedGroups s)
+prepareService s = locked s (prepareQueues s)
+
+prepareUpdatedService :: Service -> IO ()
+prepareUpdatedService s = locked s $ do
+ DB.agents s >>= mapM_ (DB.project s . (`at` "id"))
+ GC.reconcileGroups s
+ DB.values s DB.Groups >>= mapM_ (G.folder s . (`at` "id"))
+ prepareQueues s
+
+prepareQueues :: Service -> IO ()
+prepareQueues s = D.pendingWorks s >> GC.projectQueuedGroups s
 
 startService :: Service -> IO ()
 startService = E.startExecution
@@ -133,8 +143,6 @@ closeService s = do
   (do chief <- DB.mainAgent s
       DB.record s [chief] "corpora" "system.stopped" empty "system" Nothing)
    `finally` (DB.closeDatabase s `finally` unlockFile (serviceFileLock s))
-snapshot :: Service -> IO Value
-snapshot s = locked s (snapshotUnlocked s)
 snapshotUnlocked :: Service -> IO Value
 snapshotUnlocked s = do
  revision <- readTVarIO (serviceRevision s)

@@ -280,13 +280,7 @@ desktopSession memory probe = Update.withUpdateCache $ \cache -> do
           commitWorkspace signal =
             DesktopStorage.saveWhenReady firstSignal signal selectedRoot fst recoverStartup $ \(_,url) -> (do
               atomicModifyIORef' workerRef (\old -> (Nothing,old)) >>= mapM_ cancel
-              candidate <- Update.preparingUpdate
-              when candidate $ do
-                prepared <- updateCommand host "prepare-ready"
-                unless (prepared == "prepared") (fail "Candidate preparation did not quiesce")
-              Update.candidateReady $ do
-                response <- updateCommand host "activate"
-                unless (response == "active") (fail "Candidate activation failed")
+              Update.candidateReady (updateCommand host)
               writeIORef starting False
               storageScript "window.dispatchEvent(new Event('sapiens-preferences-ready'))"
               when probe $ putStrLn "TITLE: Sapiens4" >> putStrLn ("Sapiens4: " ++ url))

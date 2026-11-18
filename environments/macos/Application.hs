@@ -680,13 +680,7 @@ commitWorkspace :: Application -> WorkspaceSignal -> IO ()
 commitWorkspace application signal = handle (\(problem::IOException) -> recoverStartup application (T.pack (displayException problem))) $
     saveWhenReady (firstSignal application) signal (selectedRoot application) id (recoverStartup application . T.pack) $ \_ -> do
         atomicModifyIORef' (startup application) (\old -> (Nothing,old)) >>= mapM_ cancel
-        candidate <- Update.preparingUpdate
-        when candidate $ do
-            prepared <- updateCommand application "prepare-ready"
-            unless (prepared == "prepared") (fail "Candidate could not prepare the Workspace")
-        Update.candidateReady $ do
-            reply <- updateCommand application "activate"
-            unless (reply == "active") (fail "Candidate could not activate")
+        Update.candidateReady (updateCommand application)
         writeIORef (starting application) False
 
 foreign import ccall safe "sapiens_update_preferences" cPreferences :: CString -> CString -> CString -> CInt -> IO CInt

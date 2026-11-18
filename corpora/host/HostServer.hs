@@ -132,9 +132,8 @@ startHostUsing gate activations inherited inheritedCrypto consent choice root re
         pure (not busy)
        prepareReady = do
         closeAdmission gate
-        mapM_ prepareRegistry registry
         owned <- readMVar activations
-        forM_ owned $ \(s,_,_) -> void (Service.snapshot s) >> Service.prepareService s
+        forM_ owned $ \(s,_,_) -> Service.prepareUpdatedService s
    let busy = do
         work <- Service.busyService service
         pairing <- or <$> mapM (fmap (not . M.null) . readIORef . registryPairClients) registry
