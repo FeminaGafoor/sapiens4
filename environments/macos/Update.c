@@ -143,3 +143,12 @@ int d2_metadata(const char *path, unsigned char *digest) {
     CC_SHA256_Final(digest, &hash);
     return error;
 }
+
+int d2_flush(const char *path, int full) {
+    int fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0) return errno;
+    int error = 0;
+    if (fsync(fd) || (full && fcntl(fd, F_FULLFSYNC))) error = errno;
+    close(fd);
+    return error;
+}

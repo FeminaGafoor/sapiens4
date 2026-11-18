@@ -744,4 +744,8 @@ beginUpdate application = do
                         connected <- not . T.null <$> readIORef (address application)
                         if connected then alert (T.pack (displayException problem))
                           else recoverStartup application (T.pack (displayException problem))
-                    Right () -> void (obj1 (native application) "terminate:" nullPtr)
+                    Right () -> do
+                        -- Leave the tick callback before Cocoa's deferred-quit
+                        -- loop; that loop needs this timer to deliver its reply.
+                        terminate <- sel "terminate:"
+                        void (obj3 (native application) "performSelectorOnMainThread:withObject:waitUntilDone:" terminate nullPtr (int 0))

@@ -26,6 +26,7 @@ foreign import ccall safe "d2_lease" cLease :: CString -> CInt -> IO CInt
 foreign import ccall unsafe "close" cClose :: CInt -> IO CInt
 foreign import ccall safe "d2_downgrade" cDowngrade :: CInt -> IO CInt
 foreign import ccall safe "d2_publish" cPublish :: CString -> CString -> Ptr Word8 -> CSize -> IO CInt
+foreign import ccall safe "d2_flush" cFlush :: CString -> CInt -> IO CInt
 foreign import ccall safe "d2_copy" cCopy :: CString -> CString -> CInt -> IO CInt
 foreign import ccall safe "d2_metadata" cMetadata :: CString -> Ptr Word8 -> IO CInt
 foreign import ccall safe "d2_error" cError :: CString -> IO ()
@@ -111,8 +112,8 @@ stagePayload payload destination = do
  createDirectory destination
  let mount = destination </> "mount"
  createDirectory mount
- bracket_ (callProcess "/usr/bin/hdiutil" ["attach","-readonly","-nobrowse","-mountpoint",mount,payload])
-  (callProcess "/usr/bin/hdiutil" ["detach",mount]) $ do
+ bracket_ (void (readProcess "/usr/bin/hdiutil" ["attach","-readonly","-nobrowse","-mountpoint",mount,payload] ""))
+  (void (readProcess "/usr/bin/hdiutil" ["detach",mount] "")) $ do
    let source = mount </> "Sapiens4.app"
    callProcess "/usr/bin/codesign" ["--verify","--deep","--strict",source]
    callProcess "/usr/bin/ditto" [source,destination </> "Sapiens4.app"]
@@ -123,6 +124,15 @@ stagePayload payload destination = do
  unless (lines ident == ["com.sapiens4.desktop"]) (fail "Unexpected application identity")
  release <- readProcess "/usr/libexec/PlistBuddy" ["-c","Print :CFBundleShortVersionString",app </> "Contents/Info.plist"] ""
  writeFile (destination </> "sapiens-release.version") release
+ -- Submit every staged file before publishing Pending, then flush the device.
+ let flush path full = withCString path (\p -> cFlush p full >>= check "Staged bundle durability")
+     walk path = do
+      validatePath path
+      directory <- doesDirectoryExist path
+      when directory (listDirectory path >>= mapM_ (walk . (path </>)))
+      flush path 0
+ walk destination
+ flush (takeDirectory destination) 1
 
 launchVersion :: FilePath -> Version -> [String] -> IO ()
 launchVersion root version args = do
