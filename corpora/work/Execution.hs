@@ -229,7 +229,7 @@ launch s a batch tick slot batching = do
    modifyMVar_ (serviceRuns s) (pure . M.delete i)
    D.pendingWorks s
    G.reconcileGroups s
-   G.dispatchGroups s
+   G.projectQueuedGroups s
    notifyChange s
 publish :: Service -> Text -> Pulse -> IO ()
 publish s a tick = forM_ [1,2] $ \slot -> do
@@ -277,7 +277,7 @@ onPulse s tick = do
  when (pulseFrequency tick==Bph60 || (pulseFrequency tick==Bpm60 && even (pulseNumber tick))) $ do
   D.pendingWorks s
   G.reconcileGroups s
-  G.dispatchGroups s
+  G.projectQueuedGroups s
   rows <- DB.agents s
   forM_ rows $ \row -> do
    let a=at row "id"

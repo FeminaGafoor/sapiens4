@@ -74,11 +74,16 @@ submitGroup s gid input actor = do
    calls <- mapM (\target -> newRequest entry target root) (filter (/= actor) (nub addressed))
    void (saveGroup s (put "requests" (arr (items group "requests" ++ calls)) (append "messages" entry group)) actor "message" (get entry "id"))
    when (actor == "admin") $ DB.forgetDrafts s gid attachments
-   dispatchGroups s
+   projectQueuedGroups s
    pure entry
 
-dispatchGroups :: Service -> IO ()
-dispatchGroups s = do
+hasQueuedGroups :: Service -> IO Bool
+hasQueuedGroups s = do
+ groups <- filter (not . boolean . (`get` "archived")) <$> DB.values s DB.Groups
+ any (any ((==Queued) . requestStatus)) <$> mapM readRequests groups
+
+projectQueuedGroups :: Service -> IO ()
+projectQueuedGroups s = do
  stopping <- readIORef (serviceStopping s)
  unless stopping $ DB.values s DB.Groups >>= mapM_ dispatch
  where
@@ -258,5 +263,5 @@ actionGroup s gid rid action = do
     void (saveGroup s group "admin" "call cancelled" (str rid))
    else failure 404 "Unknown turn action"
    DB.project s owner
- reconcileGroups s; dispatchGroups s
+ reconcileGroups s; projectQueuedGroups s
  pure (obj [("saved",Bool True)])

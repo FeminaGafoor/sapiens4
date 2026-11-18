@@ -1,7 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE CPP #-}
-module Service (Service, APIError(..), openService, openServiceWith, busyService, startService, closeService, serviceRoot, attachEndpoint, dispatch, snapshot, corporaIdentity) where
+module Service (Service, APIError(..), openService, openServiceWith, busyService, prepareService, startService, closeService, serviceRoot, attachEndpoint, dispatch, snapshot, corporaIdentity) where
 
 import Control.Concurrent
 import Admission
@@ -105,10 +105,11 @@ attachEndpoint :: Service -> Text -> IO ()
 attachEndpoint s url = locked s $ do
  writeIORef (serviceEndpoint s) url
  DB.agents s >>= mapM_ (Mgt.prepare s . (`at` "id"))
+prepareService :: Service -> IO ()
+prepareService s = locked s (D.pendingWorks s >> GC.projectQueuedGroups s)
+
 startService :: Service -> IO ()
-startService s = do
- locked s (D.pendingWorks s >> GC.dispatchGroups s)
- E.startExecution s
+startService = E.startExecution
 
 busyService :: Service -> IO Bool
 busyService s = locked s $ do
@@ -116,7 +117,8 @@ busyService s = locked s $ do
  turns <- DB.turns s
  works <- D.readWorks s
  voices <- busyVoice s
- pure (voices || not (M.null runs) || any (\t -> at t "status" `elem` ["queued","running","output_pending"]) turns
+ groups <- GC.hasQueuedGroups s
+ pure (voices || groups || not (M.null runs) || any (\t -> at t "status" `elem` ["queued","running","output_pending"]) turns
        || any (any ((`elem` [D.CallQueued,D.CallRunning]) . D.callState) . D.workCalls) works)
 closeService :: Service -> IO ()
 closeService s = do

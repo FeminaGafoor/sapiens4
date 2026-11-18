@@ -7,6 +7,7 @@ import System.Environment (getArgs)
 import qualified Data.Aeson.KeyMap as KM
 import Data.Time (nominalDiffTimeToSeconds)
 import DataRoot
+import UpdateState (assertDataAvailable)
 import System.Environment (lookupEnv)
 import qualified Service as Service
 import Assets
@@ -111,6 +112,7 @@ startHostUsing gate activations inherited consent choice root requested managed 
         pure True
        activateAll = do
         owned <- readMVar activations
+        assertDataAvailable (serviceRoot service)
         reporter <- readIORef (serviceTelemetry service)
         when (not managed && maybe True (const False) reporter) $ do
          args <- getArgs
@@ -129,7 +131,7 @@ startHostUsing gate activations inherited consent choice root requested managed 
         closeAdmission gate
         mapM_ prepareRegistry registry
         owned <- readMVar activations
-        mapM_ (\(s,_,_) -> void (Service.snapshot s)) owned
+        forM_ owned $ \(s,_,_) -> void (Service.snapshot s) >> Service.prepareService s
    let busy = do
         work <- Service.busyService service
         pairing <- or <$> mapM (fmap (not . M.null) . readIORef . registryPairClients) registry
@@ -149,7 +151,7 @@ startHostUsing gate activations inherited consent choice root requested managed 
         Socket.close socket
         modifyMVar_ activations (pure . filter (\(s,_,_) -> serviceRoot s /= root))
         pure True
-   (admissionOpen gate >>= \open -> if open then activate else mapM_ prepareRegistry registry) `onException` stop
+   (admissionOpen gate >>= \open -> if open then Service.prepareService service >> activate else mapM_ prepareRegistry registry) `onException` stop
    modifyMVar_ activations (pure . ((service,activate,busy):))
    pure (Host port service bridge stop activateAll (quiesce `onException` openAdmission gate) (openAdmission gate) prepareReady)
 localRequest :: Int -> Bool -> RequestHeaders -> Validation ()

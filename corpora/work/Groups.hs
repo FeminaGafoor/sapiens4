@@ -20,7 +20,7 @@ groupControl s actor operation input = case operation of
  GroupTaskRun -> withGroup True $ \_ -> do
   root <- Chat.activeRoot s gid actor
   result <- Work.startTask s gid (at payload "task") (get payload "revision") actor root
-  Chat.dispatchGroups s
+  Chat.projectQueuedGroups s
   pure result
  where
  payload = remove ["op","group"] input
