@@ -453,6 +453,7 @@ runSession isFixture initialAddress = do
     closing <- newIORef False
     domain <- if isFixture then pure "" else do
         config <- configDirectory >>= canonicalizePath
+        outsideInstallation config
         let hex byte = let value=showHex byte "" in replicate (2-length value) '0' ++ value
             suite="com.sapiens4.client." <> T.pack (concatMap hex (BS.unpack (SHA256.hash (TE.encodeUtf8 (T.pack config)))))
         mirrorPreferences suite True
