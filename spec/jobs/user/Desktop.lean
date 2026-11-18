@@ -18,7 +18,8 @@ def pauseAndResumeFromTheDesktop : IO Unit := IO.FS.withTempDir fun directory =>
     IO.ofExcept <| fieldsMatch (← host.api "GET" "/api/corpora") (json% {status: "active"})
 
 def sendAndReadOneDesktopReply : IO Unit := IO.FS.withTempDir fun directory => do
-  let message := "Review the café plan from my desktop"
+  let message := if System.Platform.isWindows || System.Platform.isOSX then
+    "Review the café plan from my desktop" else "Review the cafe plan from my desktop"
   withDesktop directory fun desktop => do
     let composer := untilSome "the ChiefSapi message editor" do
       let areas ← desktop.findRole "AXTextArea"
