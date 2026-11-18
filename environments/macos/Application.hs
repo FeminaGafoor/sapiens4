@@ -50,7 +50,7 @@ import Numeric (showHex)
 import Text.Read (readMaybe)
 
 
-data Application = Application { native :: Obj, browser :: IORef Browser, windowRef :: IORef Obj, pending :: IORef [IO ()], fixture :: Bool, child :: IORef (Maybe ServerProcess), address :: IORef Text, startup :: IORef (Maybe (Async ())), starting :: IORef Bool, localLoaded :: IORef Bool, runtime :: FilePath, selectedRoot :: IORef (Maybe FilePath), recoveryError :: IORef (Maybe Text), firstSignal :: IORef (Maybe WorkspaceSignal), attemptNumber :: IORef Integer, recovering :: IORef Bool, clientPreferences :: Obj, preferenceDomain :: Text, quitting :: IORef Bool }
+data Application = Application { native :: Obj, browser :: IORef Browser, windowRef :: IORef Obj, pending :: IORef [IO ()], fixture :: Bool, child :: IORef (Maybe ServerProcess), address :: IORef Text, startup :: IORef (Maybe (Async ())), starting :: IORef Bool, localLoaded :: IORef Bool, runtime :: FilePath, selectedRoot :: IORef (Maybe FilePath), recoveryError :: IORef (Maybe Text), firstSignal :: IORef (Maybe WorkspaceSignal), attemptNumber :: IORef Integer, recovering :: IORef Bool, clientPreferences :: Obj, preferenceDomain :: Text, quitting :: IORef Bool, updateCache :: Update.UpdateCache }
 
 data ServerProcess = ServerProcess { serverHandle :: ProcessHandle, serverSession :: ProcessID, serverInput :: Handle, serverOutput :: Handle, serverErrors :: Async (), serverDrain :: Maybe (Async ()), serverDirectory :: FilePath, updateReplies :: Chan String, updateGuard :: MVar () }
 
@@ -421,7 +421,7 @@ runApplication isFixture address = do
     bracket (new "NSAutoreleasePool") (\pool -> void (obj0 pool "drain")) $ \_ -> (runSession isFixture address `catch` (\(e :: SomeException) -> alert (T.pack (storageMessage e))))
 
 runSession :: Bool -> Text -> IO ()
-runSession isFixture initialAddress = do
+runSession isFixture initialAddress = Update.withUpdateCache $ \cache -> do
     executable <- getExecutablePath
     let packaged = takeDirectory executable </> "../Resources/runtime"
     bundled <- doesDirectoryExist packaged
@@ -456,7 +456,7 @@ runSession isFixture initialAddress = do
         mirrorPreferences suite True
         pure suite
     preferences <- if isFixture then pure nullPtr else allocated "NSUserDefaults" >>= \o -> str domain >>= obj1 o "initWithSuiteName:"
-    let state = Application application b win tasks isFixture process address worker busy loaded runtime selection problem signal generation recovery preferences domain closing
+    let state = Application application b win tasks isFixture process address worker busy loaded runtime selection problem signal generation recovery preferences domain closing cache
     (do
         target <- installMethods state
         initialize state target initialAddress
@@ -753,7 +753,7 @@ beginUpdate application = do
                             reply <- updateCommand application action
                             when (action == "quiesce" && reply == "busy") (writeIORef rejected True)
                             pure reply
-                    Update.updateAndRestartWithProgress (post application $ reportUpdate application "updating") command
+                    Update.updateAndRestartCached (updateCache application) (post application $ reportUpdate application "updating") command
                         (mirrorPreferences (preferenceDomain application) False) stop (serverDirectory server) config
                 post application $ case result of
                     Left problem -> do

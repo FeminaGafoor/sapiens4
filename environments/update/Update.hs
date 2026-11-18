@@ -1,5 +1,5 @@
 {-# LANGUAGE CPP #-}
-module Update (updateMode, updateAvailable, updateAndRestart, updateAndRestartWithProgress, candidateReady, preparingUpdate, tryUpdate) where
+module Update (UpdateCache, withUpdateCache, updateAndRestartCached, updateMode, updateAvailable, updateAndRestart, updateAndRestartWithProgress, candidateReady, preparingUpdate, tryUpdate) where
 
 import Control.Exception
 import Control.Monad
@@ -11,6 +11,8 @@ import Data.Aeson
 import Data.Aeson.Types (parseEither)
 import Data.Char (isSpace)
 import Data.List (isPrefixOf)
+import Data.IORef
+import Data.Maybe (isNothing)
 import Text.Read (readMaybe)
 import Network.HTTP.Client
 import Network.HTTP.Client.TLS
@@ -18,7 +20,6 @@ import System.Directory hiding (executable)
 import System.Environment
 import System.FilePath
 import System.IO
-import System.IO.Error (isDoesNotExistError)
 import UpdateState
 import UpdatePlatform
 import UpdateBackup
@@ -50,57 +51,90 @@ updateAndRestart :: (String -> IO String) -> IO () -> IO () -> FilePath -> FileP
 updateAndRestart = updateAndRestartWithProgress (pure ())
 
 updateAndRestartWithProgress :: IO () -> (String -> IO String) -> IO () -> IO () -> FilePath -> FilePath -> IO ()
-updateAndRestartWithProgress preparing command flushPreferences stop dataDirectory configDirectory = do
- (root,owner) <- installed
- validateRoots root dataDirectory configDirectory
- next <- requestUpdate root owner
- withCandidate (versionExecutable root owner) ["--d2-update",versionName next,dataDirectory,configDirectory] [] $ \coordinator ->
-  (do
-   preparing
-   await coordinator "D2: coordinator"
-   let quiet = command "quiesce" >>= \reply -> case reply of
-        "quiet" -> pure ()
-        "busy" -> fail "Sapiens is busy. Finish accepted work before updating."
-        _ -> fail "Sapiens could not pause safely. Update cancelled."
-   (do
-     (quiet >> flushPreferences) `onException` void (tryUpdate (command "resume"))
-     stop)
-    `onException` removePathForcibly (versionPath root next)
-   candidateOwnership coordinator True
-   sendCandidate coordinator "handoff")
-  `onException` candidateOwnership coordinator False
+updateAndRestartWithProgress preparing command flushPreferences stop dataDirectory configDirectory =
+ withUpdateCache $ \cache -> updateAndRestartCached cache preparing command flushPreferences stop dataDirectory configDirectory
 
-requestUpdate :: FilePath -> Version -> IO Version
-requestUpdate root owner = do
+type Release = ([Integer],String)
+newtype UpdateCache = UpdateCache (IORef (Maybe (Maybe Release,FilePath)))
+
+withUpdateCache :: (UpdateCache -> IO a) -> IO a
+withUpdateCache = bracket (UpdateCache <$> newIORef Nothing) clearUpdateCache
+
+clearUpdateCache :: UpdateCache -> IO ()
+clearUpdateCache (UpdateCache ref) = atomicModifyIORef' ref (\old -> (Nothing,old)) >>= mapM_ (discard . pure . snd)
+
+data UpdateBusy = UpdateBusy deriving Show
+instance Exception UpdateBusy where
+ displayException _ = "Sapiens is busy. Finish accepted work before updating."
+
+updateAndRestartCached :: UpdateCache -> IO () -> (String -> IO String) -> IO () -> IO () -> FilePath -> FilePath -> IO ()
+updateAndRestartCached cache preparing command flushPreferences stop dataDirectory configDirectory = mask $ \restore -> do
+ result <- try (restore attempt)
+ case result of
+  Left problem | Just UpdateBusy <- fromException problem -> throwIO problem
+  _ -> clearUpdateCache cache >> either throwIO pure result
+ where
+ attempt = do
+  (root,owner) <- installed
+  validateRoots root dataDirectory configDirectory
+  next <- requestUpdate cache root owner
+  withCandidate (versionExecutable root owner) ["--d2-update",versionName next,dataDirectory,configDirectory] [] $ \coordinator ->
+   (do
+    preparing
+    await coordinator "D2: coordinator"
+    let quiet = command "quiesce" >>= \reply -> case reply of
+         "quiet" -> pure ()
+         "busy" -> throwIO UpdateBusy
+         _ -> fail "Sapiens could not pause safely. Update cancelled."
+    (do
+      (quiet >> flushPreferences) `onException` void (tryUpdate (command "resume"))
+      stop)
+     `onException` removePathForcibly (versionPath root next)
+    candidateOwnership coordinator True
+    sendCandidate coordinator "handoff")
+   `onException` candidateOwnership coordinator False
+
+requestUpdate :: UpdateCache -> FilePath -> Version -> IO Version
+requestUpdate cache@(UpdateCache ref) root owner = do
  nonce <- freshVersion
- let payload = root </> (versionName nonce ++ "-" ++ payloadName)
-     destination = versionPath root nonce
-     stage = stagePayload payload destination
+ let destination = versionPath root nonce
+     publisher = verifyPublisher (versionExecutable root owner)
  validatePath (root </> "versions")
 #ifdef D2_FIXTURE
  fixture <- lookupEnv "SAPIENS_D2_FIXTURE_PAYLOAD"
- let prepare = maybe (signedUpdate nonce payload stage) (\file -> copyFile file payload >> stage) fixture
+ fixtureRelease <- lookupEnv "SAPIENS_D2_FIXTURE_RELEASE"
 #else
- let prepare = signedUpdate nonce payload stage
+ let fixture = Nothing
+     fixtureRelease = Nothing
 #endif
- (prepare `finally` removeIfPresent payload) `onException` removePathForcibly destination
+ manager <- newManager tlsManagerSettings
+ release <- if isNothing fixture || not (isNothing fixtureRelease) then Just <$> discoverRelease manager root owner else pure Nothing
+ existing <- readIORef ref
+ payload <- case existing of
+  Just (cached,path) | release == cached -> pure path
+  _ -> do
+   clearUpdateCache cache
+   let path = root </> (versionName nonce ++ "-" ++ payloadName)
+   writeIORef ref (Just (release,path))
+   case (fixture,release) of
+    (Just file,_) -> copyFile file path
+    (Nothing,Just (_,url)) -> do
+     transfer <- parseRequest url
+     withResponse transfer manager $ \result -> withBinaryFile path WriteMode $ \file ->
+      let loop = do chunk <- brRead (responseBody result); unless (B.null chunk) (B.hPut file chunk >> loop)
+      in loop
+    _ -> fail "No update payload is available"
+   pure path
+ validatePath payload
+ when (isNothing fixture) (publisher payload)
+ (do
+  stagePayload payload destination
+  when (isNothing fixture) (publisher (versionExecutable root nonce))
+  forM_ release $ \(available,_) -> do
+   staged <- installedVersion root nonce
+   unless (staged == available) (fail "Signed payload version differs from the release tag"))
+  `onException` removePathForcibly destination
  pure nonce
- where
- removeIfPresent path = removeFile path `catch` \(e::IOException) ->
-  unless (isDoesNotExistError e) (throwIO e)
- publisher = verifyPublisher (versionExecutable root owner)
- signedUpdate nonce path stage = do
-  manager <- newManager tlsManagerSettings
-  (available,url) <- discoverRelease manager root owner
-  transfer <- parseRequest url
-  withResponse transfer manager $ \result -> withBinaryFile path WriteMode $ \file ->
-   let loop = do chunk <- brRead (responseBody result); unless (B.null chunk) (B.hPut file chunk >> loop)
-   in loop
-  publisher path
-  stage
-  publisher (versionExecutable root nonce)
-  staged <- installedVersion root nonce
-  unless (staged == available) (fail "Signed payload version differs from the release tag")
 
 updateAvailable :: IO Bool
 updateAvailable = do
