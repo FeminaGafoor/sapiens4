@@ -7,7 +7,7 @@ import Data.Maybe (Maybe(..), fromMaybe)
 import Data.String as S
 import Data.String.CodeUnits as CU
 import Data.String.Regex.Flags (unicode)
-import Libs4.Browser as B
+import Sapiens.BrowserFFI as B
 import Sapiens.Action (Action(..))
 import Sapiens.Data as D
 import Sapiens.Browser as Browser

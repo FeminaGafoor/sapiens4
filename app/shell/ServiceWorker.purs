@@ -7,14 +7,14 @@ import Data.Foldable (traverse_)
 import Data.String as S
 import Effect (Effect)
 import Effect.Aff (Aff)
-import Libs4.Browser as B
+import Sapiens.BrowserFFI as B
 import Sapiens.Browser as Browser
 
 cache :: String
-cache = "sapiens-shell-v1"
+cache = "sapiens-shell-v2"
 
 assets :: Array String
-assets = ["/", "/favicon.svg", "/favicon-dark.svg", "/workspace/app.js", "/workspace/styles.css", "/live.css", "/corpora.css", "/assets/sapi-theme.css", "/remote-install.css", "/remote-vendor.js", "/voice-worklet.js", "/manifest.webmanifest", "/app-icon-180.png", "/app-icon-192.png", "/app-icon-512.png"]
+assets = ["/", "/favicon.svg", "/favicon-dark.svg", "/workspace/app.js", "/workspace/styles.css", "/live.css", "/corpora.css", "/assets/sapi-theme.css", "/remote-install.css", "/remote-vendor.js", "/remote-crypto.js", "/voice-worklet.js", "/manifest.webmanifest", "/app-icon-180.png", "/app-icon-192.png", "/app-icon-512.png"]
 
 main :: Effect Unit
 main = do

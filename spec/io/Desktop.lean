@@ -30,7 +30,13 @@ def Desktop.invoke (desktop : Desktop) (command : String) (args : Array String :
       discard <| IO.ofExcept (← IO.wait exited)
 
 def Desktop.findRole (desktop : Desktop) (role : String) : IO (Array Json) := do
-  let found ← desktop.invoke "find" #["--role", role, "--depth", "50", "--limit", "1000"]
+  let found ← untilSome "a stable accessibility snapshot" do
+    try
+      return some (← desktop.invoke "find" #["--role", role, "--depth", "50", "--limit", "1000"])
+    catch error =>
+      -- Windows UIA can invalidate a node while WebView navigates or rerenders.
+      if Platform.isWindows && error.toString.contains "0x80040201" then return none
+      throw error
   IO.ofExcept do
     fieldsMatch found (json% {truncated: false})
     found.getObjValAs? (Array Json) "matches"
@@ -54,15 +60,30 @@ def Desktop.clickButton (desktop : Desktop) (label : String) : IO Unit := do
     try click
     catch retry => throw <| IO.userError s!"Clicking {label}: {retry}"
 
-def withDesktop (directory : FilePath) (use : Desktop → IO Unit) : IO Unit := do
+private def withDesktopConfig (use : FilePath → IO Unit) : IO Unit := do
+  let config ← IO.FS.createTempDir
+  try use config
+  finally
+    discard <| untilSome "WebView profile cleanup" (do
+      try
+        if ← config.pathExists then IO.FS.removeDirAll config
+        return some ()
+      catch error =>
+        if error.toString.contains "resource busy" || error.toString.contains "no such file or directory" then return none
+        throw error) 20000 100
+
+def withDesktop (directory : FilePath) (use : Desktop → IO Unit) : IO Unit := withDesktopConfig fun config => do
   let root ← repoRoot
+  -- These jobs exercise an existing workspace, not first-run storage selection.
+  withHost directory fun _ => pure ()
   let driver ← IO.getEnv "SAPIENS_TEST_BLINDLY4"
   let driver := driver.getD (root / "submodules/blindly4/.build" /
     (if Platform.isWindows then "windows/blindly4.exe" else "release/blindly4")).toString
   let launch := fun (executable : FilePath) (arguments : Array String) => do
     let child ← IO.Process.spawn {
       cmd := executable.toString, args := arguments, cwd := root
-      env := ← fixtureEnvironment directory, stdin := .piped, stdout := .null }
+      env := (← fixtureEnvironment directory).push ("SAPIENS_CONFIG_DIR", some config.toString),
+      stdin := .piped, stdout := .null }
     let desktop := Desktop.mk driver child.pid
     let exited ← IO.asTask child.wait .dedicated
     try
@@ -80,7 +101,19 @@ def withDesktop (directory : FilePath) (use : Desktop → IO Unit) : IO Unit := 
       discard <| desktop.invoke "activate"
       use desktop
     finally
-      unless ← IO.hasFinished exited do child.kill
+      unless ← IO.hasFinished exited do
+        if Platform.isWindows then
+          try
+            let closed ← IO.Process.output {
+              cmd := "powershell.exe"
+              args := #["-NoProfile", "-Command", s!"(Get-Process -Id {child.pid}).CloseMainWindow() | Out-Null"],
+              env := #[("PSModulePath", none)]}
+            unless closed.exitCode == 0 do throw <| IO.userError closed.stderr
+            discard <| untilSome "desktop shutdown" child.tryWait
+          catch error =>
+            child.kill
+            throw error
+        else child.kill
       discard <| IO.ofExcept (← IO.wait exited)
   if Platform.isOSX then
     let bundle ← IO.getEnv "SAPIENS_TEST_MACOS_APP"

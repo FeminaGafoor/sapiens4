@@ -222,7 +222,7 @@ stage root destination = do
  when (inside output root) $ fail "Runtime destination must not contain the source checkout"
  createDirectory destination
  flip onException (removePathForcibly destination) $ do
-  notices <- concat <$> mapM (files . (root</>)) ["license","submodules/libs4/license","submodules/blindly4/license"]
+  notices <- concat <$> mapM (files . (root</>)) ["license","submodules/blindly4/license"]
   prompts <- files (root</>"corpora/prompts")
   let suffix=if os=="mingw32" then ".exe" else ""
       blindly=if os=="mingw32" then "windows/blindly4.exe" else "release/blindly4"

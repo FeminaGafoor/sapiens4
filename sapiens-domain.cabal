@@ -16,7 +16,7 @@ common runtime
     directory, filepath, process, time, async, stm, scientific, vector,
     sqlite-simple, filelock, uuid, base64-bytestring, network-uri, regex-tdfa,
     http-client, http-client-tls, http-types, network, wai, warp, wai-websockets,
-    websockets, wuss, cryptohash-sha256, random, tagsoup ==0.14.8
+    websockets, wuss, cryptohash-sha256, entropy, memory, random, tagsoup ==0.14.8
   if !os(windows)
     build-depends: unix
 
@@ -58,6 +58,7 @@ common host
     Bridge,
     Client,
     Crypto,
+    BrowserCrypto,
     Mailboxes,
     Registry,
     Receipt,
@@ -72,8 +73,6 @@ common host
     Voice,
     Workspace,
     Wire
-  extra-lib-dirs: submodules/libs4/haskell/sodium/src/libsodium/.libs
-  extra-libraries: sodium
 
 executable sapiens4
   import: runtime, host
@@ -109,7 +108,7 @@ executable sapiens-macos
     ObjC
   main-is: MacMain.hs
   if os(osx)
-    c-sources: submodules/libs4/haskell/native/cocoa.c, environments/macos/Process.c
+    c-sources: environments/macos/Cocoa.c, environments/macos/Process.c
     frameworks: Cocoa, WebKit, CoreGraphics
     extra-libraries: objc
   else
@@ -133,7 +132,7 @@ common windows-host
     Navigation,
     Shell
   if os(windows)
-    c-sources: submodules/libs4/haskell/native/windows.c
+    c-sources: environments/windows/WebView.c
     extra-libraries: user32, ole32, dwmapi, comdlg32, kernel32
   else
     buildable: False

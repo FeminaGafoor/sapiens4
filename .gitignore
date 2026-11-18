@@ -28,6 +28,7 @@ dist-newstyle/
 
 # Optional frontend build dependencies
 node_modules/
+build/dependencies/.cache/
 
 # Windows build output
 environments/windows/bin/
@@ -36,3 +37,6 @@ environments/windows/obj/
 tmp/
 
 spec/.lake/
+
+.spago/
+build/purescript/output/

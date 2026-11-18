@@ -1,0 +1,17 @@
+{
+  "name": "@aleski-green/sapiens4-dependencies",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Pinned browser, test, and build dependencies for Sapiens4",
+  "dependencies": {
+    "jsqr": "1.4.0",
+    "qrcode": "1.5.4",
+    "tweetnacl": "1.0.3"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.12",
+    "purescript": "0.15.16",
+    "sharp": "0.35.5",
+    "spago": "1.0.5"
+  }
+}

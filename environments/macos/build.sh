@@ -5,7 +5,7 @@ version=${1:-0.1.0}
 output=${2:-.build/macos}
 export MACOSX_DEPLOYMENT_TARGET=13.0
 if [ "${3:-}" = --release ]; then
-  npm ci --include=dev --prefix submodules/libs4
+  npm install --package-lock=false --include=dev --prefix build/dependencies
   rm -rf .build/web
 fi
 runghc build/Build.hs

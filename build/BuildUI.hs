@@ -20,14 +20,13 @@ filesUnder root = do
  concat <$> mapM (\entry -> let p=root</>entry in doesDirectoryExist p >>= \d -> if d then filesUnder p else pure [p]) entries
 buildUI :: FilePath -> IO ()
 buildUI root = do
- let libs=root</>"submodules/libs4"; work=libs</>"purescript"; output=root</>".build/web"; stamp=output</>"source.sha256"
+ let libs=root</>"build/dependencies"; work=root</>"build/purescript"; output=root</>".build/web"; stamp=output</>"source.sha256"
  source <- filter ((`elem` [".purs",".js"]).takeExtension) <$> filesUnder (root</>"app")
- support <- filesUnder (work</>"src")
- let inputs = sort source ++ sort support ++ [work</>"spago.yaml",work</>"spago.lock",libs</>"package-lock.json",root</>"build/BuildUI.hs"]
+ let inputs = sort source ++ [work</>"spago.yaml",work</>"spago.lock",libs</>"package.json",root</>"build/BuildUI.hs",root</>"build/vendor.cjs"]
  raw <- B.concat <$> mapM (\p -> (TE.encodeUtf8 (T.pack (makeRelative root p)) <>) <$> B.readFile p) inputs
  let fingerprint=hash raw
  saved <- doesFileExist stamp >>= \exists -> if exists then readText stamp else pure ""
- present <- and <$> mapM (doesFileExist . (output</>)) ["app.js","sw.js","guest.js"]
+ present <- and <$> mapM (doesFileExist . (output</>)) ["app.js","sw.js","guest.js","remote-vendor.js"]
  unless (saved==fingerprint && present) $ do
   version <- readProcess "node" ["--version"] ""
   let components = map (reads . T.unpack) (T.splitOn "." (T.drop 1 (T.strip (T.pack version)))) :: [[(Int,String)]]
@@ -38,7 +37,7 @@ buildUI root = do
   setEnv "npm_config_cache" (libs</>".cache/npm")
   when (os=="mingw32") (setEnv "LOCALAPPDATA" (libs</>".cache"))
   installed <- doesFileExist (libs</>"node_modules/.bin/purs")
-  unless installed (tool "npm" ["ci","--prefix",libs])
+  unless installed (tool "npm" ["install","--package-lock=false","--include=dev","--prefix",libs])
   when (os=="mingw32") $ do
    let bin=libs</>".cache/bin"
    createDirectoryIfMissing True bin
@@ -49,6 +48,7 @@ buildUI root = do
    -- This also covers the compiler launched by Spago; retain other user RTS settings.
    runtime <- lookupEnv "GHCRTS"
    setEnv "GHCRTS" (maybe "" (<> " ") runtime <> "-N1")
+  tool "node" [root</>"build/vendor.cjs"]
   withCurrentDirectory work $ do
    tool "spago" ["install","--quiet"]
    sourceJSON <- readTool "spago" ["sources","--json","--quiet"]
@@ -66,7 +66,7 @@ buildUI root = do
  readTool name args = command name args >>= \(program,arguments) -> readProcess program arguments ""
  command name args
   | os=="mingw32", Just entry <- lookup name [("spago","spago/bin/bundle.js"),("esbuild","esbuild/bin/esbuild")] =
-     pure ("node",(root</>"submodules/libs4/node_modules"</>entry):args)
+     pure ("node",(root</>"build/dependencies/node_modules"</>entry):args)
   | os=="mingw32" && name=="npm" = do
      script <- findExecutable (name<>".cmd") >>= maybe (ioError $ userError $ "Missing build tool: "<>name) pure
      pure ("cmd.exe",["/d","/c",script]++args)

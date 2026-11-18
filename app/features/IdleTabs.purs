@@ -9,7 +9,7 @@ import Effect.Aff (Fiber, Milliseconds(..), delay, killFiber, launchAff, launchA
 import Effect.Class (liftEffect)
 import Effect.Exception (error)
 import Effect.Ref as Ref
-import Libs4.Browser as B
+import Sapiens.BrowserFFI as B
 import Sapiens.Data as D
 
 type Tab = {owner :: String, id :: String, epoch :: Int}

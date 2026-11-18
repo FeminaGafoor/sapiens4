@@ -5,7 +5,7 @@ import Data.Argonaut.Decode (printJsonDecodeError)
 import Data.Either (either)
 import Effect (Effect)
 import Effect.Exception (error, throwException)
-import Libs4.Browser as B
+import Sapiens.BrowserFFI as B
 import Sapiens.Browser as Browser
 import Sapiens.Environment as E
 

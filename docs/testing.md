@@ -1,7 +1,14 @@
 # Tests
 
-Use Lean from `spec/lean-toolchain`, curl, and the platform build tools.
+Use Lean from `spec/lean-toolchain`, Node.js 22+, curl, Chrome/Chromium/Edge,
+and the platform build tools. `SAPIENS_TEST_BROWSER` selects the browser executable.
 Tests use temporary data and a local model fixture.
+
+Test cases and assertions live in Lean, including browser crypto vectors and
+tamper rejection. JavaScript only bridges browser operations and returns observations.
+Desktop jobs initialize a temporary workspace before launch; they do not cover onboarding.
+If a browser exits during fixture startup, set `SAPIENS_TEST_BROWSER` to a working
+Chrome/Chromium/Edge executable (Chrome was used for Windows qualification).
 
 ```sh
 runghc build/Build.hs
@@ -18,5 +25,5 @@ Linux: build with `--desktop`, then `sh environments/linux/qualify.sh NEW_REPORT
 Windows: build the host and driver using their platform guides.
 
 Coverage excludes installer lifecycle, native guest isolation, remote-client
-compatibility, altered/expired encrypted delivery, load, native onboarding, provider
+UI, altered/expired encrypted delivery, load, native onboarding, provider
 discovery, model-settings UI, full provider combinations, and Group scenarios.

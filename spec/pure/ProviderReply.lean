@@ -5,6 +5,7 @@ open Lean
 namespace Spec
 
 def providerReply (prompt : String) (script : Json) : Except String String := do
+  let prompt := prompt.replace "\r\n" "\n"
   let firstLine := (prompt.splitOn "\n").head!
   let some decision := firstLine.dropPrefix? "You are handling a Sapiens4 decision at node "
     | return "The review is ready."
