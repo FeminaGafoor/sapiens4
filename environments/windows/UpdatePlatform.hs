@@ -60,8 +60,8 @@ publishWith replace path temporary bytes = withCWString path $ \p -> withCWStrin
  B.useAsCStringLen bytes $ \(buffer,len) -> cPublish p t (castPtr buffer) (fromIntegral len) replace >>= check "Durable update ownership or decision"
 copyOwned :: FilePath -> FilePath -> IO ()
 copyOwned source destination = withCWString source $ \s -> withCWString destination $ \d -> cCopy s d >>= check "Owned file copy"
-copyMetadata :: FilePath -> FilePath -> IO ()
-copyMetadata source destination = withCWString source $ \s -> withCWString destination $ \d -> cCopyMetadata s d >>= check "Owned metadata copy"
+copyMetadata :: Bool -> FilePath -> FilePath -> IO ()
+copyMetadata _ source destination = withCWString source $ \s -> withCWString destination $ \d -> cCopyMetadata s d >>= check "Owned metadata copy"
 metadata :: FilePath -> IO B.ByteString
 metadata path = withCWString path $ \p -> allocaBytes 65536 $ \buffer -> do
  count <- cMetadata p buffer 65536

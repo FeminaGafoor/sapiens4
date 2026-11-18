@@ -110,8 +110,8 @@ copyTree source destination entries = do
  forM_ entries $ \(relative,directory,_) -> if directory
   then createDirectoryIfMissing True (destination </> relative)
   else copyOwned (source </> relative) (destination </> relative)
- forM_ entries $ \(relative,_,_) ->
-  copyMetadata (source </> relative) (destination </> relative)
+ forM_ entries $ \(relative,directory,_) ->
+  copyMetadata directory (source </> relative) (destination </> relative)
 
 restoreSnapshot :: FilePath -> PendingUpdate -> IO () -> IO ()
 restoreSnapshot installation pending settle = do

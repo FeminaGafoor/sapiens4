@@ -150,12 +150,12 @@ hostMain root args = do
          "activate" -> do
           result <- tryJust synchronous (hostActivate host)
           case result of
-           Right () -> reply "active" >> commands
+           Right () -> do
+            reply "active"
+            reporters <- readIORef (serviceTelemetry (hostService host))
+            void $ tryJust synchronous $ forM_ reporters $ \reporter -> Telemetry.emit reporter Telemetry.AppUpdated Nothing mempty
+            commands
            Left _ -> reply "error" >> shutdown
-         "app-update-initiated" -> do
-          reporters <- readIORef (serviceTelemetry (hostService host))
-          void $ tryJust synchronous $ forM_ reporters $ \reporter -> Telemetry.emitNow reporter Telemetry.AppUpdateInitiated
-          reply "reported" >> commands
          "stop" -> shutdown
          _ -> commands
    commands `catch` \(_::IOException) -> shutdown

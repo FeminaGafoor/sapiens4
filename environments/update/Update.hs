@@ -83,24 +83,30 @@ updateAndRestartCached cache preparing command flushPreferences stop dataDirecto
   (root,owner) <- installed
   validateRoots root dataDirectory configDirectory
   requireIdle "check-busy" "Sapiens could not check for unfinished work. Update cancelled."
-  next <- requestUpdate cache root owner
-  withCandidate (versionExecutable root owner) ["--update-coordinate",versionName next,dataDirectory,configDirectory] [] $ \coordinator ->
-   (do
-    preparing
-    await 15 coordinator "update: coordinator"
-    let quiet = requireIdle "quiesce" "Sapiens could not pause safely. Update cancelled."
-    (do
-      (quiet >> flushPreferences) `onException` void (tryUpdate (command "resume"))
-      void (tryUpdate (command "app-update-initiated"))
-      stop)
-     `onException` removePathForcibly (versionPath root next)
-    candidateOwnership coordinator True
-    sendCandidate coordinator "handoff")
-   `onException` candidateOwnership coordinator False
+  mask $ \unmask -> do
+   next <- freshVersion
+   handoffStarted <- newIORef False
+   let discardStaged = readIORef handoffStarted >>= \started ->
+        unless started (discard [versionPath root next])
+   unmask (do
+    requestUpdate cache root owner next
+    withCandidate (versionExecutable root owner) ["--update-coordinate",versionName next,dataDirectory,configDirectory] [] $ \coordinator -> mask $ \restoreHandoff -> do
+     let quiet = requireIdle "quiesce" "Sapiens could not pause safely. Update cancelled."
+     (do
+       restoreHandoff $ do
+        preparing
+        await 15 coordinator "update: coordinator"
+        (quiet >> flushPreferences) `onException` void (tryUpdate (command "resume"))
+        stop
+       candidateOwnership coordinator True)
+      `onException` candidateOwnership coordinator False
+     -- An interrupted pipe write can still deliver the handoff.
+     writeIORef handoffStarted True
+     sendCandidate coordinator "handoff")
+    `onException` discardStaged
 
-requestUpdate :: UpdateCache -> FilePath -> Version -> IO Version
-requestUpdate cache@(UpdateCache ref) root owner = do
- nonce <- freshVersion
+requestUpdate :: UpdateCache -> FilePath -> Version -> Version -> IO ()
+requestUpdate cache@(UpdateCache ref) root owner nonce = do
  let destination = versionPath root nonce
  validatePath (root </> "versions")
 #ifdef UPDATE_FIXTURE
@@ -132,13 +138,10 @@ requestUpdate cache@(UpdateCache ref) root owner = do
  when (isNothing fixture) $ do
   expected <- maybe (fail "Missing update payload SHA-256") pure (release >>= releaseDigest)
   verifyPayloadDigest expected payload
- (do
-  stagePayload payload destination
-  forM_ release $ \available -> do
-   staged <- installedVersion root nonce
-   unless (staged == releaseVersion available) (fail "Update payload version differs from the release tag"))
-  `onException` removePathForcibly destination
- pure nonce
+ stagePayload payload destination
+ forM_ release $ \available -> do
+  staged <- installedVersion root nonce
+  unless (staged == releaseVersion available) (fail "Update payload version differs from the release tag")
 
 verifyPayloadDigest :: String -> FilePath -> IO ()
 verifyPayloadDigest expected path = do
@@ -240,19 +243,25 @@ coordinate requested = do
    (Settled selected,Nothing) -> pure (Launch (current selected))
    (Settled selected,Just (next,dataDirectory,configDirectory)) -> do
     unless (owner == current selected && next /= owner && Just next /= (previousVersion <$> previous selected)) (fail "Update selection changed")
-    result <- tryUpdate $ do
+    nonce <- freshVersion
+    let backup = backupPath root nonce
+        discardUnpublished = do
+         decision <- tryUpdate (readUpdateState root)
+         case decision of
+          Right (Settled unchanged) | unchanged == selected -> discard [versionPath root next,backup]
+          _ -> pure ()
+    result <- tryUpdate $ flip onException discardUnpublished $ do
      originalData <- canonicalizePath dataDirectory
      originalConfig <- canonicalizePath configDirectory
      validateRoots root originalData originalConfig
      claimConfigRoot originalConfig
-     nonce <- freshVersion
      let backups = root </> "backups"
      exists <- pathPresent backups
      unless exists (createDirectory backups)
      validatePath (versionExecutable root next)
      withRootIdentity originalData $ \dataId -> withRootIdentity originalConfig $ \configId -> do
       saved <- withRootLocks originalData $ do
-       fingerprint <- snapshot (backupPath root nonce) originalData originalConfig
+       fingerprint <- snapshot backup originalData originalConfig
        reserveDataRoot originalData root nonce
        let pending = PendingUpdate selected next nonce originalData originalConfig dataId configId fingerprint
        writeUpdateState root (Pending pending)

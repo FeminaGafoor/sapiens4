@@ -59,9 +59,12 @@ publishNew = publishWith 0
 publishWith :: CInt -> FilePath -> FilePath -> B.ByteString -> IO ()
 publishWith replace path temporary bytes = withCString path $ \p -> withCString temporary $ \t ->
  B.useAsCStringLen bytes $ \(buffer,len) -> cPublish p t (castPtr buffer) (fromIntegral len) replace >>= check "Durable update ownership or decision"
-copyOwned, copyMetadata :: FilePath -> FilePath -> IO ()
+copyOwned :: FilePath -> FilePath -> IO ()
 copyOwned = copyWith 0
-copyMetadata = copyWith 1
+
+copyMetadata :: Bool -> FilePath -> FilePath -> IO ()
+copyMetadata directory source destination =
+ when directory (copyWith 1 source destination)
 copyWith :: CInt -> FilePath -> FilePath -> IO ()
 copyWith mode source destination = withCString source $ \s -> withCString destination $ \d -> cCopy s d mode >>= check "Owned file copy"
 metadata :: FilePath -> IO B.ByteString
