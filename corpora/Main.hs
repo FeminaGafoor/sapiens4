@@ -138,24 +138,19 @@ hostMain root args = do
               Right (Just False) -> "busy"
               _ -> "error"
              commands
+            finishUpdate action response after = do
+             result <- tryJust synchronous action
+             case result of
+              Right () -> reply response >> after >> commands
+              Left _ -> reply "error" >> shutdown
         case verb of
          "check-busy" -> reportIdle (not <$> hostBusy host)
          "quiesce" -> reportIdle (hostQuiesce host)
          "resume" -> hostResume host >> reply "resumed" >> commands
-         "prepare-ready" -> do
-          result <- tryJust synchronous (hostPrepareReady host)
-          case result of
-           Right () -> reply "prepared" >> commands
-           Left _ -> reply "error" >> shutdown
-         "activate" -> do
-          result <- tryJust synchronous (hostActivate host)
-          case result of
-           Right () -> do
-            reply "active"
-            reporters <- readIORef (serviceTelemetry (hostService host))
-            void $ tryJust synchronous $ forM_ reporters $ \reporter -> Telemetry.emit reporter Telemetry.AppUpdated Nothing mempty
-            commands
-           Left _ -> reply "error" >> shutdown
+         "prepare-ready" -> finishUpdate (hostPrepareReady host) "prepared" (pure ())
+         "activate" -> finishUpdate (hostActivate host) "active" $ do
+          reporters <- readIORef (serviceTelemetry (hostService host))
+          void $ tryJust synchronous $ forM_ reporters $ \reporter -> Telemetry.emit reporter Telemetry.AppUpdated Nothing mempty
          "stop" -> shutdown
          _ -> commands
    commands `catch` \(_::IOException) -> shutdown

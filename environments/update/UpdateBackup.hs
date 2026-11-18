@@ -76,9 +76,7 @@ inventory root locks excluded = tree root locks excluded >>= mapM (\(path,direct
  pure (path,directory,fingerprint))
 
 snapshot :: FilePath -> FilePath -> FilePath -> IO String
-snapshot destination dataDirectory configDirectory = do
- dataPath <- canonicalizePath dataDirectory
- configPath <- canonicalizePath configDirectory
+snapshot destination dataPath configPath = do
  original <- inventories dataPath configPath dataPath configPath
  createDirectory destination
  forM_ (zip [0::Int ..] original) $ \(index,Inventory root _ _ entries) ->

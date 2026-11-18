@@ -5,17 +5,20 @@ import Control.Concurrent.Async (Async, race, waitCatch)
 import Control.Exception
 import Control.Monad
 import qualified Crypto.Hash.SHA256 as SHA256
+import Data.ByteArray.Encoding (Base(Base16), convertToBase)
 import qualified Data.ByteString as B
+import qualified Data.ByteString.Char8 as BC
+import qualified Data.ByteString.Lazy as BL
 import Data.Aeson
 import Data.Aeson.Types (parseEither)
-import Data.Char (isSpace)
 import Data.List (stripPrefix)
 import Data.IORef
+import Data.Maybe (fromMaybe)
+import qualified Data.Text as T
 import Data.Unique (hashUnique, newUnique)
 import Text.Read (readMaybe)
 import Network.HTTP.Client
 import Network.HTTP.Client.TLS
-import Numeric (showHex)
 import System.Directory hiding (executable)
 import System.Environment
 import System.Exit (exitFailure)
@@ -144,15 +147,9 @@ requestUpdate cache@(UpdateCache ref) root owner next = do
  unless (staged == releaseVersion release) (fail "Update payload version differs from the release tag")
 
 verifyPayloadDigest :: String -> FilePath -> IO ()
-verifyPayloadDigest expected path = do
- digest <- withBinaryFile path ReadMode $ \file ->
-  let readChunks context = do
-       chunk <- B.hGetSome file 65536
-       if B.null chunk then pure (SHA256.finalize context)
-        else readChunks (SHA256.update context chunk)
-  in readChunks SHA256.init
- let hex byte = let digits = showHex byte "" in replicate (2 - length digits) '0' ++ digits
- unless (concatMap hex (B.unpack digest) == expected) (fail "Update payload SHA-256 differs from the release")
+verifyPayloadDigest expected path = withBinaryFile path ReadMode $ \file -> do
+ digest <- convertToBase Base16 . SHA256.hashlazy <$> BL.hGetContents file
+ unless (digest == BC.pack expected) (fail "Update payload SHA-256 differs from the release")
 
 updateAvailable :: IO Bool
 updateAvailable = do
@@ -171,29 +168,24 @@ discoverRelease manager root owner = do
  let repository = "aleski-green/sapiens4"
  request <- parseRequest ("https://api.github.com/repos/" ++ repository ++ "/releases/latest")
  body <- responseBody <$> httpLbs request {requestHeaders=[("User-Agent","Sapiens4-Updater"),("Accept","application/vnd.github+json")]} manager
- value <- either fail pure (eitherDecode body)
- tag <- either fail pure (parseEither (withObject "release" (\o -> o .: "tag_name")) value)
+ (tag,entries) <- either fail pure (eitherDecode body >>= parseEither (withObject "release" fields))
  available <- parseReleaseVersion tag
  unless (available > installedRelease) (fail "Sapiens is already up to date.")
- assets <- either fail pure (parseEither (withObject "release" (\o -> o .: "assets")) value) :: IO [Value]
- let asset = withObject "release asset" $ \o -> (,) <$> o .: "name" <*> ((,) <$> o .: "browser_download_url" <*> o .:? "digest")
- entries <- forM assets (either fail pure . parseEither asset) :: IO [(String,(String,Maybe String))]
  (url,publishedDigest) <- maybe (fail "No update payload for this platform is available in the latest release") pure (lookup payloadName entries)
  unless (url == "https://github.com/" ++ repository ++ "/releases/download/" ++ tag ++ "/" ++ payloadName) (fail "Unexpected update download origin")
  case publishedDigest >>= stripPrefix "sha256:" of
   Just digest | validDigest digest -> pure (Release available url digest)
   _ -> fail "Missing or invalid update payload SHA-256"
+ where
+ fields o = (,) <$> o .: "tag_name" <*> (o .: "assets" >>= mapM asset)
+ asset = withObject "release asset" $ \o -> (,) <$> o .: "name" <*> ((,) <$> o .: "browser_download_url" <*> o .:? "digest")
 
 parseReleaseVersion :: String -> IO [Integer]
 parseReleaseVersion input = do
- let trimmed = reverse (dropWhile isSpace (reverse input))
-     version = case trimmed of 'v':rest -> rest; _ -> trimmed
-     parts value = case break (=='.') value of
-      (part,'.':rest) -> part : parts rest
-      (part,_) -> [part]
-     fields = parts version
- let digits field = not (null field) && all (\c -> c >= '0' && c <= '9') field
- case traverse readMaybe fields of
+ let trimmed = T.stripEnd (T.pack input)
+     fields = T.splitOn "." (fromMaybe trimmed (T.stripPrefix "v" trimmed))
+     digits field = not (T.null field) && T.all (\c -> c >= '0' && c <= '9') field
+ case traverse (readMaybe . T.unpack) fields of
   Just release | length fields == 3 && all digits fields -> pure release
   _ -> fail "Expected a release version in MAJOR.MINOR.PATCH format"
 

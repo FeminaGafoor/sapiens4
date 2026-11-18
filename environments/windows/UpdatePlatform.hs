@@ -9,8 +9,6 @@ import Foreign hiding (void)
 import Foreign.C
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async
-import Data.Char (toLower)
-import Data.List (isPrefixOf)
 import System.Directory hiding (executable)
 import System.Environment
 import System.Exit
@@ -81,15 +79,9 @@ withRootIdentity path action = do
   (,) <$> peek handle <*> (show <$> peekArray 2 identity)) (cClose . fst) (action . snd)
 
 pathPresent :: FilePath -> IO Bool
-pathPresent path = do
- let parent = takeDirectory (dropTrailingPathSeparator path)
- present <- if equalFilePath parent path then pure True else pathPresent parent
- if not present then pure False else do
-  code <- withCWString path cValidate
-  if code `elem` [2,3] then pure False else check ("Owned path validation: " ++ path) code >> pure True
-
-containsPath :: FilePath -> FilePath -> Bool
-containsPath parent path = let p = map toLower (normalise parent); q = map toLower (normalise path) in p == q || addTrailingPathSeparator p `isPrefixOf` q
+pathPresent = pathPresentWith $ \path -> do
+ code <- withCWString path cValidate
+ if code `elem` [2,3] then pure False else check ("Owned path validation: " ++ path) code >> pure True
 
 profileExclusions :: [FilePath]
 profileExclusions = ["WebView2/Shell","WebView2/Guests"]

@@ -117,56 +117,56 @@ static wchar_t *streamPath(const wchar_t *path, const wchar_t *stream) {
     if (result) { wcscpy(result,path); wcscat(result,stream); }
     return result;
 }
-DWORD sapiens_update_directory_metadata(const wchar_t *source, const wchar_t *destination) {
-    BY_HANDLE_FILE_INFORMATION info;
-    DWORD error = inspect(source,&info);
-    if (!error) error = inspect(destination,&info);
-    if (error) return error;
+static DWORD copyStream(const wchar_t *source, const wchar_t *destination) {
+    HANDLE input = CreateFileW(source, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    if (input == INVALID_HANDLE_VALUE) return GetLastError();
+    HANDLE output = CreateFileW(destination, GENERIC_WRITE, 0, NULL, CREATE_NEW, 0, NULL);
+    DWORD error = output == INVALID_HANDLE_VALUE ? GetLastError() : 0;
+    BYTE buffer[65536]; DWORD count, written;
+    while (!error) {
+        if (!ReadFile(input, buffer, sizeof(buffer), &count, NULL)) { error = GetLastError(); break; }
+        if (!count) break;
+        if (!WriteFile(output, buffer, count, &written, NULL) || written != count) { error = ERROR_WRITE_FAULT; break; }
+    }
+    if (!error && !FlushFileBuffers(output)) error = GetLastError();
+    CloseHandle(input);
+    if (output != INVALID_HANDLE_VALUE) CloseHandle(output);
+    return error;
+}
+static DWORD updateDirectoryStreams(const wchar_t *source, const wchar_t *destination) {
     WIN32_FIND_STREAM_DATA entry;
-    HANDLE find = FindFirstStreamW(destination,FindStreamInfoStandard,&entry,0);
-    if (find != INVALID_HANDLE_VALUE) {
-        do {
-            wchar_t *path = streamPath(destination,entry.cStreamName);
-            if (!path) { error=ERROR_OUTOFMEMORY; break; }
-            if (!DeleteFileW(path)) error=GetLastError();
-            free(path);
-            if (error) break;
-        } while (FindNextStreamW(find,&entry));
-        if (!error && GetLastError()!=ERROR_HANDLE_EOF) error=GetLastError();
-        FindClose(find);
-    } else if (GetLastError()!=ERROR_HANDLE_EOF) error=GetLastError();
-    if (error) return error;
-    find = FindFirstStreamW(source,FindStreamInfoStandard,&entry,0);
-    if (find != INVALID_HANDLE_VALUE) {
-        do {
-            wchar_t *from=streamPath(source,entry.cStreamName), *to=streamPath(destination,entry.cStreamName);
-            if (!from || !to) error=ERROR_OUTOFMEMORY;
-            HANDLE input=INVALID_HANDLE_VALUE, output=INVALID_HANDLE_VALUE;
-            if (!error) input=CreateFileW(from,GENERIC_READ,FILE_SHARE_READ,NULL,OPEN_EXISTING,0,NULL);
-            if (!error && input==INVALID_HANDLE_VALUE) error=GetLastError();
-            if (!error) output=CreateFileW(to,GENERIC_WRITE,0,NULL,CREATE_NEW,0,NULL);
-            if (!error && output==INVALID_HANDLE_VALUE) error=GetLastError();
-            BYTE buffer[65536]; DWORD count,written;
-            while (!error) {
-                if (!ReadFile(input,buffer,sizeof(buffer),&count,NULL)) { error=GetLastError(); break; }
-                if (!count) break;
-                if (!WriteFile(output,buffer,count,&written,NULL) || written!=count) { error=ERROR_WRITE_FAULT; break; }
-            }
-            if (!error && !FlushFileBuffers(output)) error=GetLastError();
-            if (input!=INVALID_HANDLE_VALUE) CloseHandle(input);
-            if (output!=INVALID_HANDLE_VALUE) CloseHandle(output);
-            free(from); free(to);
-            if (error) break;
-        } while (FindNextStreamW(find,&entry));
-        if (!error && GetLastError()!=ERROR_HANDLE_EOF) error=GetLastError();
-        FindClose(find);
-    } else if (GetLastError()!=ERROR_HANDLE_EOF) error=GetLastError();
-    return error ? error : attributes(source,destination,FALSE);
+    HANDLE find = FindFirstStreamW(source ? source : destination, FindStreamInfoStandard, &entry, 0);
+    if (find == INVALID_HANDLE_VALUE) {
+        DWORD error = GetLastError();
+        return error == ERROR_HANDLE_EOF ? 0 : error;
+    }
+    DWORD error;
+    do {
+        wchar_t *from = source ? streamPath(source, entry.cStreamName) : NULL;
+        wchar_t *to = streamPath(destination, entry.cStreamName);
+        if (!to || (source && !from)) error = ERROR_OUTOFMEMORY;
+        else if (source) error = copyStream(from, to);
+        else error = DeleteFileW(to) ? 0 : GetLastError();
+        free(from);
+        free(to);
+        if (error) break;
+    } while (FindNextStreamW(find, &entry));
+    if (!error && GetLastError() != ERROR_HANDLE_EOF) error = GetLastError();
+    FindClose(find);
+    return error;
+}
+static DWORD copyDirectoryMetadata(const wchar_t *source, const wchar_t *destination) {
+    BY_HANDLE_FILE_INFORMATION info;
+    DWORD error = inspect(source, &info);
+    if (!error) error = inspect(destination, &info);
+    if (!error) error = updateDirectoryStreams(NULL, destination);
+    if (!error) error = updateDirectoryStreams(source, destination);
+    return error ? error : attributes(source, destination, FALSE);
 }
 DWORD sapiens_update_copy_metadata(const wchar_t *source, const wchar_t *destination) {
     DWORD kind = GetFileAttributesW(source);
     if (kind == INVALID_FILE_ATTRIBUTES) return GetLastError();
-    return (kind & FILE_ATTRIBUTE_DIRECTORY) ? sapiens_update_directory_metadata(source,destination) : attributes(source,destination,TRUE);
+    return (kind & FILE_ATTRIBUTE_DIRECTORY) ? copyDirectoryMetadata(source,destination) : attributes(source,destination,TRUE);
 }
 static BOOL digest(const wchar_t *path, BYTE result[32]) {
     HANDLE file = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
@@ -204,9 +204,8 @@ DWORD sapiens_update_metadata(const wchar_t *path, BYTE *out, DWORD capacity) {
         HANDLE find = FindFirstStreamW(path, FindStreamInfoStandard, &data, 0);
         if (find == INVALID_HANDLE_VALUE) return GetLastError()==ERROR_HANDLE_EOF && (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ? used : 0;
         do {
-            wchar_t *stream = malloc((wcslen(path)+wcslen(data.cStreamName)+1)*sizeof(wchar_t));
+            wchar_t *stream = streamPath(path, data.cStreamName);
             if (!stream) { FindClose(find); return 0; }
-            wcscpy(stream,path); wcscat(stream,data.cStreamName);
             BYTE sha[32]; BOOL ok = digest(stream,sha); free(stream);
             length = (DWORD)((wcslen(data.cStreamName)+1)*sizeof(wchar_t));
             if (!ok || used+length+32>capacity) { FindClose(find); return 0; }

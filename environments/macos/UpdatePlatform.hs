@@ -6,8 +6,6 @@ import Control.Concurrent.Async
 import Control.Exception
 import Control.Monad
 import qualified Data.ByteString as B
-import Data.Char (toLower)
-import Data.List (isPrefixOf)
 import Data.Maybe (catMaybes)
 import Foreign hiding (void)
 import Foreign.C
@@ -84,14 +82,9 @@ withRootIdentity path action = do
   cOpenRoot p handle identity >>= check ("Open Data or Config root: " ++ path)
   (,) <$> peek handle <*> (show <$> peekArray 2 identity)) (void . cClose . fst) (action . snd)
 pathPresent :: FilePath -> IO Bool
-pathPresent path = do
- let parent = takeDirectory (dropTrailingPathSeparator path)
- present <- if equalFilePath parent path then pure True else pathPresent parent
- if not present then pure False else do
-  code <- withCString path cValidate
-  if code == 2 then pure False else check ("Owned path validation: " ++ path) code >> pure True
-containsPath :: FilePath -> FilePath -> Bool
-containsPath parent path = let p = map toLower (normalise parent); q = map toLower (normalise path) in p == q || addTrailingPathSeparator p `isPrefixOf` q
+pathPresent = pathPresentWith $ \path -> do
+ code <- withCString path cValidate
+ if code == 2 then pure False else check ("Owned path validation: " ++ path) code >> pure True
 profileExclusions :: [FilePath]
 profileExclusions = []
 payloadName :: String

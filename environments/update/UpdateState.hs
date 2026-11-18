@@ -7,6 +7,7 @@ import Data.Aeson.Types (Parser)
 import qualified Data.Aeson.KeyMap as K
 import qualified Data.ByteString.Lazy as B
 import Data.Char (toLower)
+import Data.List (isPrefixOf)
 import qualified Data.Text as T
 import qualified Data.UUID as UUID
 import System.Directory
@@ -77,6 +78,19 @@ versionPath :: FilePath -> Version -> FilePath
 versionPath root v = root </> "versions" </> versionName v
 backupPath :: FilePath -> Version -> FilePath
 backupPath root nonce = root </> "backups" </> versionName nonce
+
+containsPath :: FilePath -> FilePath -> Bool
+containsPath parent path = p == q || addTrailingPathSeparator p `isPrefixOf` q
+ where
+ p = map toLower (normalise parent)
+ q = map toLower (normalise path)
+
+pathPresentWith :: (FilePath -> IO Bool) -> FilePath -> IO Bool
+pathPresentWith probe path = do
+ let parent = takeDirectory (dropTrailingPathSeparator path)
+ present <- if equalFilePath parent path then pure True else pathPresentWith probe parent
+ if present then probe path else pure False
+
 readUpdateState :: FilePath -> IO UpdateState
 readUpdateState root = do
  bytes <- B.readFile (statePath root)
