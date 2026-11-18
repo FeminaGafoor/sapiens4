@@ -7,8 +7,8 @@ Data and config default to `%LOCALAPPDATA%\Sapiens4\data` and its sibling `confi
 The first launch requires storage confirmation. Previously confirmed storage
 reopens automatically. Choose **Use another folder** to open existing data outside the
 installation. Quit before uninstalling. If an update was interrupted, open Sapiens
-from its shortcut to finish recovery first. Uninstall removes the selected versions
-and retained update backup from the installation and leaves external Data and Config folders.
+from its shortcut to finish recovery first. Uninstall removes marked version directories
+and updater backups from the installation and leaves external Data and Config folders.
 
 ## Build
 
