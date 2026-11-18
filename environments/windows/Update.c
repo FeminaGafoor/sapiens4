@@ -214,16 +214,20 @@ static DWORD trusted(const wchar_t *path, BYTE *fingerprint, DWORD *size) {
         CRYPT_PROVIDER_DATA *provider = WTHelperProvDataFromStateData(data.hWVTStateData);
         CRYPT_PROVIDER_SGNR *signer = provider ? WTHelperGetProvSignerFromChain(provider,0,FALSE,0) : NULL;
         CRYPT_PROVIDER_CERT *cert = signer ? WTHelperGetProvCertFromChain(signer,0) : NULL;
-        if (!cert || !CertGetCertificateContextProperty(cert->pCert,CERT_SHA256_HASH_PROP_ID,fingerprint,size)) status = TRUST_E_SUBJECT_NOT_TRUSTED;
+        if (!cert || !(*identity = CertDuplicateCertificateContext(cert->pCert))) status = TRUST_E_SUBJECT_NOT_TRUSTED;
     }
     data.dwStateAction = WTD_STATEACTION_CLOSE; WinVerifyTrust(NULL,&policy,&data);
     return (DWORD)status;
 }
 DWORD d2_trust(const wchar_t *current, const wchar_t *payload) {
-    BYTE a[32],b[32]; DWORD na=32,nb=32;
-    DWORD error = trusted(current,a,&na);
-    if (!error) error = trusted(payload,b,&nb);
-    if (!error && (na!=32 || nb!=32 || memcmp(a,b,32))) error = TRUST_E_SUBJECT_NOT_TRUSTED;
+    PCCERT_CONTEXT a = NULL, b = NULL;
+    DWORD error = trusted(current,&a);
+    if (!error) error = trusted(payload,&b);
+    if (!error && (!CertCompareCertificateName(X509_ASN_ENCODING,&a->pCertInfo->Subject,&b->pCertInfo->Subject) ||
+        !CertComparePublicKeyInfo(X509_ASN_ENCODING,&a->pCertInfo->SubjectPublicKeyInfo,&b->pCertInfo->SubjectPublicKeyInfo)))
+        error = TRUST_E_SUBJECT_NOT_TRUSTED;
+    if (a) CertFreeCertificateContext(a);
+    if (b) CertFreeCertificateContext(b);
     return error;
 }
 DWORD d2_job(void *job, int commit) {
