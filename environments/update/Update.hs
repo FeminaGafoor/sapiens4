@@ -90,6 +90,7 @@ updateAndRestartCached cache preparing command flushPreferences stop dataDirecto
          _ -> fail "Sapiens could not pause safely. Update cancelled."
     (do
       (quiet >> flushPreferences) `onException` void (tryUpdate (command "resume"))
+      void (tryUpdate (command "app-update-initiated"))
       stop)
      `onException` removePathForcibly (versionPath root next)
     candidateOwnership coordinator True

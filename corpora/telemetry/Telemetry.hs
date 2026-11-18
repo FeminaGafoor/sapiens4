@@ -1,6 +1,6 @@
 module Telemetry
  ( Telemetry, RuntimeKind(..), Event(..), openTelemetry, openTelemetryWith, closeTelemetry
- , enabled, setConsent, consentView, emit, emitAt, heartbeatInterval, uiHeartbeat
+ , enabled, setConsent, consentView, emit, emitAt, emitNow, heartbeatInterval, uiHeartbeat
  , startupConsentOption
  , RequestTransport(..), requestMetadata, ClientContext, parseClientContext, clientContextFields
  , localClientContext, nativeClientContext
@@ -45,11 +45,12 @@ import TelemetryDevice
 
 data RuntimeKind = Desktop | Headless deriving Eq
 data RequestTransport = Direct | Remote | UnknownTransport
-data Event = AppStarted | CorporaCreated | RequestAccepted | RemotePaired | PulseId | UIHeartbeat | TelemetryConsentChanged Bool
+data Event = AppStarted | AppUpdateInitiated | CorporaCreated | RequestAccepted | RemotePaired | PulseId | UIHeartbeat | TelemetryConsentChanged Bool
  deriving Eq
 eventName :: Event -> Text
 eventName event = case event of
  AppStarted -> "app_started"
+ AppUpdateInitiated -> "app_update"
  CorporaCreated -> "corpora_created"
  RequestAccepted -> "request_accepted"
  RemotePaired -> "remote_paired"
@@ -272,6 +273,15 @@ consentView telemetry = atomically $ do
 emit :: Telemetry -> Event -> Maybe Text -> Object -> IO ()
 emit telemetry event corpora fields = floor <$> getPOSIXTime >>= \time -> emitAt telemetry time event corpora fields
 
+emitNow :: Telemetry -> Event -> IO ()
+emitNow telemetry event = void $ timeout 2000000 $ do
+ epoch <- readTVarIO (consentEpoch telemetry)
+ active <- enabled telemetry
+ when active $ do
+  time <- floor <$> getPOSIXTime
+  row <- eventValue time event Nothing KM.empty
+  deliverEvents telemetry epoch [row]
+
 emitAt :: Telemetry -> Int64 -> Event -> Maybe Text -> Object -> IO ()
 emitAt telemetry time event corpora fields = do
  on <- enabled telemetry
@@ -375,15 +385,19 @@ sender telemetry = (forever $ do
   cached <- readTVarIO (nativeDevice telemetry)
   when (permitted && cached==Nothing) $ readNativeDevice >>= atomically . writeTVar (nativeDevice telemetry) . Just
   (epoch,batch) <- nextBatch telemetry
-  active <- enabled telemetry
-  credentials <- if active then credentialsFor telemetry epoch else pure Nothing
-  forM_ credentials $ \auth -> do
-   context <- batchContext telemetry auth
-   result <- post telemetry epoch eventsPath (Just auth) (batchEnvelope context batch)
-   when (case result of Rejected -> True; _ -> False) (disable telemetry "Telemetry credentials or version were rejected until restart"))
+  deliverEvents telemetry epoch batch)
  `catch` \(e::SomeException) -> case fromException e :: Maybe SomeAsyncException of
   Just _ -> throwIO e
   Nothing -> do
    let reason = "Telemetry sender failed: "<>T.pack (displayException e)
    disable telemetry reason
    hPutStrLn stderr (T.unpack reason)
+
+deliverEvents :: Telemetry -> Integer -> [Value] -> IO ()
+deliverEvents telemetry epoch batch = do
+ active <- enabled telemetry
+ credentials <- if active then credentialsFor telemetry epoch else pure Nothing
+ forM_ credentials $ \auth -> do
+  context <- batchContext telemetry auth
+  result <- post telemetry epoch eventsPath (Just auth) (batchEnvelope context batch)
+  when (case result of Rejected -> True; _ -> False) (disable telemetry "Telemetry credentials or version were rejected until restart")

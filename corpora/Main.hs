@@ -20,6 +20,7 @@ import Control.Monad
 import Data.Aeson hiding (pairs)
 import qualified Data.ByteString.Lazy.Char8 as BL
 import qualified Data.String
+import Data.IORef (readIORef)
 import Data.Maybe
 import GHC.IO.Encoding (setLocaleEncoding)
 import qualified Data.Text as T
@@ -149,6 +150,10 @@ hostMain root args = do
           case result of
            Right () -> reply "active" >> commands
            Left _ -> reply "error" >> shutdown
+         "app-update-initiated" -> do
+          reporters <- readIORef (serviceTelemetry (hostService host))
+          void $ tryJust synchronous $ forM_ reporters $ \reporter -> Telemetry.emitNow reporter Telemetry.AppUpdateInitiated
+          reply "reported" >> commands
          "stop" -> shutdown
          _ -> commands
    commands `catch` \(_::IOException) -> shutdown
