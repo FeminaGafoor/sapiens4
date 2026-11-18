@@ -26,7 +26,7 @@ import Numeric
 import Browser
 import Host
 import qualified Update as Update
-import Installation (withInstalledVersion, freshVersion)
+import Installation (withInstalledVersion, freshVersion, outsideInstallation)
 import UpdateState (versionName)
 import Native
 import qualified Navigation as Navigation
@@ -57,6 +57,7 @@ desktopSession memory probe = do
   args <- desktopArgs <$> getArgs
   host <- prepareHost args
   configRoot <- configDirectory
+  outsideInstallation configRoot
   dataEnv <- lookupEnv "SAPIENS_DATA_DIR"
   let explicit = listToMaybe [value | (key,value) <- zip args (drop 1 args), key=="--data-dir"] `mplus` dataEnv
   saved <- try (startupDataDirectory explicit) :: IO (Either IOException (Maybe FilePath))
@@ -111,7 +112,7 @@ desktopSession memory probe = do
         already <- atomicModifyIORef' updating (\old -> (True,old))
         preparing <- Update.preparingUpdate
         unless (already || preparing) $ void $ async $ do
-          result <- try $ do
+          result <- Update.tryUpdate $ do
             directory <- readIORef activeRoot
             let flush = do
                   nonce <- versionName <$> freshVersion
@@ -139,8 +140,9 @@ desktopSession memory probe = do
                       executable <- getExecutablePath
                       void (createProcess (proc executable ["--data-dir",directory]))
                       closeViews >> void (destroyWindow hwnd)
-                  readIORef shellRef >>= mapM_ (\view -> execute memory view "window.dispatchEvent(new Event('sapiens-preferences-resume'))" (const (pure ())))
-                  withWide (storageMessage e) $ \message -> withWide "Sapiens update" $ \title -> void (messageBox hwnd message title 0x10)
+                  let report = "window.dispatchEvent(new Event('sapiens-preferences-resume'));"
+                        ++ "window.dispatchEvent(new ErrorEvent('error',{message:" ++ jsonString (storageMessage e) ++ "}))"
+                  readIORef shellRef >>= mapM_ (\view -> execute memory view report (const (pure ())))
           atomicModifyIORef' pending (\actions -> (complete:actions,()))
           void (postMessage hwnd 0x802A 0 0)
       procedure hwnd message wparam lparam = case message of
@@ -284,7 +286,9 @@ desktopSession memory probe = do
               writeIORef starting False
               storageScript "window.dispatchEvent(new Event('sapiens-preferences-ready'))"
               when probe $ putStrLn "TITLE: Sapiens4" >> putStrLn ("Sapiens4: " ++ url))
-              `catch` \(e::SomeException) -> recoverStartup (storageMessage e)
+              `catch` \(e::SomeException) -> case fromException e :: Maybe SomeAsyncException of
+                Just _ -> throwIO e
+                Nothing -> recoverStartup (storageMessage e)
           installStorage selected url = do
             attempt <- readIORef storageAttempt
             let current action = readIORef storageAttempt >>= \n -> when (n==attempt) action
@@ -422,7 +426,8 @@ desktopSession memory probe = do
                         applyWindowTheme hwnd light dark lastTheme message
                         case field "clientPreferences" message of
                           input@(JSON.Object _) -> savePreferences input
-                          _ -> readIORef browserRef >>= mapM_ (\browser -> syncBrowser browser message)
+                          _ -> Update.preparingUpdate >>= \preparing ->
+                            unless preparing (readIORef browserRef >>= mapM_ (\browser -> syncBrowser browser message))
                     | otherwise -> pure ()
               on 15 "{D33A35BF-1C49-4F98-93AB-006E0533FE1C}" $ \event -> do
                 success <- getValue event 3 :: IO Int32

@@ -81,8 +81,6 @@ snapshot :: FilePath -> FilePath -> FilePath -> IO String
 snapshot destination dataDirectory configDirectory = do
  dataPath <- canonicalizePath dataDirectory
  configPath <- canonicalizePath configDirectory
- when (containsPath dataPath configPath || containsPath configPath dataPath) $
-  fail "Data and Config must be separate roots for updates"
  original <- inventories dataPath configPath dataPath configPath
  createDirectory destination
  forM_ (zip [0::Int ..] original) $ \(index,Inventory root _ _ entries) ->

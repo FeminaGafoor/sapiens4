@@ -2,6 +2,7 @@
 module Registry where
 
 import Types
+import Admission (admissionOpen)
 import qualified Telemetry
 import DataRoot
 import System.FileLock (unlockFile)
@@ -95,6 +96,8 @@ registryRoute registry identity method path input = do
  target <- registryLock registry $ do
   saved <- readIORef (registrySaved registry)
   if has (get saved "remotes") identity then do
+   admissionOpen (serviceAdmission (registryService registry)) >>= \open ->
+    require open 503 "Remote Corpora are unavailable until startup completes"
    cache <- readIORef (registryClients registry)
    client <- case M.lookup identity cache of
     Just value -> pure value

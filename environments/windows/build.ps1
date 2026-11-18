@@ -91,6 +91,7 @@ try {
     Copy-Item -LiteralPath (Join-Path $repo '.build/bin/sapiens-windows.exe') -Destination (Join-Path $package 'Sapiens4.exe')
     Copy-Item -LiteralPath (Join-Path $repo '.build/bin/WebView2Loader.dll'),(Join-Path $repo '.build/bin/WebView2-LICENSE.txt') -Destination $package
     [IO.File]::WriteAllText((Join-Path $package 'sapiens-installation.id'), 'com.sapiens4.desktop')
+    [IO.File]::WriteAllText((Join-Path $package 'sapiens-release.version'), $Version)
     Copy-Item -LiteralPath (Join-Path $repo '.build/bin/sapiens-starter.exe') -Destination (Join-Path $package 'sapiens-starter.exe')
     Audit-Payload $package
     if ($PublicRelease) {

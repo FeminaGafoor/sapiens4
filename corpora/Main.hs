@@ -32,6 +32,7 @@ import System.FilePath
 import System.Info
 import System.IO
 import System.Process
+import System.Timeout (timeout)
 #ifndef mingw32_HOST_OS
 import System.Posix.Signals
 #else
@@ -120,24 +121,30 @@ hostMain root args = do
   when ("--desktop" `elem` args) $ void $ forkIO $ do
    let commands = do
         command <- getLine
-        case command of
+        let (verb,token) = break (==' ') command
+            reply message = putStrLn ("UPDATE:" ++ token ++ " " ++ message)
+            synchronous problem = case fromException problem :: Maybe SomeAsyncException of
+             Just _ -> Nothing
+             Nothing -> Just problem
+        case verb of
          "quiesce" -> do
-          result <- try (hostQuiesce host)
-          putStrLn $ "UPDATE: " ++ case result of
-           Right True -> "quiet"
-           Right False -> "busy"
-           Left (_::SomeException) -> "error"
+          result <- tryJust synchronous (timeout 5000000 (hostQuiesce host))
+          reply $ case result of
+           Right (Just True) -> "quiet"
+           Right (Just False) -> "busy"
+           _ -> "error"
           commands
+         "resume" -> hostResume host >> reply "resumed" >> commands
          "prepare-ready" -> do
-          result <- try (hostPrepareReady host)
+          result <- tryJust synchronous (hostPrepareReady host)
           case result of
-           Right () -> putStrLn "UPDATE: prepared" >> commands
-           Left (_::SomeException) -> putStrLn "UPDATE: error" >> shutdown
+           Right () -> reply "prepared" >> commands
+           Left _ -> reply "error" >> shutdown
          "activate" -> do
-          result <- try (hostActivate host)
+          result <- tryJust synchronous (hostActivate host)
           case result of
-           Right () -> putStrLn "UPDATE: active" >> commands
-           Left (_::SomeException) -> putStrLn "UPDATE: error" >> shutdown
+           Right () -> reply "active" >> commands
+           Left _ -> reply "error" >> shutdown
          "stop" -> shutdown
          _ -> commands
    commands `catch` \(_::IOException) -> shutdown

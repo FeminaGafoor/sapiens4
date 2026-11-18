@@ -38,7 +38,7 @@ import Network.Wai.Handler.Warp
 import qualified Network.Socket as Socket
 
 
-data Host = Host { hostPort :: Int, hostService :: Service, hostBridge :: Bridge, hostStop :: IO (), hostActivate :: IO (), hostQuiesce :: IO Bool, hostPrepareReady :: IO () }
+data Host = Host { hostPort :: Int, hostService :: Service, hostBridge :: Bridge, hostStop :: IO (), hostActivate :: IO (), hostQuiesce :: IO Bool, hostResume :: IO (), hostPrepareReady :: IO () }
 listenLoopback :: Int -> IO (Socket.Socket,Int)
 listenLoopback port = Socket.withSocketsDo $ do
  sock <- Socket.socket Socket.AF_INET Socket.Stream Socket.defaultProtocol
@@ -77,6 +77,7 @@ startHostUsing gate activations inherited consent choice root requested managed 
    report openedStorage >> start reporter service
  where
  start reporter service = do
+  unless managed (recoverRelays root)
   (socket,port) <- listenLoopback requested
   flip onException (Socket.close socket) $ do
    Service.attachEndpoint service ("http://127.0.0.1:"<>T.pack (show port))
@@ -95,7 +96,6 @@ startHostUsing gate activations inherited consent choice root requested managed 
    transcriber <- newMVar (pure ())
    activated <- newMVar False
    let activate = modifyMVar_ activated $ \done -> if done then pure True else do
-        unless managed (recoverRelays root)
         mapM_ startRegistry registry
         Service.startService service
         unless managed $ do
@@ -127,6 +127,7 @@ startHostUsing gate activations inherited consent choice root requested managed 
         pure (not busy)
        prepareReady = do
         closeAdmission gate
+        mapM_ prepareRegistry registry
         owned <- readMVar activations
         mapM_ (\(s,_,_) -> void (Service.snapshot s)) owned
    let busy = do
@@ -150,7 +151,7 @@ startHostUsing gate activations inherited consent choice root requested managed 
         pure True
    (admissionOpen gate >>= \open -> if open then activate else mapM_ prepareRegistry registry) `onException` stop
    modifyMVar_ activations (pure . ((service,activate,busy):))
-   pure (Host port service bridge stop activateAll (quiesce `onException` openAdmission gate) prepareReady)
+   pure (Host port service bridge stop activateAll (quiesce `onException` openAdmission gate) (openAdmission gate) prepareReady)
 localRequest :: Int -> Bool -> RequestHeaders -> Validation ()
 localRequest port write headers = do
  let host = lookup hHost headers

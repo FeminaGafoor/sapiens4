@@ -11,7 +11,9 @@ import Data.Aeson
 import Data.Char (toUpper)
 import Data.IORef
 import Data.Maybe
+import Data.Unique (hashUnique, newUnique)
 import DataRoot (configDirectory, defaultDataDirectory, StorageChoice(..), containedPath)
+import Installation (outsideInstallation)
 import Network.HTTP.Client
 import Network.URI
 import Native (processId, waitProcessHandle)
@@ -19,6 +21,7 @@ import System.Process.Internals (ProcessHandle__(..), withProcessHandle)
 import qualified Data.ByteString as BS
 import System.Directory
 import System.Environment
+import System.Exit (ExitCode(..))
 import System.FilePath
 import System.IO
 import System.Process
@@ -39,7 +42,7 @@ data ServerProcess = ServerProcess
   , processErrors :: Handle
   , outputReader :: Maybe (Async ())
   , exitWatcher :: Maybe (Async ())
-  , updateReply :: MVar String
+  , updateReply :: Chan String
   , updateGuard :: MVar ()
   , errorReader :: Maybe (Async ())
   }
@@ -80,6 +83,7 @@ prepareHost args = do
 
 startHost :: Maybe Bool -> StorageChoice -> Host -> IO String
 startHost consent choice host = do
+  outsideInstallation (dataDirectory host)
   let binary = runtimeDirectory host </> ".build/bin/sapiens4.exe"
   available <- doesFileExist binary
   unless available $ ioError $ userError $ "Haskell runtime is missing. Extract the complete Sapiens4 package: " ++ binary
@@ -98,7 +102,7 @@ launchHost :: Host -> CreateProcess -> IO String
 launchHost host command = mask $ \restore -> do
   closeHost host
   (Just input, Just output, Just errors, child) <- createProcess command
-  reply <- newEmptyMVar
+  reply <- newChan
   guard <- newMVar ()
   let owned = ServerProcess child input output errors Nothing Nothing reply guard Nothing
   writeIORef (serverProcess host) (Just owned)
@@ -118,7 +122,7 @@ launchHost host command = mask $ \restore -> do
       putMVar readiness result
       case result of
         Left _ -> pure ()
-        Right _ -> (forever (hGetLine output >>= \line -> when (take 8 line == "UPDATE: ") (putMVar reply (drop 8 line)))) `catch` \(_ :: IOException) -> pure ()
+        Right _ -> (forever (hGetLine output >>= \line -> when (take 8 line == "UPDATE: ") (writeChan reply (drop 8 line)))) `catch` \(_ :: IOException) -> pure ()
     writeIORef (serverProcess host) (Just owned {outputReader=Just drain,errorReader=Just collect})
     restore (takeMVar readiness >>= either (\e -> do
       void (timeout 250000 (waitCatch collect))
@@ -172,25 +176,27 @@ closeHost host = mask_ $ do
   let clear = writeIORef (serverProcess host) Nothing >> writeIORef (origin host) Nothing
   case current of
     Nothing -> clear
-    Just server -> stopServer False server `finally` (do
+    Just server -> void (stopServer server) `finally` (do
       alive <- serverRunning current
       unless alive clear)
 
-stopServer :: Bool -> ServerProcess -> IO ()
-stopServer quiet server = mask_ $ do
+stopServer :: ServerProcess -> IO Bool
+stopServer server = mask_ $ do
   mapM_ cancel (exitWatcher server)
-  stop
+  graceful <- stop
   mapM_ cancel (catMaybes [outputReader server,errorReader server]) `finally` mapM_ closeStream streams
+  pure graceful
   where
     streams = [processInput server, processOutput server, processErrors server]
     stop = do
       let input = processInput server
       (hPutStrLn input "stop" >> hFlush input >> hClose input) `catch` \(_ :: IOException) -> pure ()
-      result <- if quiet then Just <$> waitForProcess (processHandle server) else timeout 10000000 (waitForProcess (processHandle server))
+      result <- timeout 10000000 (waitForProcess (processHandle server))
       when (isNothing result) $ do
         terminateProcess (processHandle server)
         confirmed <- timeout 5000000 (waitForProcess (processHandle server))
         when (isNothing confirmed) $ ioError $ userError "The application server could not be stopped"
+      pure (result == Just ExitSuccess)
 
 closeStream :: Handle -> IO ()
 closeStream stream = hClose stream `catch` \(_ :: IOException) -> pure ()
@@ -199,17 +205,23 @@ updateCommand :: Host -> String -> IO String
 updateCommand host command = do
  server <- readIORef (serverProcess host) >>= maybe (fail "Application server unavailable") pure
  withMVar (updateGuard server) $ \_ -> do
-  hPutStrLn (processInput server) command
+  token <- show . hashUnique <$> newUnique
+  hPutStrLn (processInput server) (command ++ " " ++ token)
   hFlush (processInput server)
   reader <- maybe (fail "Application output reader unavailable") pure (outputReader server)
-  outcome <- race (waitCatch reader) (takeMVar (updateReply server))
-  either (const (fail "Application server exited during update coordination")) pure outcome
+  let awaitReply = do
+       (received,reply) <- break (==' ') <$> readChan (updateReply server)
+       if received == token then pure (drop 1 reply) else awaitReply
+  outcome <- timeout 15000000 (race (waitCatch reader) awaitReply)
+  case outcome of
+   Just (Right reply) -> pure reply
+   Just (Left _) -> fail "Application server exited during update coordination"
+   Nothing -> fail "Application server did not respond to update coordination"
 
 stopQuietHost :: Host -> IO ()
 stopQuietHost host = do
- result <- updateCommand host "quiesce"
- unless (result == "quiet") (fail "Sapiens is busy. Finish accepted work before updating.")
  server <- readIORef (serverProcess host) >>= maybe (fail "Application server unavailable") pure
- stopServer True server
- writeIORef (serverProcess host) Nothing
- writeIORef (origin host) Nothing
+ graceful <- stopServer server `finally` do
+  alive <- serverRunning (Just server)
+  unless alive $ writeIORef (serverProcess host) Nothing >> writeIORef (origin host) Nothing
+ unless graceful (fail "The idle backend did not shut down cleanly. The update was cancelled.")

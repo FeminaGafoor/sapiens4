@@ -38,14 +38,18 @@ foreign import ccall safe "d2_job" cJob :: Ptr () -> CInt -> IO Word32
 check :: String -> Word32 -> IO ()
 check operation code = unless (code == 0) (fail (operation ++ " failed (Windows error " ++ show code ++ ")"))
 acquireLease :: FilePath -> Bool -> IO Lease
-acquireLease path exclusive = withCWString path $ \p -> do
- handle <- cLease p (if exclusive then 1 else 0)
+acquireLease path exclusive = leaseWithMode path (if exclusive then 1 else 0)
+leaseWithMode :: FilePath -> CInt -> IO Lease
+leaseWithMode path mode = withCWString path $ \p -> do
+ handle <- cLease p mode
  when (handle == nullPtr) (fail "Could not acquire installation lease")
  pure (Lease handle)
 releaseLease :: Lease -> IO ()
 releaseLease (Lease handle) = cClose handle
 withLease :: FilePath -> Bool -> (Lease -> IO a) -> IO a
 withLease path exclusive = bracket (acquireLease path exclusive) releaseLease
+withIdleLease :: FilePath -> IO a -> IO a
+withIdleLease path = bracket (leaseWithMode path 2) releaseLease . const
 downgradeLease :: Lease -> IO ()
 downgradeLease (Lease handle) = cDowngrade handle >>= check "Lease handoff"
 publish :: FilePath -> FilePath -> B.ByteString -> IO ()

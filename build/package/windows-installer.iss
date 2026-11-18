@@ -50,6 +50,11 @@ Name: "{userprograms}\{#PackageName}"; Filename: "{app}\Sapiens4.exe"
 [Run]
 Filename: "{app}\Sapiens4.exe"; Description: "Launch {#PackageName}"; Flags: nowait postinstall skipifsilent unchecked
 
+[UninstallDelete]
+Type: files; Name: "{app}\installation.lock"
+Type: dirifempty; Name: "{app}\backups"
+Type: dirifempty; Name: "{app}\versions"
+
 #endif
 
 [Code]
@@ -225,13 +230,21 @@ function InitializeUninstall: Boolean;
 begin
   Result := OwnedDirectory and ProcessesStopped(True);
   if not Result then begin
-    Log('Uninstall refused: missing installation identity, running process, or process-check failure.');
+    Log('Uninstall refused: the installation is active, recovery is pending, or cleanup could not complete.');
     if not UninstallSilent then
-      MsgBox('Quit {#PackageName} and its backend, then retry uninstall. No running process will be stopped.', mbError, MB_OK);
+      MsgBox('Finish any interrupted update and quit {#PackageName}, then retry uninstall.', mbError, MB_OK);
   end;
 end;
 
 #ifndef StagePayload
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var Code: Integer;
+begin
+  if CurUninstallStep = usUninstall then
+    if not Exec(ExpandConstant('{app}\Sapiens4.exe'), '--uninstall', '', SW_HIDE, ewWaitUntilTerminated, Code) or (Code <> 0) then
+      RaiseException('Finish any interrupted Sapiens update and quit the app before uninstalling.');
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 var Code: Integer;
 begin

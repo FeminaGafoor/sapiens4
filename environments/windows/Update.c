@@ -15,7 +15,9 @@ void *d2_lease(const wchar_t *path, int exclusive) {
         FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (h == INVALID_HANDLE_VALUE) return NULL;
     OVERLAPPED range = {0};
-    if (!LockFileEx(h, exclusive ? LOCKFILE_EXCLUSIVE_LOCK : 0, 0, 1, 0, &range)) {
+    DWORD flags = exclusive ? LOCKFILE_EXCLUSIVE_LOCK : 0;
+    if (exclusive == 2) flags |= LOCKFILE_FAIL_IMMEDIATELY;
+    if (!LockFileEx(h, flags, 0, 1, 0, &range)) {
         CloseHandle(h); return NULL;
     }
     return h;
@@ -203,7 +205,7 @@ DWORD d2_metadata(const wchar_t *path, BYTE *out, DWORD capacity) {
  failed: return 0;
 #undef APPEND
 }
-static DWORD trusted(const wchar_t *path, BYTE *fingerprint, DWORD *size) {
+static DWORD trusted(const wchar_t *path, PCCERT_CONTEXT *identity) {
     WINTRUST_FILE_INFO file = {0}; file.cbStruct = sizeof(file); file.pcwszFilePath = path;
     WINTRUST_DATA data = {0}; data.cbStruct = sizeof(data); data.dwUIChoice = WTD_UI_NONE;
     data.fdwRevocationChecks = WTD_REVOKE_WHOLECHAIN; data.dwUnionChoice = WTD_CHOICE_FILE; data.pFile = &file;
