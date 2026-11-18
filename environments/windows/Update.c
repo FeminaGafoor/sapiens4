@@ -50,6 +50,7 @@ static DWORD inspect(const wchar_t *path, BY_HANDLE_FILE_INFORMATION *info) {
     if (!error && !(info->dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && info->nNumberOfLinks != 1) error = ERROR_NOT_SUPPORTED;
     return error;
 }
+DWORD d2_validate(const wchar_t *path) { BY_HANDLE_FILE_INFORMATION info; return inspect(path, &info); }
 static DWORD security(const wchar_t *source, const wchar_t *destination) {
     PSID owner = NULL, group = NULL; PACL dacl = NULL; PSECURITY_DESCRIPTOR sd = NULL, dest = NULL;
     DWORD flags = OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION;

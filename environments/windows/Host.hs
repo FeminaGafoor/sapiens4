@@ -172,12 +172,12 @@ closeHost host = mask_ $ do
   let clear = writeIORef (serverProcess host) Nothing >> writeIORef (origin host) Nothing
   case current of
     Nothing -> clear
-    Just server -> stopServer server `finally` (do
+    Just server -> stopServer False server `finally` (do
       alive <- serverRunning current
       unless alive clear)
 
-stopServer :: ServerProcess -> IO ()
-stopServer server = mask_ $ do
+stopServer :: Bool -> ServerProcess -> IO ()
+stopServer quiet server = mask_ $ do
   mapM_ cancel (exitWatcher server)
   stop
   mapM_ cancel (catMaybes [outputReader server,errorReader server]) `finally` mapM_ closeStream streams
@@ -186,7 +186,7 @@ stopServer server = mask_ $ do
     stop = do
       let input = processInput server
       (hPutStrLn input "stop" >> hFlush input >> hClose input) `catch` \(_ :: IOException) -> pure ()
-      result <- timeout 10000000 (waitForProcess (processHandle server))
+      result <- if quiet then Just <$> waitForProcess (processHandle server) else timeout 10000000 (waitForProcess (processHandle server))
       when (isNothing result) $ do
         terminateProcess (processHandle server)
         confirmed <- timeout 5000000 (waitForProcess (processHandle server))
@@ -202,19 +202,15 @@ updateCommand host command = do
  withMVar (updateGuard server) $ \_ -> do
   hPutStrLn (processInput server) command
   hFlush (processInput server)
-  takeMVar (updateReply server)
+  reader <- maybe (fail "Application output reader unavailable") pure (outputReader server)
+  outcome <- race (waitCatch reader) (takeMVar (updateReply server))
+  either (const (fail "Application server exited during update coordination")) pure outcome
 
 stopQuietHost :: Host -> IO ()
 stopQuietHost host = do
  result <- updateCommand host "quiesce"
  unless (result == "quiet") (fail "Sapiens is busy. Finish accepted work before updating.")
  server <- readIORef (serverProcess host) >>= maybe (fail "Application server unavailable") pure
- mapM_ cancel (exitWatcher server)
- hPutStrLn (processInput server) "stop"
- hFlush (processInput server)
- -- Update shutdown never escalates to terminating accepted work.
- void (waitForProcess (processHandle server))
- mapM_ cancel (catMaybes [outputReader server,errorReader server])
- mapM_ closeStream [processInput server,processOutput server,processErrors server]
+ stopServer True server
  writeIORef (serverProcess host) Nothing
  writeIORef (origin host) Nothing

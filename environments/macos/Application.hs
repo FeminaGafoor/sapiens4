@@ -529,10 +529,10 @@ chooseDataDirectory = do
     result <- long panel "runModal"
     if result/=1 then pure Nothing else Just . T.unpack <$> (obj0 panel "URL" >>= (\u -> textProp u "path"))
 
-readClientPreferences :: Application -> FilePath -> IO (KeyMap.KeyMap Value)
+readClientPreferences :: Application -> FilePath -> IO (Maybe (KeyMap.KeyMap Value))
 readClientPreferences application directory = do
     value <- str (T.pack directory) >>= obj1 (clientPreferences application) "stringForKey:" >>= string
-    pure (fromMaybe KeyMap.empty (decodeStrict (TE.encodeUtf8 value)))
+    pure (decodeStrict (TE.encodeUtf8 value))
 
 saveClientPreferences :: Application -> Value -> IO ()
 saveClientPreferences application input = unless (fixture application) $ do
@@ -540,7 +540,7 @@ saveClientPreferences application input = unless (fixture application) $ do
     forM_ active $ \server -> do
         let name=text (field "key" input); value=text (field "value" input)
         when (validPreference name value) $ do
-            previous <- readClientPreferences application (serverDirectory server)
+            previous <- fromMaybe KeyMap.empty <$> readClientPreferences application (serverDirectory server)
             let stored=Object (KeyMap.insert (Key.fromText name) (String value) previous)
             content <- str (jsonText stored)
             nameObject <- str (T.pack (serverDirectory server))
@@ -549,7 +549,7 @@ saveClientPreferences application input = unless (fixture application) $ do
 installClientPreferences :: Application -> Obj -> Text -> FilePath -> IO ()
 installClientPreferences application view readyAddress directory = unless (fixture application) $ do
     saved <- readClientPreferences application directory
-    source <- preferenceScript (runtime application) readyAddress directory (Object saved)
+    source <- preferenceScript (runtime application) readyAddress directory (maybe Null Object saved)
     user <- obj0 view "configuration" >>= (`obj0` "userContentController")
     void (obj0 user "removeAllUserScripts")
     content <- str source

@@ -16,7 +16,10 @@ function installClientPreferences(address, root, saved, token) {
       }
     }
     localStorage.setItem('s4.native.storage', root);
-    if (sessionStorage.getItem('s4.native.restore') !== token) {
+    if (saved !== null && sessionStorage.getItem('s4.native.restore') !== token) {
+      for (const key of Object.keys(localStorage)) {
+        if (allowed(key) && !Object.hasOwn(saved, key)) localStorage.removeItem(key);
+      }
       for (const [key, value] of Object.entries(saved)) {
         if (allowed(key)) localStorage.setItem(key, value);
       }
@@ -29,10 +32,10 @@ function installClientPreferences(address, root, saved, token) {
     };
     publish();
     addEventListener('sapiens-preferences-ready', publish);
-    addEventListener('sapiens-preferences-flush', () => {
+    addEventListener('sapiens-preferences-flush', event => {
       document.documentElement.inert = true;
-      publish();
-      bridge.postMessage({preferencesFlushed: true});
+      const values = Object.fromEntries(Object.keys(localStorage).filter(allowed).map(key => [key, localStorage.getItem(key)]));
+      bridge.postMessage({preferencesFlush: {nonce: event.detail, values}});
     });
     addEventListener('sapiens-preferences-resume', () => {
       document.documentElement.inert = false;

@@ -39,8 +39,6 @@ common host
   hs-source-dirs: corpora, corpora/state, corpora/work, corpora/work/schedule, corpora/host, corpora/telemetry, remote/relay, remote/control, remote/protocol, build, environments/update
   other-modules:
     Command,
-    Installation,
-    UpdateState,
     Admission,
     Domain,
     RuntimePaths,
@@ -86,7 +84,7 @@ common host
   extra-libraries: sodium
   if os(windows)
     hs-source-dirs: environments/windows
-    other-modules: UpdateNative
+    other-modules: Installation, UpdateState, UpdatePlatform
     c-sources: environments/windows/Update.c
     extra-libraries: user32, advapi32, bcrypt, crypt32, wintrust
 
@@ -136,7 +134,7 @@ common windows-host
   other-modules:
     Installation,
     UpdateState,
-    UpdateNative,
+    UpdatePlatform,
     Admission,
     Domain,
     RuntimePaths,
@@ -152,7 +150,7 @@ common windows-host
     Native,
     Navigation,
     Shell,
-    WindowsUpdate,
+    Update,
     UpdateBackup
   if os(windows)
     c-sources: submodules/libs4/haskell/native/windows.c, environments/windows/Update.c
@@ -195,7 +193,7 @@ executable sapiens-starter
   import: runtime
   hs-source-dirs: environments/windows, environments/update
   main-is: Starter.hs
-  other-modules: Installation, UpdateState, UpdateNative
+  other-modules: Installation, UpdateState, UpdatePlatform
   if os(windows)
     c-sources: environments/windows/Update.c
     extra-libraries: user32, advapi32, bcrypt, crypt32, wintrust

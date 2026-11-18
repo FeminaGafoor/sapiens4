@@ -2,7 +2,9 @@
 module Main where
 
 import Types
+#ifdef mingw32_HOST_OS
 import Installation (withInstalledVersion)
+#endif
 import DataRoot
 import HostServer
 import qualified Telemetry
@@ -37,7 +39,11 @@ import qualified GHC.ConsoleHandler as Console
 #endif
 
 main :: IO ()
-main = withInstalledVersion run `catches` [Handler (\(code::ExitCode) -> throwIO code), Handler report]
+main =
+#ifdef mingw32_HOST_OS
+ withInstalledVersion
+#endif
+ run `catches` [Handler (\(code::ExitCode) -> throwIO code), Handler report]
  where
  report (e::SomeException) = do
   let detail = case fromException e of Just (APIError _ message) -> T.unpack message; Nothing -> storageMessage e
@@ -122,7 +128,11 @@ hostMain root args = do
            Right False -> "busy"
            Left (_::SomeException) -> "error"
           commands
-         "prepare-ready" -> hostPrepareReady host >> putStrLn "UPDATE: prepared" >> commands
+         "prepare-ready" -> do
+          result <- try (hostPrepareReady host)
+          case result of
+           Right () -> putStrLn "UPDATE: prepared" >> commands
+           Left (_::SomeException) -> putStrLn "UPDATE: error" >> shutdown
          "activate" -> do
           result <- try (hostActivate host)
           case result of

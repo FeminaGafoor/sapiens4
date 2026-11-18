@@ -1,17 +1,16 @@
-{-# LANGUAGE CPP #-}
-module Installation (withInstalledVersion, installation, writeUpdateState, freshVersion, leasePath) where
+module Installation (withInstalledVersion, installation, writeUpdateState, freshVersion, leasePath, preparingUpdate, starter) where
 
 import Control.Monad
 import qualified Data.ByteString.Lazy as B
-import Data.Aeson (encode)
+import Data.Aeson (encode, toJSON, parseJSON)
+import Data.Aeson.Types (parseEither)
 import qualified Data.UUID as UUID
 import qualified Data.UUID.V4 as UUID
 import System.Environment
+import System.Directory (doesFileExist)
 import System.FilePath
 import UpdateState
-#ifdef mingw32_HOST_OS
-import UpdateNative
-#endif
+import UpdatePlatform
 
 freshVersion :: IO Version
 freshVersion = Version . UUID.toString <$> UUID.nextRandom
@@ -20,25 +19,36 @@ leasePath root = root </> "installation.lock"
 installation :: IO (Maybe (FilePath,Version))
 installation = getExecutablePath >>= installationOf
 writeUpdateState :: FilePath -> UpdateState -> IO ()
-#ifdef mingw32_HOST_OS
 writeUpdateState root state = do
  nonce <- freshVersion
  publish (statePath root) (statePath root ++ "." ++ versionName nonce ++ ".tmp") (B.toStrict (encode state))
-#else
-writeUpdateState _ _ = fail "Windows installation publication is unavailable"
-#endif
 withInstalledVersion :: IO a -> IO a
-#ifdef mingw32_HOST_OS
 withInstalledVersion action = installation >>= maybe action (\(root,version) -> withLease (leasePath root) False $ \_ -> do
  state <- readUpdateState root
  allowed <- case state of
   Settled selection -> pure (version == current selection)
   Pending pending -> do
    nonce <- lookupEnv "SAPIENS_UPDATE_ATTEMPT"
-   preparing <- lookupEnv "SAPIENS_UPDATE_PREPARING"
-   pure (version == target pending && nonce == Just (versionName (attempt pending)) && preparing == Just "1")
+   pure (version == target pending && nonce == Just (versionName (attempt pending)))
  unless allowed (fail "This version is not authorized to open application data. Launch Sapiens from its installed shortcut.")
  action)
-#else
-withInstalledVersion = id
-#endif
+
+preparingUpdate :: IO Bool
+preparingUpdate = maybe False (const True) <$> lookupEnv "SAPIENS_UPDATE_ATTEMPT"
+
+starter :: [String] -> IO ()
+starter args = do
+ root <- starterDirectory
+ withLease (leasePath root) (not (null args)) $ \_ -> case args of
+  ["--initialize",name] -> do
+   version <- either fail pure (parseEither parseJSON (toJSON name))
+   exists <- doesFileExist (statePath root)
+   when exists (fail "An installation decision already exists")
+   validatePath (versionExecutable root version)
+   writeUpdateState root (Settled (Selection version Nothing))
+  [] -> do
+   state <- readUpdateState root
+   case state of
+    Settled selected -> launchVersion root (current selected) []
+    Pending pending -> launchVersion root (current (original pending)) ["--d2-recover"]
+  _ -> fail "Unsupported Starter command"

@@ -1,6 +1,6 @@
 module Main where
 import Shell (runDesktop)
-import WindowsUpdate (updateMode)
+import Update (updateMode)
 import System.Environment (getArgs)
 import Control.Monad (unless)
 main :: IO ()

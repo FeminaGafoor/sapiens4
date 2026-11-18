@@ -25,8 +25,8 @@ import Foreign hiding (void)
 import Numeric
 import Browser
 import Host
-import qualified WindowsUpdate as Update
-import Installation (withInstalledVersion)
+import qualified Update as Update
+import Installation (withInstalledVersion, freshVersion)
 import UpdateState (versionName)
 import Native
 import qualified Navigation as Navigation
@@ -89,6 +89,7 @@ desktopSession memory probe = do
   preferenceValues <- newIORef KM.empty
   updating <- newIORef False
   preferencesFlushed <- newEmptyMVar
+  preferenceFlushNonce <- newIORef Nothing
   let resize hwnd = do
         (width, height) <- rectangle hwnd
         offset <- readIORef top
@@ -111,29 +112,33 @@ desktopSession memory probe = do
         preparing <- Update.preparingUpdate
         unless (already || preparing) $ void $ async $ do
           result <- try $ do
-            quiet <- updateCommand host "quiesce"
-            unless (quiet == "quiet") (fail "Sapiens is busy. Finish accepted work before updating.")
-            void (updateCommand host "activate")
-            next <- Update.requestUpdate
-            quietAgain <- updateCommand host "quiesce"
-            unless (quietAgain == "quiet") (fail "Sapiens became busy while downloading. Update cancelled.")
-            let flushPreferences = readIORef shellRef >>= mapM_ (\view -> execute memory view "window.dispatchEvent(new Event('sapiens-preferences-flush'))" (const (pure ())))
-            void (tryTakeMVar preferencesFlushed)
-            atomicModifyIORef' pending (\actions -> (flushPreferences:actions,()))
-            void (postMessage hwnd 0x802A 0 0)
-            flushed <- timeout 10000000 (takeMVar preferencesFlushed)
-            when (isNothing flushed) $ do
-              void (updateCommand host "activate")
-              fail "Native preferences could not be saved; update cancelled."
-            stopQuietHost host
-            writeIORef closing True
             directory <- readIORef activeRoot
-            executable <- getExecutablePath
-            void $ createProcess (proc executable ["--d2-update",versionName next,directory,configRoot])
+            let flush = do
+                  nonce <- versionName <$> freshVersion
+                  writeIORef preferenceFlushNonce (Just nonce)
+                  void (tryTakeMVar preferencesFlushed)
+                  let export = readIORef shellRef >>= mapM_ (\view -> execute memory view ("window.dispatchEvent(new CustomEvent('sapiens-preferences-flush',{detail:" ++ jsonString nonce ++ "}))") (const (pure ())))
+                  atomicModifyIORef' pending (\actions -> (export:actions,()))
+                  void (postMessage hwnd 0x802A 0 0)
+                  saved <- timeout 10000000 (takeMVar preferencesFlushed)
+                  case saved of
+                    Just (Right ()) -> writeIORef preferenceFlushNonce Nothing
+                    _ -> fail "Native preferences could not be saved; update cancelled."
+            Update.updateAndRestart (updateCommand host) flush (stopQuietHost host) directory configRoot
+            writeIORef closing True
           let complete = case result of
                 Right () -> closeViews >> void (destroyWindow hwnd)
                 Left (e::SomeException) -> do
                   writeIORef updating False
+                  writeIORef closing False
+                  running <- readIORef (serverProcess host)
+                  case running of
+                    Just _ -> pure ()
+                    Nothing -> do
+                      directory <- readIORef activeRoot
+                      executable <- getExecutablePath
+                      void (createProcess (proc executable ["--data-dir",directory]))
+                      closeViews >> void (destroyWindow hwnd)
                   readIORef shellRef >>= mapM_ (\view -> execute memory view "window.dispatchEvent(new Event('sapiens-preferences-resume'))" (const (pure ())))
                   withWide (storageMessage e) $ \message -> withWide "Sapiens update" $ \title -> void (messageBox hwnd message title 0x10)
           atomicModifyIORef' pending (\actions -> (complete:actions,()))
@@ -267,7 +272,7 @@ desktopSession memory probe = do
                 writeJSON (preferencesPath directory) next
                 writeIORef preferenceValues next
           commitWorkspace signal =
-            DesktopStorage.saveWhenReady firstSignal signal selectedRoot fst recoverStartup $ \(_,url) -> do
+            DesktopStorage.saveWhenReady firstSignal signal selectedRoot fst recoverStartup $ \(_,url) -> (do
               atomicModifyIORef' workerRef (\old -> (Nothing,old)) >>= mapM_ cancel
               candidate <- Update.preparingUpdate
               when candidate $ do
@@ -278,7 +283,8 @@ desktopSession memory probe = do
                 unless (response == "active") (fail "Candidate activation failed")
               writeIORef starting False
               storageScript "window.dispatchEvent(new Event('sapiens-preferences-ready'))"
-              when probe $ putStrLn "TITLE: Sapiens4" >> putStrLn ("Sapiens4: " ++ url)
+              when probe $ putStrLn "TITLE: Sapiens4" >> putStrLn ("Sapiens4: " ++ url))
+              `catch` \(e::SomeException) -> recoverStartup (storageMessage e)
           installStorage selected url = do
             attempt <- readIORef storageAttempt
             let current action = readIORef storageAttempt >>= \n -> when (n==attempt) action
@@ -312,12 +318,12 @@ desktopSession memory probe = do
             browser <- newBrowser memory hwnd view selected top
             writeIORef browserRef (Just browser)
             writeIORef activeRoot (dataDirectory selected)
-            values <- (KM.map String <$> (readJSON (preferencesPath $ dataDirectory selected) KM.empty :: IO (KM.KeyMap T.Text)))
-              `catch` (\(e :: IOException) -> reportException (toException e) >> pure KM.empty)
+            exists <- doesFileExist (preferencesPath $ dataDirectory selected)
+            values <- KM.map String <$> (readJSON (preferencesPath $ dataDirectory selected) KM.empty :: IO (KM.KeyMap T.Text))
             writeIORef preferenceValues values
             oldScript <- atomicModifyIORef' preferenceScript (\old -> (Nothing,old))
             mapM_ (\identity -> withWide identity $ \name -> callPtr (core view) 28 name) oldScript
-            source <- DesktopStorage.preferenceScript (runtimeDirectory host) (T.pack url) (dataDirectory selected) (JSON.Object values)
+            source <- DesktopStorage.preferenceScript (runtimeDirectory host) (T.pack url) (dataDirectory selected) (if exists then JSON.Object values else Null)
             addDocumentScript memory view (T.unpack source) $ \result -> current $ do
               dead <- readIORef closing
               selection <- readIORef selectedRoot
@@ -398,7 +404,19 @@ desktopSession memory probe = do
                   Just message
                     | isNothing base && bootstrapSource source && bootstrapSource current -> chooseStorage message
                     | Navigation.trusted base source && Navigation.trusted base current -> do
-                        when (field "preferencesFlushed" message==Bool True) $ void (tryPutMVar preferencesFlushed ())
+                        case field "preferencesFlush" message of
+                          JSON.Object response -> do
+                            expected <- readIORef preferenceFlushNonce
+                            when (expected == Just (string (field "nonce" (JSON.Object response)))) $ do
+                              saved <- try $ do
+                                values <- case KM.lookup "values" response of
+                                  Just (JSON.Object values) | all (\(key,value) -> case value of String v -> DesktopStorage.validPreference (K.toText key) v; _ -> False) (KM.toList values) -> pure values
+                                  _ -> fail "Invalid native preferences snapshot"
+                                directory <- readIORef activeRoot
+                                writeJSON (preferencesPath directory) values
+                                writeIORef preferenceValues values
+                              void (tryPutMVar preferencesFlushed (saved :: Either IOException ()))
+                          _ -> pure ()
                         candidate <- Update.preparingUpdate
                         when (field "workspaceReady" message==Bool True || candidate && field "workspaceShellReady" message==Bool True) $ commitWorkspace DesktopStorage.WorkspaceReady
                         applyWindowTheme hwnd light dark lastTheme message
