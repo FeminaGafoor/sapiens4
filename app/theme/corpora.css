@@ -2,7 +2,7 @@
 [hidden]{display:none!important}
 .app-header{position:relative}
 .app-update{position:relative;flex:none}
-#app-update{border-radius:7px;padding:5px 11px;background:#155dfc;color:white;font:600 12px/1.5 var(--sapi-font);white-space:nowrap}
+#app-update{width:104px;border-radius:7px;padding:5px 11px;background:#155dfc;color:white;font:600 12px/1.5 var(--sapi-font);white-space:nowrap}
 #app-update:disabled{opacity:1}
 .app-update-notice{position:absolute;right:0;top:calc(100% + 8px);width:max-content;max-width:240px;z-index:34;padding:8px 10px;border:1px solid var(--line);border-radius:7px;background:var(--sapi-bg);color:var(--ink);font-size:12px}
 .connection-button{display:inline-flex;align-items:center;gap:8px;white-space:nowrap;min-height:44px;color:var(--muted);font:inherit;border:0;background:transparent;cursor:pointer}
