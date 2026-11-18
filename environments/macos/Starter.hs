@@ -24,6 +24,7 @@ main = (do
   exists <- doesFileExist (statePath root)
   unless exists $ do
    executable <- getExecutablePath
+   callProcess "/usr/bin/codesign" ["--verify","--deep","--strict",takeDirectory (takeDirectory (takeDirectory executable))]
    let seed = takeDirectory executable </> "../Resources/Seed.dmg"
    version <- freshVersion
    createDirectoryIfMissing True (root </> "versions")

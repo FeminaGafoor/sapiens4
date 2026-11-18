@@ -14,6 +14,11 @@ import qualified Crypto.Hash.SHA256 as SHA256
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC
 import qualified Data.ByteString.Lazy as L
+import qualified Update
+import Installation (outsideInstallation, freshVersion)
+import UpdateState (versionName)
+import qualified UpdatePlatform
+import Foreign.C.String (CString, withCString)
 import DataRoot
 import DesktopStorage
 import qualified Data.Text.IO as TIO
@@ -45,9 +50,9 @@ import Numeric (showHex)
 import Text.Read (readMaybe)
 
 
-data Application = Application { native :: Obj, browser :: IORef Browser, windowRef :: IORef Obj, pending :: IORef [IO ()], fixture :: Bool, child :: IORef (Maybe ServerProcess), address :: IORef Text, startup :: IORef (Maybe (Async ())), starting :: IORef Bool, localLoaded :: IORef Bool, runtime :: FilePath, selectedRoot :: IORef (Maybe FilePath), recoveryError :: IORef (Maybe Text), firstSignal :: IORef (Maybe WorkspaceSignal), attemptNumber :: IORef Integer, recovering :: IORef Bool, clientPreferences :: Obj, quitting :: IORef Bool }
+data Application = Application { native :: Obj, browser :: IORef Browser, windowRef :: IORef Obj, pending :: IORef [IO ()], fixture :: Bool, child :: IORef (Maybe ServerProcess), address :: IORef Text, startup :: IORef (Maybe (Async ())), starting :: IORef Bool, localLoaded :: IORef Bool, runtime :: FilePath, selectedRoot :: IORef (Maybe FilePath), recoveryError :: IORef (Maybe Text), firstSignal :: IORef (Maybe WorkspaceSignal), attemptNumber :: IORef Integer, recovering :: IORef Bool, clientPreferences :: Obj, preferenceDomain :: Text, quitting :: IORef Bool }
 
-data ServerProcess = ServerProcess { serverHandle :: ProcessHandle, serverSession :: ProcessID, serverInput :: Handle, serverOutput :: Handle, serverErrors :: Async (), serverDrain :: Maybe (Async ()), serverDirectory :: FilePath }
+data ServerProcess = ServerProcess { serverHandle :: ProcessHandle, serverSession :: ProcessID, serverInput :: Handle, serverOutput :: Handle, serverErrors :: Async (), serverDrain :: Maybe (Async ()), serverDirectory :: FilePath, updateReplies :: Chan String, updateGuard :: MVar () }
 
 post :: Application -> IO () -> IO ()
 post application action = atomicModifyIORef' (pending application) (\actions -> (actions ++ [action],()))
@@ -69,6 +74,8 @@ check application = do
 startServer :: Application -> Maybe Bool -> StorageChoice -> FilePath -> FilePath -> IO (ServerProcess, Text)
 startServer application consent choice runtime destination = do
     configRoot <- configDirectory
+    outsideInstallation configRoot
+    outsideInstallation destination
     let binary = runtime </> ".build/bin/sapiens4"
     present <- doesFileExist binary
     unless present $ ioError (userError "The application is incomplete. Extract the complete Sapiens4 package.")
@@ -101,12 +108,16 @@ launchServer application destination command = mask $ \restore -> do
                 line <- hGetLine errors
                 hPutStrLn logFile line
                 hFlush logFile) `catch` (\(_ :: IOException) -> pure ())) `finally` close errors) `onException` cleanup
-    let server = ServerProcess process group input output reader Nothing destination
+    replies <- newChan
+    guard <- newMVar ()
+    let server = ServerProcess process group input output reader Nothing destination replies guard
     writeIORef (child application) (Just server)
     mapM_ (\h -> hSetEncoding h utf8 >> hSetNewlineMode h universalNewlineMode) [input,output] `onException` stopOwnedServer application
     ready <- restore (T.pack . show <$> awaitServerAddress output)
         `onException` stopOwnedServer application
-    drain <- async $ (forever (void (hGetLine output))) `catch` (\(_ :: IOException) -> close output)
+    drain <- async $ (forever (do
+        line <- hGetLine output
+        when (take 7 line == "UPDATE:") (writeChan replies (drop 8 line)))) `catch` (\(_ :: IOException) -> close output)
     let running=server {serverDrain=Just drain}
     writeIORef (child application) (Just running)
     pure (running, ready)
@@ -234,10 +245,13 @@ installMethods application = do
                 when ended $ recoverStartup application "The application server stopped. Choose a folder to reopen your workspace."
     on1 "applicationDidFinishLaunching:" (\_ -> showWindow application)
     on0 "reloadWorkspace" (reload application)
+    on0 "updateAndRestart" (beginUpdate application)
     on0 "quit" (void (obj1 (native application) "terminate:" nullPtr))
     wrapLong1 (\_ _ _ -> do
         busy <- atomicModifyIORef' (quitting application) (\value -> (True,value))
-        unless busy $ void $ async $ do
+        unless busy $ do
+          saveWindowFrame application
+          void $ async $ do
             result <- try (closeApplication application)
             post application $ do
                 case result of
@@ -354,6 +368,7 @@ menus application target = do
       else do
         menuItem appMenu (native application) "About Sapiens4" "orderFrontStandardAboutPanel:" ""
         separator <- cls "NSMenuItem" >>= \c -> obj0 c "separatorItem"; void (obj1 appMenu "addItem:" separator)
+        menuItem appMenu target "Update & Restart" "updateAndRestart" ""
         menuItem appMenu target "Quit Sapiens4" "quit" "q"
     edit <- subMenu root "Edit"
     forM_ [("Undo","undo:","z"),("Cut","cut:","x"),("Copy","copy:","c"),("Paste","paste:","v"),("Select All","selectAll:","a")] $ \(title,action,key) -> menuItem edit nullPtr title action key
@@ -378,9 +393,8 @@ initialize application target address = do
     void (obj0 win "center")
     unless (fixture application) $ do
         size win "setMinSize:" 720 540
-        name <- str "Sapiens4Workspace"
-        void (booleanArgument win "setFrameUsingName:" name)
-        setText win "setFrameAutosaveName:" "Sapiens4Workspace"
+        frame <- str "workspace-frame" >>= obj1 (clientPreferences application) "stringForKey:"
+        when (frame /= nullPtr) (void (obj1 win "setFrameFromString:" frame))
     showWindow application
     timerClass <- cls "NSTimer"; timerSelector <- sel "scheduledTimerWithTimeInterval:target:selector:userInfo:repeats:"; tick <- sel "tick:"
     timer <- callTimer timerClass timerSelector 0.05 target tick nullPtr 1
@@ -433,12 +447,14 @@ runSession isFixture initialAddress = do
     signal <- newIORef Nothing; generation <- newIORef 0; recovery <- newIORef False
     problem <- newIORef Nothing
     closing <- newIORef False
-    preferences <- if isFixture then pure nullPtr else do
+    domain <- if isFixture then pure "" else do
         config <- configDirectory >>= canonicalizePath
         let hex byte = let value=showHex byte "" in replicate (2-length value) '0' ++ value
             suite="com.sapiens4.client." <> T.pack (concatMap hex (BS.unpack (SHA256.hash (TE.encodeUtf8 (T.pack config)))))
-        allocated "NSUserDefaults" >>= \o -> str suite >>= obj1 o "initWithSuiteName:"
-    let state = Application application b win tasks isFixture process address worker busy loaded runtime selection problem signal generation recovery preferences closing
+        mirrorPreferences suite True
+        pure suite
+    preferences <- if isFixture then pure nullPtr else allocated "NSUserDefaults" >>= \o -> str domain >>= obj1 o "initWithSuiteName:"
+    let state = Application application b win tasks isFixture process address worker busy loaded runtime selection problem signal generation recovery preferences domain closing
     (do
         target <- installMethods state
         initialize state target initialAddress
@@ -479,7 +495,7 @@ showStorageError application message = do
 
 closeApplication :: Application -> IO ()
 closeApplication application = do
-    unless (fixture application) $ void (long (clientPreferences application) "synchronize")
+    unless (fixture application) (flushPreferences application)
     atomicModifyIORef' (startup application) (\old -> (Nothing,old)) >>= mapM_ cancel
     stopOwnedServer application
 
@@ -591,6 +607,7 @@ installServer application readyAddress guestScript directory = do
 
 recoverStartup :: Application -> Text -> IO ()
 recoverStartup application message = do
+    Update.preparingUpdate >>= \candidate -> when candidate (putStrLn "D2: failed" >> hFlush stdout)
     active <- atomicModifyIORef' (recovering application) (\old -> (True,old))
     closing <- readIORef (quitting application)
     unless (closing || active) $ do
@@ -649,7 +666,82 @@ postAttempt application attempt action = post application $ do
     when (current==attempt && not closing) action
 
 commitWorkspace :: Application -> WorkspaceSignal -> IO ()
-commitWorkspace application signal =
+commitWorkspace application signal = handle (\(problem::IOException) -> recoverStartup application (T.pack (displayException problem))) $
     saveWhenReady (firstSignal application) signal (selectedRoot application) id (recoverStartup application . T.pack) $ \_ -> do
         atomicModifyIORef' (startup application) (\old -> (Nothing,old)) >>= mapM_ cancel
+        candidate <- Update.preparingUpdate
+        when candidate $ do
+            prepared <- updateCommand application "prepare-ready"
+            unless (prepared == "prepared") (fail "Candidate could not prepare the Workspace")
+        Update.candidateReady $ do
+            reply <- updateCommand application "activate"
+            unless (reply == "active") (fail "Candidate could not activate")
         writeIORef (starting application) False
+
+foreign import ccall safe "d2_preferences" cPreferences :: CString -> CString -> CString -> CInt -> IO CInt
+
+mirrorPreferences :: Text -> Bool -> IO ()
+mirrorPreferences domain restore = do
+    config <- configDirectory
+    createDirectoryIfMissing True config
+    nonce <- versionName <$> freshVersion
+    let path = config </> "macos-preferences.plist"
+    withCString (T.unpack domain) $ \name -> withCString path $ \file -> withCString (path ++ "." ++ nonce) $ \temporary ->
+        cPreferences name file temporary (if restore then 1 else 0) >>= UpdatePlatform.check "Native preferences"
+
+saveWindowFrame :: Application -> IO ()
+saveWindowFrame application = unless (fixture application) $ do
+    win <- readIORef (windowRef application)
+    when (win /= nullPtr) $ do
+        frame <- obj0 win "stringWithSavedFrame"
+        key <- str "workspace-frame"
+        void (obj2 (clientPreferences application) "setObject:forKey:" frame key)
+flushPreferences :: Application -> IO ()
+flushPreferences application = do
+    saved <- long (clientPreferences application) "synchronize"
+    unless (saved /= 0) (fail "Native preferences could not be saved")
+    mirrorPreferences (preferenceDomain application) False
+
+updateCommand :: Application -> String -> IO String
+updateCommand application command = do
+    server <- readIORef (child application) >>= maybe (fail "Application server is not running") pure
+    withMVar (updateGuard server) $ \_ -> do
+        token <- versionName <$> freshVersion
+        hPutStrLn (serverInput server) (command ++ " " ++ token)
+        hFlush (serverInput server)
+        let receive = do
+                line <- readChan (updateReplies server)
+                let (received,reply) = break (==' ') line
+                if received == token then pure (drop 1 reply) else receive
+        result <- timeout 15000000 receive
+        maybe (fail "Application server did not respond to update coordination") pure result
+
+beginUpdate :: Application -> IO ()
+beginUpdate application = do
+    busy <- atomicModifyIORef' (starting application) (\value -> (True,value))
+    unless busy $ do
+        -- Capture NSUserDefaults and window state on the Cocoa thread.
+        saved <- Update.tryUpdate (saveWindowFrame application >> flushPreferences application)
+        case saved of
+            Left problem -> writeIORef (starting application) False >> alert (T.pack (displayException problem))
+            Right () -> void $ async $ do
+                result <- Update.tryUpdate $ do
+                    server <- readIORef (child application) >>= maybe (fail "Open a Workspace before updating") pure
+                    config <- configDirectory
+                    let stop = do
+                            writeIORef (address application) ""
+                            hPutStrLn (serverInput server) "stop" >> hFlush (serverInput server)
+                            let await = serverExited (serverHandle server) >>= \done -> unless done (threadDelay 50000 >> await)
+                            graceful <- timeout 10000000 await
+                            stopOwnedServer application
+                            when (isNothing graceful) (fail "The idle backend did not shut down cleanly; update cancelled")
+                            writeIORef (address application) ""
+                    Update.updateAndRestart (updateCommand application)
+                        (mirrorPreferences (preferenceDomain application) False) stop (serverDirectory server) config
+                post application $ case result of
+                    Left problem -> do
+                        writeIORef (starting application) False
+                        connected <- not . T.null <$> readIORef (address application)
+                        if connected then alert (T.pack (displayException problem))
+                          else recoverStartup application (T.pack (displayException problem))
+                    Right () -> void (obj1 (native application) "terminate:" nullPtr)

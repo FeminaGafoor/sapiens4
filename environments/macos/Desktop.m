@@ -29,10 +29,10 @@ int d2_preferences(const char *name, const char *path, const char *temporary, in
 #import <AppKit/AppKit.h>
 int d2_activate(const char *executable) {
     @autoreleasepool {
-        NSString *path = [[NSString stringWithUTF8String:executable] stringByStandardizingPath];
+        NSString *path = [[NSString stringWithUTF8String:executable] stringByResolvingSymlinksInPath];
         for (NSRunningApplication *app in [[NSWorkspace sharedWorkspace] runningApplications]) {
-            if ([app.executableURL.path isEqualToString:path] && !app.terminated) {
-                [app activateWithOptions:NSApplicationActivateIgnoringOtherApps];
+            if ([app.executableURL.path.stringByResolvingSymlinksInPath isEqualToString:path] && !app.terminated) {
+                [app activateWithOptions:NSApplicationActivateAllWindows | NSApplicationActivateIgnoringOtherApps];
                 return 1;
             }
         }

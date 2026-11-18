@@ -91,6 +91,7 @@ starterDirectory = do
 verifyPublisher :: FilePath -> FilePath -> IO ()
 verifyPublisher current payload = do
  let app executable = takeDirectory (takeDirectory (takeDirectory executable))
+ callProcess "/usr/bin/codesign" ["--verify","--deep","--strict",app current]
  (_,_,description) <- readProcessWithExitCode "/usr/bin/codesign" ["-d","--verbose=4",app current] ""
  team <- case mapMaybe (stripPrefix "TeamIdentifier=") (lines description) of
   [value] | length value == 10 && all (`elem` ['A'..'Z']++['0'..'9']) value -> pure value
