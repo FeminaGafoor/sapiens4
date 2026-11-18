@@ -61,7 +61,7 @@ $staging = $null
 Push-Location $repo
 try {
     if ($PublicRelease -or -not (Test-Path (Join-Path $repo 'submodules/libs4/node_modules/purescript/package.json'))) {
-        & npm ci --include=dev --prefix (Join-Path $repo 'submodules/libs4')
+        & npm install --package-lock=false --include=dev --prefix (Join-Path $repo 'submodules/libs4')
         if ($LASTEXITCODE -ne 0) { throw 'UI dependency installation failed' }
     }
     $uiOutput = Join-Path $repo '.build/web'

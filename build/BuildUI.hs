@@ -22,7 +22,7 @@ buildUI :: FilePath -> IO ()
 buildUI root = do
  let libs=root</>"submodules/libs4"; work=root</>"build/purescript"; output=root</>".build/web"; stamp=output</>"source.sha256"
  source <- filter ((`elem` [".purs",".js"]).takeExtension) <$> filesUnder (root</>"app")
- let inputs = sort source ++ [work</>"spago.yaml",work</>"spago.lock",libs</>"package-lock.json",root</>"build/BuildUI.hs",root</>"build/vendor.cjs"]
+ let inputs = sort source ++ [work</>"spago.yaml",work</>"spago.lock",libs</>"package.json",root</>"build/BuildUI.hs",root</>"build/vendor.cjs"]
  raw <- B.concat <$> mapM (\p -> (TE.encodeUtf8 (T.pack (makeRelative root p)) <>) <$> B.readFile p) inputs
  let fingerprint=hash raw
  saved <- doesFileExist stamp >>= \exists -> if exists then readText stamp else pure ""
@@ -37,7 +37,7 @@ buildUI root = do
   setEnv "npm_config_cache" (libs</>".cache/npm")
   when (os=="mingw32") (setEnv "LOCALAPPDATA" (libs</>".cache"))
   installed <- doesFileExist (libs</>"node_modules/.bin/purs")
-  unless installed (tool "npm" ["ci","--prefix",libs])
+  unless installed (tool "npm" ["install","--package-lock=false","--include=dev","--prefix",libs])
   when (os=="mingw32") $ do
    let bin=libs</>".cache/bin"
    createDirectoryIfMissing True bin

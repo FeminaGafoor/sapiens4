@@ -20,7 +20,6 @@ WORKDIR /app
 COPY --from=build /app/.build/bin/sapiens4 ./.build/bin/sapiens4
 COPY --from=build /app/.build/web/app.js /app/.build/web/sw.js /app/.build/web/guest.js /app/.build/web/remote-vendor.js ./.build/web/
 COPY app/ ./app/
-COPY submodules/libs4/license/ ./submodules/libs4/license/
 COPY license/ ./license/
 ENV SAPIENS_RELAY_BIND=0.0.0.0 SAPIENS_RELAY_DB=/data/relay.sqlite3
 CMD ["/app/.build/bin/sapiens4", "relay"]
