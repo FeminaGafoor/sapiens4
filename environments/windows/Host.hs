@@ -212,7 +212,9 @@ updateCommand host command = do
   let awaitReply = do
        (received,reply) <- break (==' ') <$> readChan (updateReply server)
        if received == token then pure (drop 1 reply) else awaitReply
-  outcome <- timeout 15000000 (race (waitCatch reader) awaitReply)
+      response = race (waitCatch reader) awaitReply
+  -- The Coordinator bounds Ready, including the potentially long local preparation.
+  outcome <- if command == "prepare-ready" then Just <$> response else timeout 15000000 response
   case outcome of
    Just (Right reply) -> pure reply
    Just (Left _) -> fail "Application server exited during update coordination"

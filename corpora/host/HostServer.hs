@@ -112,7 +112,7 @@ startHostUsing gate activations inherited consent choice root requested managed 
         pure True
        activateAll = do
         owned <- readMVar activations
-        assertDataAvailable (serviceRoot service)
+        assertDataAvailable (serviceRoot service) `catch` \(_::IOException) -> pure ()
         reporter <- readIORef (serviceTelemetry service)
         when (not managed && maybe True (const False) reporter) $ do
          args <- getArgs

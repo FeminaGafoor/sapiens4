@@ -139,6 +139,12 @@ updateMode args = case args of
  report action = tryUpdate action >>= either (\problem -> showUpdateError (displayException problem) >> exitFailure) pure
 
 data Dispatch = Running | Launch Version | Recover
+
+newtype CandidateNotJoined = CandidateNotJoined SomeException deriving Show
+instance Exception CandidateNotJoined where
+ displayException (CandidateNotJoined problem) =
+  "The candidate process tree could not be joined. Recovery is deferred. Close Sapiens and relaunch from its installed shortcut. " ++ displayException problem
+
 discard :: [FilePath] -> IO ()
 discard paths = forM_ paths $ \path -> removePathForcibly path `catch` \(_::IOException) -> pure ()
 
@@ -187,6 +193,7 @@ coordinate requested = do
        Settled selection | current selection == next ->
         fail ("The update was committed, but activation failed. Relaunch Sapiens with its installed shortcut. " ++ displayException problem)
        Settled selection -> pure (Launch (current selection))
+       Pending _ | Just (_::CandidateNotJoined) <- fromException problem -> throwIO problem
        Pending _ -> pure Recover
  case dispatch of
   Running -> pure ()
@@ -205,7 +212,7 @@ runCandidate root pending = withCandidate (versionExecutable root (target pendin
    mask_ $ do
     writeUpdateState root (Settled (Selection (target pending) (Just (Previous (current (original pending)) (attempt pending) (backupDigest pending)))))
     candidateOwnership candidate True)
-   `onException` candidateOwnership candidate False
+   `onException` (tryUpdate (candidateOwnership candidate False) >>= either (throwIO . CandidateNotJoined) pure)
   sendCandidate candidate "commit"
   await 60 candidate "D2: active"
 
