@@ -52,7 +52,7 @@ runDesktop probe = withInstalledVersion $ runInBoundThread $
       withWide "Sapiens4 could not start" $ \title -> void (messageBox nullPtr message title 0x10)
 
 desktopSession :: Arena -> Bool -> IO ()
-desktopSession memory probe = Update.withUpdateCache $ \cache -> do
+desktopSession memory probe = do
   void $ setDpiAwareness (-4)
   args <- desktopArgs <$> getArgs
   host <- prepareHost args
@@ -132,7 +132,7 @@ desktopSession memory probe = Update.withUpdateCache $ \cache -> do
                   case saved of
                     Just (Right ()) -> writeIORef preferenceFlushNonce Nothing
                     _ -> fail "Native preferences could not be saved; update cancelled."
-            Update.updateAndRestartCached cache (postUpdate hwnd $ reportUpdate "updating")
+            Update.updateAndRestart (postUpdate hwnd $ reportUpdate "updating")
               (updateCommand host) flush (stopQuietHost host) directory configRoot
             writeIORef closing True
           let complete = case result of

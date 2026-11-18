@@ -1,4 +1,4 @@
-module Update (UpdateCache, UpdateBusy(..), withUpdateCache, updateAndRestartCached, updateMode, updateAvailable, candidateReady, preparingUpdate, tryUpdate, sendUpdateCommand) where
+module Update (UpdateBusy(..), updateAndRestart, updateMode, updateAvailable, candidateReady, preparingUpdate, tryUpdate, sendUpdateCommand) where
 
 import Control.Concurrent (Chan, MVar, readChan, withMVar)
 import Control.Concurrent.Async (Async, race, waitCatch)
@@ -59,14 +59,7 @@ data Release = Release
  { releaseVersion :: [Integer]
  , releaseURL :: String
  , releaseDigest :: String
- } deriving Eq
-newtype UpdateCache = UpdateCache (IORef (Maybe (Release,FilePath)))
-
-withUpdateCache :: (UpdateCache -> IO a) -> IO a
-withUpdateCache = bracket (UpdateCache <$> newIORef Nothing) clearUpdateCache
-
-clearUpdateCache :: UpdateCache -> IO ()
-clearUpdateCache (UpdateCache ref) = atomicModifyIORef' ref (\old -> (Nothing,old)) >>= mapM_ (discard . pure . snd)
+ }
 
 data UpdateBusy = UpdateBusy deriving Show
 instance Exception UpdateBusy where
@@ -87,64 +80,52 @@ sendUpdateCommand commandLock input replies reader command = withMVar commandLoc
   Just (Left _) -> fail "Application server exited during update coordination"
   Nothing -> fail "Application server did not respond to update coordination"
 
-updateAndRestartCached :: UpdateCache -> IO () -> (String -> IO String) -> IO () -> IO () -> FilePath -> FilePath -> IO ()
-updateAndRestartCached cache preparing command flushPreferences stop dataDirectory configDirectory = mask $ \restore -> do
- result <- try (restore attempt)
- case result of
-  Left problem | Just UpdateBusy <- fromException problem -> throwIO problem
-  _ -> clearUpdateCache cache >> either throwIO pure result
+updateAndRestart :: IO () -> (String -> IO String) -> IO () -> IO () -> FilePath -> FilePath -> IO ()
+updateAndRestart preparing command flushPreferences stop dataDirectory configDirectory = do
+ (root,owner) <- installed
+ validateRoots root dataDirectory configDirectory
+ requireIdle "check-busy" "Sapiens could not check for unfinished work. Update cancelled."
+ mask $ \unmask -> do
+  next <- freshVersion
+  handoffStarted <- newIORef False
+  let discardStaged = readIORef handoffStarted >>= \started ->
+       unless started (discard [versionPath root next])
+  unmask (do
+   requestUpdate root owner next
+   withCandidate (versionExecutable root owner) ["--update-coordinate",versionName next,dataDirectory,configDirectory] [] $ \coordinator -> mask $ \restoreHandoff -> do
+    let quiet = requireIdle "quiesce" "Sapiens could not pause safely. Update cancelled."
+    (do
+      restoreHandoff $ do
+       preparing
+       await 15 coordinator "update: coordinator"
+       (quiet >> flushPreferences) `onException` void (tryUpdate (command "resume"))
+       stop
+      candidateOwnership coordinator True)
+     `onException` candidateOwnership coordinator False
+    writeIORef handoffStarted True
+    sendCandidate coordinator "handoff")
+   `onException` discardStaged
  where
  requireIdle action message = command action >>= \reply -> case reply of
   "quiet" -> pure ()
   "busy" -> throwIO UpdateBusy
   _ -> fail message
- attempt = do
-  (root,owner) <- installed
-  validateRoots root dataDirectory configDirectory
-  requireIdle "check-busy" "Sapiens could not check for unfinished work. Update cancelled."
-  mask $ \unmask -> do
-   next <- freshVersion
-   handoffStarted <- newIORef False
-   let discardStaged = readIORef handoffStarted >>= \started ->
-        unless started (discard [versionPath root next])
-   unmask (do
-    requestUpdate cache root owner next
-    withCandidate (versionExecutable root owner) ["--update-coordinate",versionName next,dataDirectory,configDirectory] [] $ \coordinator -> mask $ \restoreHandoff -> do
-     let quiet = requireIdle "quiesce" "Sapiens could not pause safely. Update cancelled."
-     (do
-       restoreHandoff $ do
-        preparing
-        await 15 coordinator "update: coordinator"
-        (quiet >> flushPreferences) `onException` void (tryUpdate (command "resume"))
-        stop
-       candidateOwnership coordinator True)
-      `onException` candidateOwnership coordinator False
-     writeIORef handoffStarted True
-     sendCandidate coordinator "handoff")
-    `onException` discardStaged
 
-requestUpdate :: UpdateCache -> FilePath -> Version -> Version -> IO ()
-requestUpdate cache@(UpdateCache ref) root owner next = do
+requestUpdate :: FilePath -> Version -> Version -> IO ()
+requestUpdate root owner next = flip finally (discard [payload]) $ do
  validatePath (root </> "versions")
  manager <- newManager tlsManagerSettings
  release <- discoverRelease manager root owner
- existing <- readIORef ref
- payload <- case existing of
-  Just (cached,path) | release == cached -> pure path
-  _ -> do
-   clearUpdateCache cache
-   let path = root </> (versionName next ++ "-" ++ payloadName)
-   writeIORef ref (Just (release,path))
-   transfer <- parseRequest (releaseURL release)
-   withResponse transfer manager $ \result -> withBinaryFile path WriteMode $ \file ->
-    let loop = do chunk <- brRead (responseBody result); unless (B.null chunk) (B.hPut file chunk >> loop)
-    in loop
-   pure path
+ transfer <- parseRequest (releaseURL release)
+ withResponse transfer manager $ \result -> withBinaryFile payload WriteMode $ \file ->
+  let loop = do chunk <- brRead (responseBody result); unless (B.null chunk) (B.hPut file chunk >> loop)
+  in loop
  validatePath payload
  verifyPayloadDigest (releaseDigest release) payload
  stagePayload (versionExecutable root owner) payload (versionPath root next)
  staged <- installedVersion root next
  unless (staged == releaseVersion release) (fail "Update payload version differs from the release tag")
+ where payload = root </> (versionName next ++ "-" ++ payloadName)
 
 verifyPayloadDigest :: String -> FilePath -> IO ()
 verifyPayloadDigest expected path = withBinaryFile path ReadMode $ \file -> do

@@ -18,7 +18,6 @@ import qualified Update
 import Installation (checkCandidateData, claimConfigRoot, outsideInstallation, freshVersion)
 import UpdateState (versionName)
 import qualified UpdatePlatform
-import Foreign.C.String (CString, withCString)
 import DataRoot
 import DesktopStorage
 import qualified Data.Text.IO as TIO
@@ -50,7 +49,7 @@ import Numeric (showHex)
 import Text.Read (readMaybe)
 
 
-data Application = Application { native :: Obj, browser :: IORef Browser, windowRef :: IORef Obj, pending :: IORef [IO ()], fixture :: Bool, child :: IORef (Maybe ServerProcess), address :: IORef Text, startup :: IORef (Maybe (Async ())), starting :: IORef Bool, localLoaded :: IORef Bool, runtime :: FilePath, selectedRoot :: IORef (Maybe FilePath), recoveryError :: IORef (Maybe Text), firstSignal :: IORef (Maybe WorkspaceSignal), attemptNumber :: IORef Integer, recovering :: IORef Bool, clientPreferences :: Obj, preferenceDomain :: Text, preferencesDirty :: MVar Bool, quitting :: IORef Bool, updateCache :: Update.UpdateCache }
+data Application = Application { native :: Obj, browser :: IORef Browser, windowRef :: IORef Obj, pending :: IORef [IO ()], fixture :: Bool, child :: IORef (Maybe ServerProcess), address :: IORef Text, startup :: IORef (Maybe (Async ())), starting :: IORef Bool, localLoaded :: IORef Bool, runtime :: FilePath, selectedRoot :: IORef (Maybe FilePath), recoveryError :: IORef (Maybe Text), firstSignal :: IORef (Maybe WorkspaceSignal), attemptNumber :: IORef Integer, recovering :: IORef Bool, clientPreferences :: Obj, preferencesFile :: FilePath, preferencesDirty :: MVar Bool, quitting :: IORef Bool }
 
 data ServerProcess = ServerProcess { serverHandle :: ProcessHandle, serverSession :: ProcessID, serverInput :: Handle, serverOutput :: Handle, serverErrors :: Async (), serverDrain :: Maybe (Async ()), serverDirectory :: FilePath, updateReplies :: Chan String, updateGuard :: MVar () }
 
@@ -395,7 +394,7 @@ initialize application target address = do
     void (obj0 win "center")
     unless (fixture application) $ do
         size win "setMinSize:" 720 540
-        frame <- str "workspace-frame" >>= obj1 (clientPreferences application) "stringForKey:"
+        frame <- readPreference application "workspace-frame"
         if frame == nullPtr then do
             name <- str "Sapiens4Workspace"
             void (booleanArgument win "setFrameUsingName:" name)
@@ -425,7 +424,7 @@ runApplication isFixture address = do
     bracket (new "NSAutoreleasePool") (\pool -> void (obj0 pool "drain")) $ \_ -> (runSession isFixture address `catch` (\(e :: SomeException) -> alert (T.pack (storageMessage e))))
 
 runSession :: Bool -> Text -> IO ()
-runSession isFixture initialAddress = Update.withUpdateCache $ \cache -> do
+runSession isFixture initialAddress = do
     executable <- getExecutablePath
     let packaged = takeDirectory executable </> "../Resources/runtime"
     bundled <- doesDirectoryExist packaged
@@ -452,17 +451,16 @@ runSession isFixture initialAddress = Update.withUpdateCache $ \cache -> do
     signal <- newIORef Nothing; generation <- newIORef 0; recovery <- newIORef False
     problem <- newIORef Nothing
     closing <- newIORef False
-    domain <- if isFixture then pure "" else do
+    (preferencesPath,preferences,imported) <- if isFixture then pure ("",nullPtr,False) else do
         config <- configDirectory >>= canonicalizePath
         outsideInstallation config
         claimConfigRoot config
-        let hex byte = let value=showHex byte "" in replicate (2-length value) '0' ++ value
-            suite="com.sapiens4.client." <> T.pack (concatMap hex (BS.unpack (SHA256.hash (TE.encodeUtf8 (T.pack config)))))
-        mirrorPreferences suite True
-        pure suite
-    preferences <- if isFixture then pure nullPtr else allocated "NSUserDefaults" >>= \o -> str domain >>= obj1 o "initWithSuiteName:"
-    dirty <- newMVar True
-    let state = Application application b win tasks isFixture process address worker busy loaded runtime selection problem signal generation recovery preferences domain dirty closing cache
+        createDirectoryIfMissing True config
+        let path = config </> "macos-preferences.plist"
+        (dictionary,legacy) <- loadPreferences config path
+        pure (path,dictionary,legacy)
+    dirty <- newMVar imported
+    let state = Application application b win tasks isFixture process address worker busy loaded runtime selection problem signal generation recovery preferences preferencesPath dirty closing
     (do
         target <- installMethods state
         initialize state target initialAddress
@@ -559,9 +557,15 @@ chooseDataDirectory = do
     result <- long panel "runModal"
     if result/=1 then pure Nothing else Just . T.unpack <$> (obj0 panel "URL" >>= (\u -> textProp u "path"))
 
+readPreference :: Application -> Text -> IO Obj
+readPreference application key = withMVar (preferencesDirty application) $ \_ -> do
+    value <- str key >>= obj1 (clientPreferences application) "objectForKey:"
+    isString <- cls "NSString" >>= booleanArgument value "isKindOfClass:"
+    pure (if isString then value else nullPtr)
+
 readClientPreferences :: Application -> FilePath -> IO (Maybe (KeyMap.KeyMap Value))
 readClientPreferences application directory = do
-    value <- str (T.pack directory) >>= obj1 (clientPreferences application) "stringForKey:" >>= string
+    value <- readPreference application (T.pack directory) >>= string
     pure (decodeStrict (TE.encodeUtf8 value))
 
 saveClientPreferences :: Application -> Value -> IO ()
@@ -683,23 +687,28 @@ commitWorkspace application signal = handle (\(problem::IOException) -> recoverS
         Update.candidateReady (updateCommand application)
         writeIORef (starting application) False
 
-foreign import ccall safe "sapiens_update_preferences" cPreferences :: CString -> CString -> CString -> CInt -> IO CInt
-
-mirrorPreferences :: Text -> Bool -> IO ()
-mirrorPreferences domain restore = do
-    config <- configDirectory
-    createDirectoryIfMissing True config
-    nonce <- versionName <$> freshVersion
-    let path = config </> "macos-preferences.plist"
-    withCString (T.unpack domain) $ \name -> withCString path $ \file -> withCString (path ++ "." ++ nonce) $ \temporary ->
-        cPreferences name file temporary (if restore then 1 else 0) >>= UpdatePlatform.check "Native preferences"
+loadPreferences :: FilePath -> FilePath -> IO (Obj,Bool)
+loadPreferences config path = do
+    present <- doesPathExist path
+    if present then do
+        dictionary <- allocated "NSMutableDictionary" >>= \o -> str (T.pack path) >>= obj1 o "initWithContentsOfFile:"
+        when (dictionary == nullPtr) (fail "Invalid native preferences")
+        pure (dictionary,False)
+      else do
+        let hex byte = let value=showHex byte "" in replicate (2-length value) '0' ++ value
+            suite="com.sapiens4.client." <> T.pack (concatMap hex (BS.unpack (SHA256.hash (TE.encodeUtf8 (T.pack config)))))
+        defaults <- cls "NSUserDefaults" >>= (`obj0` "standardUserDefaults")
+        legacy <- str suite >>= obj1 defaults "persistentDomainForName:"
+        if legacy == nullPtr then (,) <$> new "NSMutableDictionary" <*> pure False
+          else (,) <$> obj0 legacy "mutableCopy" <*> pure True
 
 writeClientPreference :: Application -> Text -> Text -> IO ()
 writeClientPreference application key value = modifyMVarMasked_ (preferencesDirty application) $ \dirty -> do
     name <- str key
-    previous <- obj1 (clientPreferences application) "stringForKey:" name >>= string
-    if previous == value then pure dirty else do
-        content <- str value
+    content <- str value
+    previous <- obj1 (clientPreferences application) "objectForKey:" name
+    equal <- booleanArgument previous "isEqual:" content
+    if equal then pure dirty else do
         void (obj2 (clientPreferences application) "setObject:forKey:" content name)
         pure True
 
@@ -711,14 +720,15 @@ saveWindowFrame application = unless (fixture application) $ do
         writeClientPreference application "workspace-frame" frame
 
 flushPreferences :: Application -> IO ()
-flushPreferences application = do
-    result <- modifyMVarMasked (preferencesDirty application) $ \dirty -> if not dirty then pure (False, Right ()) else do
-        saved <- try $ do
-            synced <- long (clientPreferences application) "synchronize"
-            when (synced == 0) (fail "Native preferences could not be saved")
-            mirrorPreferences (preferenceDomain application) False
-        pure (either (const True) (const False) saved, saved)
-    either throwIO pure (result :: Either SomeException ())
+flushPreferences application = modifyMVarMasked_ (preferencesDirty application) $ \dirty -> do
+    when dirty $ runInBoundThread $ withAutoreleasePool $ do
+        serialization <- cls "NSPropertyListSerialization"
+        encoded <- obj4 serialization "dataWithPropertyList:format:options:error:" (clientPreferences application) (int 200) nullPtr nullPtr >>= bytes
+        when (BS.null encoded) (fail "Native preferences could not be serialized")
+        nonce <- versionName <$> freshVersion
+        let path = preferencesFile application
+        UpdatePlatform.publish path (path ++ "." ++ nonce) encoded
+    pure False
 
 updateCommand :: Application -> String -> IO String
 updateCommand application command = do
@@ -754,7 +764,7 @@ beginUpdate application = do
                             writeIORef (address application) ""
                             graceful <- stopOwnedServer application
                             unless graceful (fail "The idle backend did not shut down cleanly; update cancelled")
-                    Update.updateAndRestartCached (updateCache application) (post application $ reportUpdate application "updating") (updateCommand application)
+                    Update.updateAndRestart (post application $ reportUpdate application "updating") (updateCommand application)
                         (flushPreferences application) stop (serverDirectory server) config
                 post application $ case result of
                     Left problem -> do
