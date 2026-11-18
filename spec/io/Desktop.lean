@@ -11,7 +11,6 @@ structure Desktop where
 def Desktop.invoke (desktop : Desktop) (command : String) (args : Array String := #[]) : IO Json := do
   let child ← IO.Process.spawn {
     cmd := desktop.driver, args := #[command, "--pid", toString desktop.pid] ++ args
-    -- WebKitGTK exposes readable drafts but no AT-SPI EditableText writer.
     env := if Platform.isWindows || Platform.isOSX then #[] else
       #[("BLINDLY4_LINUX_TEXT_INPUT", some "keyboard")]
     stdin := .null, stdout := .piped, stderr := .piped }
@@ -37,7 +36,6 @@ def Desktop.findRole (desktop : Desktop) (role : String) : IO (Array Json) := do
     try
       return some (← desktop.invoke "find" #["--role", role, "--depth", "50", "--limit", "1000"])
     catch error =>
-      -- Navigation can invalidate nodes in both UIA and AT-SPI snapshots.
       let message := error.toString
       if Platform.isWindows && message.contains "0x80040201" then return none
       if !Platform.isWindows && !Platform.isOSX &&
@@ -103,7 +101,6 @@ def withDesktop (directory : FilePath) (use : Desktop → IO Unit) : IO Unit := 
           let windows ← desktop.findRole "AXWindow"
           return if windows.isEmpty then none else some ()
         catch error =>
-          -- AT-SPI can register the Linux application after its process starts.
           if error.toString.contains "not a running application" ||
               error.toString.contains "No visible windows" ||
               error.toString.contains s!"No accessible application for PID {child.pid}" then return none
