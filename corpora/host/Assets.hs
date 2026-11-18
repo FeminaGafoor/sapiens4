@@ -11,6 +11,7 @@ data Asset = Asset { assetRoute :: Text, assetMime :: Text, assetFile :: FilePat
 publicAssets :: [(Text,Text,FilePath)]
 publicAssets =
  [("/remote-vendor.js","text/javascript",".build/web/remote-vendor.js"),
+  ("/remote-crypto.js","text/javascript","app/features/remote-crypto.js"),
   ("/voice-worklet.js","text/javascript","app/features/voice-worklet.js"),
   ("/corpora.css","text/css","app/theme/corpora.css"),
   ("/remote-install.css","text/css","app/theme/remote-install.css"),

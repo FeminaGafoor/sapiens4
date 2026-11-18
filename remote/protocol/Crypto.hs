@@ -1,4 +1,3 @@
-{-# LANGUAGE ForeignFunctionInterface #-}
 module Crypto where
 
 import Types
@@ -13,18 +12,11 @@ import qualified Data.Text.Encoding as TE
 import Data.Text (Text)
 import Data.Time.Clock.POSIX
 import qualified Data.UUID as UUID
-import Foreign
-import Foreign.C
+import BrowserCrypto
+import System.Entropy (getEntropy)
+import qualified Data.ByteArray as BA
 import Network.URI
 import Numeric (showHex)
-
-foreign import ccall unsafe "sodium_init" sodiumInit :: IO CInt
-foreign import ccall unsafe "randombytes_buf" randomBytes :: Ptr Word8 -> CSize -> IO ()
-foreign import ccall unsafe "crypto_box_keypair" boxKeypair :: Ptr Word8 -> Ptr Word8 -> IO CInt
-foreign import ccall unsafe "crypto_scalarmult_base" boxPublic :: Ptr Word8 -> Ptr Word8 -> IO CInt
-foreign import ccall unsafe "crypto_box_easy" boxEasy :: Ptr Word8 -> Ptr Word8 -> CULLong -> Ptr Word8 -> Ptr Word8 -> Ptr Word8 -> IO CInt
-foreign import ccall unsafe "crypto_box_open_easy" boxOpen :: Ptr Word8 -> Ptr Word8 -> CULLong -> Ptr Word8 -> Ptr Word8 -> Ptr Word8 -> IO CInt
-foreign import ccall unsafe "sodium_memcmp" sodiumCompare :: Ptr Word8 -> Ptr Word8 -> CSize -> IO CInt
 
 protocol :: Text
 protocol = "sapiens-remote-box-v1"
@@ -51,22 +43,20 @@ decodeBase64 value size = case value of
   Right b | maybe True (== B.length b) size -> pure b
   _ -> Left . APIError 400 $ "Invalid key, nonce or encoded value"
  _ -> Left . APIError 400 $ "Invalid encoded value"
-withBytes :: B.ByteString -> (Ptr Word8 -> IO a) -> IO a
-withBytes b f = B.useAsCString b (f . castPtr)
 randomData :: Int -> IO B.ByteString
-randomData n = do
- result <- sodiumInit
- require (result >= 0) 500 "Cryptographic initialization failed"
- allocaBytes n $ \p -> randomBytes p (fromIntegral n) >> B.packCStringLen (castPtr p,n)
+randomData = getEntropy
 token :: IO Text
 token = TE.decodeUtf8 . Base64URL.encodeUnpadded <$> randomData 32
-keypair :: IO (Text,Text)
-keypair = do
- _ <- sodiumInit
- allocaBytes 32 $ \pub -> allocaBytes 32 $ \secret -> do
-  result <- boxKeypair pub secret
-  require (result == 0) 500 "Key generation failed"
-  (,) <$> (b64 <$> B.packCStringLen (castPtr secret,32)) <*> (b64 <$> B.packCStringLen (castPtr pub,32))
+browserToken :: BrowserCrypto -> IO Text
+browserToken browser = do
+ value <- browserCall browser "random" (obj [("size",num 32)])
+ TE.decodeUtf8 . Base64URL.encodeUnpadded <$> unb64 value (Just 32)
+keypair :: BrowserCrypto -> IO (Text,Text)
+keypair browser = do
+ value <- browserCall browser "keypair" empty
+ mapM_ (\key -> voidBytes (get value key)) ["secretKey","publicKey"]
+ pure (at value "secretKey",at value "publicKey")
+ where voidBytes value = unb64 value (Just 32) >> pure ()
 hex :: B.ByteString -> Text
 hex = T.pack . concatMap (\w -> let s = showHex w "" in if length s == 1 then '0':s else s) . B.unpack
 hash :: B.ByteString -> Text
@@ -115,38 +105,31 @@ decodeRelayOrigin (String value) = case parseURI (T.unpack value) of
  _ -> Left . APIError 400 $ "Use an HTTPS relay origin (HTTP is allowed only on loopback for testing)"
 decodeRelayOrigin _ = Left . APIError 400 $ "Relay must be an HTTPS origin"
 constantEqual :: Text -> Text -> IO Bool
-constantEqual a b = let x = TE.encodeUtf8 a; y = TE.encodeUtf8 b in
- if B.length x /= B.length y then pure False else withBytes x $ \px -> withBytes y $ \py -> (==0) <$> sodiumCompare px py (fromIntegral (B.length x))
-pack :: Value -> Value -> Text -> Direction -> Value -> IO Value
-pack secret peer room direction payload = do
- sk <- unb64 secret (Just 32)
- pk <- unb64 peer (Just 32)
- nonce <- randomData 24
+constantEqual a b = pure (BA.constEq (TE.encodeUtf8 a) (TE.encodeUtf8 b))
+pack :: BrowserCrypto -> Value -> Value -> Text -> Direction -> Value -> IO Value
+pack browser secret peer room direction payload = do
+ _ <- unb64 secret (Just 32)
+ _ <- unb64 peer (Just 32)
  let raw = BL.toStrict (encode (merge (obj [("v",str protocol),("room",str room),("direction",toJSON direction)]) payload))
  require (B.length raw <= maxPlaintext) 400 "Remote response is too large"
- withBytes sk $ \ps -> withBytes pk $ \pp -> withBytes nonce $ \pn -> withBytes raw $ \pm ->
-  allocaBytes (B.length raw+16) $ \pc -> allocaBytes 32 $ \pub -> do
-   code <- boxEasy pc pm (fromIntegral (B.length raw)) pn pp ps
-   require (code == 0) 400 "Encryption failed"
-   _ <- boxPublic pub ps
-   sender <- b64 <$> B.packCStringLen (castPtr pub,32)
-   cipher <- b64 <$> B.packCStringLen (castPtr pc,B.length raw+16)
-   pure (obj [("sender",str sender),("nonce",str (b64 nonce)),("ciphertext",str cipher)])
-unpack :: Value -> Value -> Text -> Direction -> Value -> IO Value
-unpack secret peer room direction frame = fst <$> unpackWithPlaintext secret peer room direction frame
-unpackWithPlaintext :: Value -> Value -> Text -> Direction -> Value -> IO (Value,B.ByteString)
-unpackWithPlaintext secret peer room direction frame = do
+ frame <- browserCall browser "seal" (obj [("secret",secret),("peer",peer),("plaintext",str (b64 raw))])
+ _ <- unb64 (get frame "sender") (Just 32)
+ _ <- unb64 (get frame "nonce") (Just 24)
+ cipher <- unb64 (get frame "ciphertext") Nothing
+ require (B.length cipher == B.length raw+16) 400 "Invalid encrypted response"
+ pure frame
+unpack :: BrowserCrypto -> Value -> Value -> Text -> Direction -> Value -> IO Value
+unpack browser secret peer room direction frame = fst <$> unpackWithPlaintext browser secret peer room direction frame
+unpackWithPlaintext :: BrowserCrypto -> Value -> Value -> Text -> Direction -> Value -> IO (Value,B.ByteString)
+unpackWithPlaintext browser secret peer room direction frame = do
  require (get frame "sender" == peer) 400 "Unexpected sender"
- sk <- unb64 secret (Just 32)
- pk <- unb64 peer (Just 32)
- nonce <- unb64 (get frame "nonce") (Just 24)
+ _ <- unb64 secret (Just 32)
+ _ <- unb64 peer (Just 32)
+ _ <- unb64 (get frame "nonce") (Just 24)
  cipher <- unb64 (get frame "ciphertext") Nothing
  require (B.length cipher >= 16 && B.length cipher <= maxPlaintext+16) 400 "Remote request is too large"
- raw <- withBytes sk (\ps -> withBytes pk (\pp -> withBytes nonce (\pn -> withBytes cipher (\pc ->
-  allocaBytes (B.length cipher-16) $ \pm -> do
-   code <- boxOpen pm pc (fromIntegral (B.length cipher)) pn pp ps
-   require (code == 0) 400 "Invalid encrypted message"
-   B.packCStringLen (castPtr pm,B.length cipher-16)))))
+ plaintext <- browserCall browser "open" (obj [("secret",secret),("peer",peer),("frame",frame)])
+ raw <- unb64 plaintext (Just (B.length cipher-16))
  body <- either (const (failure 400 "Invalid JSON")) pure (eitherDecodeStrict raw)
  time <- seconds
  validated (validateEnvelope time room direction body)

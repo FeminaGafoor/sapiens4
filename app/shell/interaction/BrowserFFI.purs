@@ -80,6 +80,7 @@ foreign import base64Encode :: String -> String
 foreign import base64Decode :: String -> Json
 foreign import byteKey :: Json -> String
 foreign import keyPair :: Effect Json
+foreign import startHostCrypto :: Effect (Promise Unit)
 foreign import publicKey :: String -> String
 foreign import byteLength :: String -> Int
 foreign import randomBytes :: Int -> Effect String

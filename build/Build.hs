@@ -15,10 +15,8 @@ main = do
  when (os=="darwin") $ setEnv "MACOSX_DEPLOYMENT_TARGET" "13.0"
  let vendor = root </> "submodules/libs4/haskell"
      cache = vendor </> ".cabal"
-     sodiumSource = "libsodium-1.0.20-remote-1"
      platformBuild = root </> ".build" </> (if os=="darwin" then "haskell-macos-13.0" else "haskell")
-     -- Cabal does not reliably relink cached executables when a static library changes.
-     build = platformBuild </> sodiumSource
+     build = platformBuild </> "browser-crypto"
      suffix = if os=="mingw32" then ".exe" else ""
      desktop = os=="linux" && "--desktop" `elem` args
      buildFlags = ["--flags=" ++ if desktop then "linux-desktop" else "-linux-desktop"]
@@ -27,30 +25,6 @@ main = do
  createDirectoryIfMissing True cache
  index <- doesFileExist (cache </> "packages/hackage.haskell.org/01-index.tar")
  unless index (callProcess "cabal" ["update"])
- let sodiumDirectory = vendor </> sodiumSource
- sodium <- doesFileExist (sodiumDirectory </> "src/libsodium/.libs/libsodium.a")
- let targetStamp = sodiumDirectory </> ".sapiens-build-target"
-     target = os ++ "-" ++ arch ++ if os=="darwin" then "-13.0" else ""
- stamped <- doesFileExist targetStamp
- reusable <- if stamped then (==target) <$> readFile targetStamp else pure False
- unless (sodium && reusable) $ do
-  when stamped (removeFile targetStamp)
-  extracted <- doesDirectoryExist sodiumDirectory
-  unless extracted $ do
-   callProcess "tar" ["-xzf",vendor </> "vendor" </> sodiumSource<>".tar.gz","-C",vendor]
-  -- Autotools rejects spaces even when the compiler accepts the checkout path.
-  directory <- buildPath sodiumDirectory
-  withCurrentDirectory directory $ do
-   when (os=="mingw32") $ do
-    setEnv "CONFIG_SHELL" "sh"
-    settings <- read <$> readProcess "ghc" ["--info"] "" :: IO [(String,String)]
-    compiler <- mapM (\key -> maybe (ioError $ userError $ "GHC did not report "<>key) pure (lookup key settings)) ["C compiler command","C compiler flags"]
-    setEnv "CC" (map (\c -> if c=='\\' then '/' else c) (unwords compiler))
-   configured <- doesFileExist "Makefile"
-   when configured $ callProcess "make" (["distclean"] ++ ["SHELL=sh" | os=="mingw32"])
-   callProcess "sh" ["configure","--disable-shared","--enable-static","--disable-dependency-tracking"]
-   callProcess "make" (["-j4"] ++ if os=="mingw32" then ["SHELL=sh","LIBTOOL=sh $(top_builddir)/libtool"] else [])
-  writeFile targetStamp target
  when (os=="mingw32") $ do
   createDirectoryIfMissing True platformBuild
   callProcess "windres" ["-I",root</>"environments/windows",root</>"environments/windows/resources.rc","-O","coff","-o",platformBuild</>"windows-resources.o"]
