@@ -126,7 +126,6 @@ startHostUsing gate activations inherited inheritedCrypto consent choice root re
         checks <- readMVar activations
         or <$> mapM (\(_,_,checkBusy) -> checkBusy) checks
        quiesce = do
-        mapM_ prepareRegistry registry
         closeAdmission gate
         busy <- busyHosts
         when busy (openAdmission gate)

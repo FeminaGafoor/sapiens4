@@ -104,7 +104,7 @@ try {
     }
     $product = Join-Path $staging 'product'
     New-Item -ItemType Directory -Path $product | Out-Null
-    $arguments = @('/DPackageName=Sapiens4','/DPackageId=com.sapiens4.desktop','/Qp',("/DSourceDir=$package"),("/DOutputDir=$product"),("/DAppVersion=$Version"),("/DFileVersion=$Version"),("/DPackageArchitecture=$installerArchitecture"),("/DArtifactBaseName="+[IO.Path]::GetFileNameWithoutExtension($artifactName)))
+    $arguments = @('/DPackageName=Sapiens4','/DPackageId=com.sapiens4.desktop','/Qp',("/DSourceDir=$package"),("/DOutputDir=$product"),("/DAppVersion=$Version"),("/DFileVersion=$Version"),("/DPackageArchitecture=$installerArchitecture"))
     $arguments += '/DInitialVersion=' + [guid]::NewGuid().ToString()
     if ($signRelease) {
         $arguments += '/DPublisherSign'
@@ -113,7 +113,7 @@ try {
     $checksums = @()
     foreach ($payloadOnly in @($false, $true)) {
         $name = if ($payloadOnly) { "Sapiens-Payload-$Runtime.exe" } else { $artifactName }
-        $compileArguments = @($arguments | Where-Object { $_ -notlike '/DArtifactBaseName=*' })
+        $compileArguments = @($arguments)
         $compileArguments += '/DArtifactBaseName=' + [IO.Path]::GetFileNameWithoutExtension($name)
         if ($payloadOnly) { $compileArguments += '/DStagePayload' }
         & $compiler @compileArguments (Join-Path $repo 'build/package/windows-installer.iss')

@@ -13,6 +13,7 @@ import System.Directory
 import System.Environment (getExecutablePath, lookupEnv)
 import System.FilePath
 import System.IO.Error (isDoesNotExistError)
+import System.Info (os)
 
 newtype Version = Version { versionName :: String } deriving (Eq,Show)
 data Previous = Previous { previousVersion :: Version, previousBackup :: Version, previousDigest :: String } deriving (Eq,Show)
@@ -93,7 +94,6 @@ readBinding path = do
   (Just <$> eitherDecodeFileStrict path) (const (pure Nothing))
  traverse (either fail pure) binding
 
--- The caller owns this Corpora's writer lock. Any inherited reservation is read-only here.
 assertDataAvailable :: FilePath -> IO ()
 assertDataAvailable = check True
  where
@@ -116,13 +116,18 @@ assertDataAvailable = check True
 installationOf :: FilePath -> IO (Maybe (FilePath,Version))
 installationOf executable = do
  path <- canonicalizePath executable
- let parts = splitDirectories path
- case [ (joinPath (take n parts),parts !! (n+1)) | n <- [0..length parts-3], parts !! n == "versions" ] of
-  [] -> pure Nothing
-  [(root,name)] -> case fromJSON (toJSON name) of
-   Success version -> pure (Just (root,version))
-   Error e -> fail e
-  _ -> fail "Ambiguous installation path"
+ case (os,reverse (splitDirectories path)) of
+  ("darwin","Sapiens4":"MacOS":"Contents":"Sapiens4.app":rest) -> managed rest
+  ("darwin","sapiens4":"bin":".build":"runtime":"Resources":"Contents":"Sapiens4.app":rest) -> managed rest
+  ("mingw32",name:bin:build:runtime:rest)
+   | map (map toLower) [name,bin,build,runtime] == ["sapiens4.exe","bin",".build","runtime"] -> managed rest
+  ("mingw32",name:rest) | map toLower name == "sapiens4.exe" -> managed rest
+  _ -> pure Nothing
+ where
+ managed (name:parent:root@(_:_)) | equalFilePath parent "versions" = case fromJSON (toJSON name) of
+  Success version -> pure (Just (joinPath (reverse root),version))
+  Error e -> fail e
+ managed _ = pure Nothing
 
 validDigest :: String -> Bool
 validDigest value = length value == 64 && all (`elem` ("0123456789abcdef"::String)) value

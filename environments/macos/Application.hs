@@ -729,16 +729,8 @@ flushPreferences application = do
 updateCommand :: Application -> String -> IO String
 updateCommand application command = do
     server <- readIORef (child application) >>= maybe (fail "Application server is not running") pure
-    withMVar (updateGuard server) $ \_ -> do
-        token <- versionName <$> freshVersion
-        hPutStrLn (serverInput server) (command ++ " " ++ token)
-        hFlush (serverInput server)
-        let receive = do
-                line <- readChan (updateReplies server)
-                let (received,reply) = break (==' ') line
-                if received == token then pure (drop 1 reply) else receive
-        if command == "prepare-ready" then receive
-            else timeout 15000000 receive >>= maybe (fail "Application server did not respond to update coordination") pure
+    reader <- maybe (fail "Application output reader unavailable") pure (serverDrain server)
+    Update.sendUpdateCommand (updateGuard server) (serverInput server) (updateReplies server) reader command
 
 reportUpdate :: Application -> Text -> IO ()
 reportUpdate application state = do

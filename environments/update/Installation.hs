@@ -34,8 +34,6 @@ writeUpdateState root = publishJSON publish (statePath root)
 reserveDataRoot :: FilePath -> FilePath -> Version -> IO ()
 reserveDataRoot directory root version = publishJSON publish (directory </> reservationName) (root,version)
 
--- Call while holding this installation's lease. To transfer ownership, also
--- obtain the other installation's existing lease immediately or refuse.
 claimConfigRoot :: FilePath -> IO ()
 claimConfigRoot directory = do
  home <- installation

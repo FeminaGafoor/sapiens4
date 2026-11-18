@@ -11,7 +11,6 @@ import Data.Aeson
 import Data.Char (toUpper)
 import Data.IORef
 import Data.Maybe
-import Data.Unique (hashUnique, newUnique)
 import DataRoot (configDirectory, defaultDataDirectory, StorageChoice(..), containedPath)
 import Installation (outsideInstallation)
 import Network.HTTP.Client
@@ -26,6 +25,7 @@ import System.FilePath
 import System.IO
 import System.Process
 import System.Timeout
+import qualified Update
 import qualified Data.Aeson.KeyMap as K
 
 data Host = Host
@@ -205,21 +205,8 @@ closeStream stream = hClose stream `catch` \(_ :: IOException) -> pure ()
 updateCommand :: Host -> String -> IO String
 updateCommand host command = do
  server <- readIORef (serverProcess host) >>= maybe (fail "Application server unavailable") pure
- withMVar (updateGuard server) $ \_ -> do
-  token <- show . hashUnique <$> newUnique
-  hPutStrLn (processInput server) (command ++ " " ++ token)
-  hFlush (processInput server)
-  reader <- maybe (fail "Application output reader unavailable") pure (outputReader server)
-  let awaitReply = do
-       (received,reply) <- break (==' ') <$> readChan (updateReply server)
-       if received == token then pure (drop 1 reply) else awaitReply
-      response = race (waitCatch reader) awaitReply
-  -- The Coordinator bounds Ready, including the potentially long local preparation.
-  outcome <- if command == "prepare-ready" then Just <$> response else timeout 15000000 response
-  case outcome of
-   Just (Right reply) -> pure reply
-   Just (Left _) -> fail "Application server exited during update coordination"
-   Nothing -> fail "Application server did not respond to update coordination"
+ reader <- maybe (fail "Application output reader unavailable") pure (outputReader server)
+ Update.sendUpdateCommand (updateGuard server) (processInput server) (updateReply server) reader command
 
 stopQuietHost :: Host -> IO ()
 stopQuietHost host = do

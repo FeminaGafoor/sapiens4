@@ -1,6 +1,8 @@
 {-# LANGUAGE CPP #-}
-module Update (UpdateCache, UpdateBusy(..), withUpdateCache, updateAndRestartCached, updateMode, updateAvailable, candidateReady, preparingUpdate, tryUpdate) where
+module Update (UpdateCache, UpdateBusy(..), withUpdateCache, updateAndRestartCached, updateMode, updateAvailable, candidateReady, preparingUpdate, tryUpdate, sendUpdateCommand) where
 
+import Control.Concurrent (Chan, MVar, readChan, withMVar)
+import Control.Concurrent.Async (Async, race, waitCatch)
 import Control.Exception
 import Control.Monad
 import qualified Crypto.Hash.SHA256 as SHA256
@@ -14,6 +16,7 @@ import Data.Char (isSpace)
 import Data.List (stripPrefix)
 import Data.IORef
 import Data.Maybe (isNothing)
+import Data.Unique (hashUnique, newUnique)
 import Text.Read (readMaybe)
 import Network.HTTP.Client
 import Network.HTTP.Client.TLS
@@ -68,6 +71,21 @@ data UpdateBusy = UpdateBusy deriving Show
 instance Exception UpdateBusy where
  displayException _ = "Sapiens is busy. Finish accepted work before updating."
 
+sendUpdateCommand :: MVar () -> Handle -> Chan String -> Async () -> String -> IO String
+sendUpdateCommand commandLock input replies reader command = withMVar commandLock $ \_ -> do
+ token <- show . hashUnique <$> newUnique
+ hPutStrLn input (command ++ " " ++ token)
+ hFlush input
+ let awaitReply = do
+      (received,reply) <- break (==' ') <$> readChan replies
+      if received == token then pure (drop 1 reply) else awaitReply
+     response = race (waitCatch reader) awaitReply
+ outcome <- if command == "prepare-ready" then Just <$> response else timeout 15000000 response
+ case outcome of
+  Just (Right reply) -> pure reply
+  Just (Left _) -> fail "Application server exited during update coordination"
+  Nothing -> fail "Application server did not respond to update coordination"
+
 updateAndRestartCached :: UpdateCache -> IO () -> (String -> IO String) -> IO () -> IO () -> FilePath -> FilePath -> IO ()
 updateAndRestartCached cache preparing command flushPreferences stop dataDirectory configDirectory = mask $ \restore -> do
  result <- try (restore attempt)
@@ -100,7 +118,6 @@ updateAndRestartCached cache preparing command flushPreferences stop dataDirecto
         stop
        candidateOwnership coordinator True)
       `onException` candidateOwnership coordinator False
-     -- An interrupted pipe write can still deliver the handoff.
      writeIORef handoffStarted True
      sendCandidate coordinator "handoff")
     `onException` discardStaged

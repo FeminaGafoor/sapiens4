@@ -217,7 +217,6 @@ handle runtime input = session input
     AppUpdateStatus value -> H.modify_ \m -> case toString value of
       Just "available" | not (M.updateInProgress m.appUpdate) -> m {appUpdate=M.UpdateAvailable}
       Just "none" | not (M.updateInProgress m.appUpdate) -> m {appUpdate=M.UpdateHidden}
-      Just "downloading" -> m {appUpdate=M.UpdateDownloading}
       Just "updating" -> m {appUpdate=M.UpdatePreparing}
       Just "busy" -> m {appUpdate=M.UpdateBusy}
       Just "error" -> m {appUpdate=M.UpdateFailed}
