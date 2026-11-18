@@ -245,7 +245,6 @@ installMethods application = do
                 when ended $ recoverStartup application "The application server stopped. Choose a folder to reopen your workspace."
     on1 "applicationDidFinishLaunching:" (\_ -> showWindow application)
     on0 "reloadWorkspace" (reload application)
-    on0 "updateAndRestart" (beginUpdate application)
     on0 "quit" (void (obj1 (native application) "terminate:" nullPtr))
     wrapLong1 (\_ _ _ -> do
         busy <- atomicModifyIORef' (quitting application) (\value -> (True,value))
@@ -368,7 +367,6 @@ menus application target = do
       else do
         menuItem appMenu (native application) "About Sapiens4" "orderFrontStandardAboutPanel:" ""
         separator <- cls "NSMenuItem" >>= \c -> obj0 c "separatorItem"; void (obj1 appMenu "addItem:" separator)
-        menuItem appMenu target "Update & Restart" "updateAndRestart" ""
         menuItem appMenu target "Quit Sapiens4" "quit" "q"
     edit <- subMenu root "Edit"
     forM_ [("Undo","undo:","z"),("Cut","cut:","x"),("Copy","copy:","c"),("Paste","paste:","v"),("Select All","selectAll:","a")] $ \(title,action,key) -> menuItem edit nullPtr title action key
@@ -510,7 +508,7 @@ receiveMessage application message = do
     if connected || fixture application then do
         current <- readIORef (child application)
         live <- maybe (pure $ fixture application) (fmap not . serverExited . serverHandle) current
-        if live then receive b message (saveClientPreferences application) (commitWorkspace application WorkspaceReady)
+        if live then receive b message (saveClientPreferences application) (commitWorkspace application WorkspaceReady) (handleUpdate application)
           else recoverStartup application "The application server stopped. Choose a folder to reopen your workspace."
       else do
         sh <- readIORef (shell b)
@@ -722,14 +720,28 @@ updateCommand application command = do
         result <- timeout 15000000 receive
         maybe (fail "Application server did not respond to update coordination") pure result
 
+reportUpdate :: Application -> Text -> IO ()
+reportUpdate application state = do
+    view <- readIORef (browser application) >>= readIORef . shell
+    script view ("window.sapiensAppUpdate?.(" <> jsonText (String state) <> ")")
+
+handleUpdate :: Application -> Text -> IO ()
+handleUpdate application command = unless (fixture application) $ case command of
+    "check" -> void $ async $ do
+        available <- Update.updateAvailable
+        post application $ reportUpdate application (if available then "available" else "none")
+    "start" -> beginUpdate application
+    _ -> pure ()
+
 beginUpdate :: Application -> IO ()
 beginUpdate application = do
     busy <- atomicModifyIORef' (starting application) (\value -> (True,value))
-    unless busy $ do
+    if busy then reportUpdate application "busy" else do
         saved <- Update.tryUpdate (saveWindowFrame application >> flushPreferences application)
         case saved of
-            Left problem -> writeIORef (starting application) False >> alert (T.pack (displayException problem))
+            Left _ -> writeIORef (starting application) False >> reportUpdate application "error"
             Right () -> void $ async $ do
+                rejected <- newIORef False
                 result <- Update.tryUpdate $ do
                     server <- readIORef (child application) >>= maybe (fail "Open a Workspace before updating") pure
                     config <- configDirectory
@@ -737,13 +749,18 @@ beginUpdate application = do
                             writeIORef (address application) ""
                             graceful <- stopOwnedServer application
                             unless graceful (fail "The idle backend did not shut down cleanly; update cancelled")
-                    Update.updateAndRestart (updateCommand application)
+                    let command action = do
+                            reply <- updateCommand application action
+                            when (action == "quiesce" && reply == "busy") (writeIORef rejected True)
+                            pure reply
+                    Update.updateAndRestartWithProgress (post application $ reportUpdate application "updating") command
                         (mirrorPreferences (preferenceDomain application) False) stop (serverDirectory server) config
                 post application $ case result of
                     Left problem -> do
                         writeIORef (starting application) False
                         connected <- not . T.null <$> readIORef (address application)
-                        if connected then alert (T.pack (displayException problem))
+                        busyReply <- readIORef rejected
+                        if connected then reportUpdate application (if busyReply then "busy" else "error")
                           else recoverStartup application (T.pack (displayException problem))
                     Right () -> do
                         terminate <- sel "terminate:"

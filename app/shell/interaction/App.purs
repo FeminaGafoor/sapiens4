@@ -7,6 +7,7 @@ import Sapiens.Platform as Platform
 import Control.Alt ((<|>))
 import Control.Parallel (parallel, sequential)
 import Control.Promise (toAffE)
+import Data.Argonaut.Core (toString)
 import Data.Array as A
 import Data.Either (Either(..), either)
 import Data.Maybe (Maybe(..))
@@ -64,6 +65,11 @@ handle runtime input = session input
       H.modify_ _ {browserTelemetryEnabled=browserConsent == "true"}
       H.modify_ \m -> m {now=now,theme=if A.elem savedTheme ["dark","light"] then savedTheme else m.theme}
       m <- H.get
+      when (m.env.native && not (M.remote m)) do
+        void $ H.subscribe $ AppUpdateStatus <$> HS.makeEmitter (B.callback "sapiensAppUpdate")
+        void $ H.fork $ forever do
+          liftEffect $ B.nativeMessage $ D.json {appUpdate:"check"}
+          H.liftAff $ delay $ Milliseconds 86400000.0
       let ios = N.ios m.env
           mobile = ios || D.matches "Android" (m.env.userAgent)
           required = M.remote m && mobile && not (m.env.installed)
@@ -208,6 +214,19 @@ handle runtime input = session input
     CloseMenu -> E.runUpdate runtime dispatch U.CloseMenu
     Scroll -> E.captureScroll *> E.persistLocal
     UserScroll -> H.modify_ _ {scrollPosition=Nothing,restoringScroll=false}
+    AppUpdateStatus value -> H.modify_ \m -> case toString value of
+      Just "available" | not (M.updateInProgress m.appUpdate) -> m {appUpdate=M.UpdateAvailable}
+      Just "none" | not (M.updateInProgress m.appUpdate) -> m {appUpdate=M.UpdateHidden}
+      Just "downloading" -> m {appUpdate=M.UpdateDownloading}
+      Just "updating" -> m {appUpdate=M.UpdatePreparing}
+      Just "busy" -> m {appUpdate=M.UpdateBusy}
+      Just "error" -> m {appUpdate=M.UpdateFailed}
+      _ -> m
+    StartAppUpdate -> do
+      m <- H.get
+      unless (M.updateInProgress m.appUpdate) do
+        H.modify_ _ {appUpdate=M.UpdateDownloading}
+        liftEffect $ B.nativeMessage $ D.json {appUpdate:"start"}
     NativeReport report -> E.runUpdate runtime dispatch $ U.QueueNative report
     DrainNative -> E.runUpdate runtime dispatch U.DrainNative
     Browser command -> do
