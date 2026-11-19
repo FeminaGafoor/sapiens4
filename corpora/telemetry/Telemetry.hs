@@ -236,23 +236,35 @@ setConsent :: Telemetry -> Bool -> IO (Either Text ())
 setConsent = saveConsent True
 
 saveConsent :: Bool -> Telemetry -> Bool -> IO (Either Text ())
-saveConsent explicit telemetry on = do
- result <- try $ modifyMVarMasked (savedSettings telemetry) $ \(Saved previous credentials) ->
+saveConsent explicit telemetry on = mask $ \restore -> do
+ (requested,wasReporting) <- atomically $ do
+  active <- reporting telemetry
+  unless on (invalidate telemetry False)
+  epoch <- readTVar (consentEpoch telemetry)
+  pure (epoch,active)
+ result <- try $ modifyMVarMasked (savedSettings telemetry) $ \saved@(Saved previous credentials) ->
   (do
-   wasReporting <- enabled telemetry
-   path <- maybe (fail "Telemetry configuration unavailable until restart") pure (settingsPath telemetry)
-   let updated = Saved on credentials
-   writeSaved path updated
-   epoch <- atomically $ do
-    status <- readTVar (senderStatus telemetry)
-    invalidate telemetry (on && status/=Closed)
-    readTVar (consentEpoch telemetry)
-   pure (updated,(epoch,previous/=on && explicit,wasReporting,credentials)))
+   pending <- atomically $ do
+    epoch <- readTVar (consentEpoch telemetry)
+    active <- readTVar (consent telemetry)
+    when (not on && active) (invalidate telemetry False)
+    pure (not on || epoch == requested)
+   if not pending then pure (saved,Nothing) else do
+    path <- maybe (fail "Telemetry configuration unavailable until restart") pure (settingsPath telemetry)
+    let updated = Saved on credentials
+    writeSaved path updated
+    outcome <- atomically $ do
+     status <- readTVar (senderStatus telemetry)
+     epoch <- readTVar (consentEpoch telemetry)
+     if on && epoch /= requested then pure Nothing else do
+      writeTVar (consent telemetry) (on && status/=Closed)
+      pure (Just (epoch,previous/=on && explicit,credentials))
+    pure (updated,outcome))
   `onException` disable telemetry "Telemetry settings were not committed"
  case result of
   Left (e::IOException) -> pure (Left (T.pack (displayException e)))
-  Right (epoch,changed,wasReporting,credentials) -> do
-   when changed $ (do
+  Right outcome -> do
+   restore $ forM_ outcome $ \(epoch,changed,credentials) -> when changed $ (do
     time <- floor <$> getPOSIXTime
     row <- eventValue time (TelemetryConsentChanged on) Nothing KM.empty
     if on then enqueue telemetry epoch row else when wasReporting $ forM_ credentials $ \auth -> do
@@ -333,15 +345,16 @@ post telemetry epoch expected route credentials value = withMVar (deliveryLock t
  Just request -> do
   let authorized = maybe id (\(Credentials ident password) -> applyBasicAuth (TE.encodeUtf8 ident) (TE.encodeUtf8 password)) credentials
       outgoing = authorized request {path=BC.pack route,method="POST",requestBody=RequestBodyLBS (encode value),requestHeaders=[("Content-Type","application/json")],responseTimeout=responseTimeoutMicro requestTimeoutMicros,redirectCount=0,checkResponse = \_ _ -> pure ()}
-  result <- timeout requestTimeoutMicros $ (do
-    http <- manager telemetry
-    active <- atomically $ permitted telemetry epoch expected
-    if not active then pure Unavailable else withResponse outgoing http $ \response -> do
-     body <- brReadSome (responseBody response) (fromIntegral requestByteLimit)
-     let code = statusCode (responseStatus response)
-     pure $ if code `elem` [401,403] then Rejected else if code>=200 && code<300 then Received (maybe Null id (decode body)) else Unavailable)
-    `catch` \(_::HttpException) -> pure Unavailable
-  pure (maybe Unavailable id result)
+  let send = timeout requestTimeoutMicros $ (do
+       http <- manager telemetry
+       active <- atomically $ permitted telemetry epoch expected
+       if not active then pure Unavailable else withResponse outgoing http $ \response -> do
+        body <- brReadSome (responseBody response) (fromIntegral requestByteLimit)
+        let code = statusCode (responseStatus response)
+        pure $ if code `elem` [401,403] then Rejected else if code>=200 && code<300 then Received (maybe Null id (decode body)) else Unavailable)
+       `catch` \(_::HttpException) -> pure Unavailable
+      revoked = atomically (permitted telemetry epoch expected >>= check . not)
+  either (const Unavailable) (maybe Unavailable id) <$> race revoked send
 
 credentialsFor :: Telemetry -> Integer -> IO (Maybe Credentials)
 credentialsFor telemetry epoch = do
