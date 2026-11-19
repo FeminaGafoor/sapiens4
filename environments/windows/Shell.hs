@@ -27,8 +27,10 @@ import Browser
 import Host
 import qualified Update as Update
 import UpdatePlatform (showUpdateError)
-import Installation (freshVersion, withConfigAccess, withInstalledVersion)
-import UpdateState (versionName)
+import Installation (withConfigAccess, withInstalledVersion)
+import qualified UpdateState as UpdateState
+import qualified Data.UUID as UUID
+import qualified Data.UUID.V4 as UUID
 import Native
 import qualified Navigation as Navigation
 import System.Environment
@@ -113,9 +115,9 @@ desktopSession memory probe args host configRoot = do
       postUpdate hwnd action = do
         atomicModifyIORef' pending (\actions -> (action:actions,()))
         void (postMessage hwnd 0x802A 0 0)
-      reportUpdate :: String -> IO ()
+      reportUpdate :: Update.UpdateNotice -> IO ()
       reportUpdate state = readIORef shellRef >>= mapM_ (\view ->
-        execute memory view ("window.sapiensAppUpdate?.(" ++ jsonString state ++ ")") (const (pure ())))
+        execute memory view ("window.sapiensAppUpdate?.(" ++ jsonString (T.unpack (Update.renderUpdateNotice state)) ++ ")") (const (pure ())))
       beginUpdate hwnd = do
         preparing <- Update.preparingUpdate
         already <- if preparing then pure True else atomicModifyIORef' updating (\old -> (True,old))
@@ -123,7 +125,7 @@ desktopSession memory probe args host configRoot = do
           result <- Update.tryUpdate $ do
             directory <- readIORef activeRoot
             let flush = do
-                  nonce <- versionName <$> freshVersion
+                  nonce <- UUID.toString <$> UUID.nextRandom
                   writeIORef preferenceFlushNonce (Just nonce)
                   void (tryTakeMVar preferencesFlushed)
                   let export = readIORef shellRef >>= mapM_ (\view -> execute memory view ("window.dispatchEvent(new CustomEvent('sapiens-preferences-flush',{detail:" ++ jsonString nonce ++ "}))") (const (pure ())))
@@ -132,14 +134,18 @@ desktopSession memory probe args host configRoot = do
                   case saved of
                     Just (Right ()) -> writeIORef preferenceFlushNonce Nothing
                     _ -> fail "Native preferences could not be saved; update cancelled."
-            Update.updateAndRestart (postUpdate hwnd $ reportUpdate "updating")
-              (updateCommand host) flush (stopQuietHost host) directory configRoot
+            Update.updateAndRestart Update.UpdateHandoff
+              { Update.showPreparing=postUpdate hwnd $ reportUpdate Update.UpdatePreparing
+              , Update.commandHost=updateCommand host
+              , Update.savePreferences=flush
+              , Update.stopHost=stopQuietHost host
+              } UpdateState.UpdateRoots {UpdateState.dataRoot=directory, UpdateState.configRoot=configRoot}
             writeIORef closing True
           let complete = case result of
                 Right () -> closeViews >> void (destroyWindow hwnd)
                 Left e | Just (_ :: HostStopUnconfirmed) <- fromException e -> do
                   writeIORef closing False
-                  reportUpdate "error"
+                  reportUpdate Update.UpdateFailed
                   showUpdateError (displayException e)
                 Left (e::SomeException) -> do
                   writeIORef updating False
@@ -154,7 +160,7 @@ desktopSession memory probe args host configRoot = do
                       closeViews >> void (destroyWindow hwnd)
                   let report = "window.dispatchEvent(new Event('sapiens-preferences-resume'));"
                         ++ "window.dispatchEvent(new ErrorEvent('error',{message:" ++ jsonString (storageMessage e) ++ "}))"
-                  reportUpdate (case fromException e of Just Update.UpdateBusy -> "busy"; Nothing -> "error")
+                  reportUpdate (case fromException e of Just Update.UpdateBusy -> Update.UpdateBlocked; Nothing -> Update.UpdateFailed)
                   readIORef shellRef >>= mapM_ (\view -> execute memory view report (const (pure ())))
           postUpdate hwnd complete
       procedure hwnd message wparam lparam = case message of
@@ -226,7 +232,7 @@ desktopSession memory probe args host configRoot = do
             let guarded = readIORef closing >>= \closed -> unless closed action
             unless dead $ atomicModifyIORef' pending (\xs -> (guarded:xs, ())) >> void (postMessage hwnd 0x802A 0 0)
           failStart message = do
-            Update.preparingUpdate >>= \preparing -> when preparing (putStrLn "update: failed" >> hFlush stdout)
+            Update.preparingUpdate >>= \preparing -> when preparing Update.reportCandidateFailure
             modifyIORef' generation (+1)
             cleanup <- try (closeViews `finally` closeHost host)
             let detail = case cleanup of
@@ -240,12 +246,12 @@ desktopSession memory probe args host configRoot = do
           storageScript source = readIORef shellRef >>= mapM_ (\view -> execute memory view source (const $ pure ()))
           storageError :: String -> IO ()
           storageError message = do
-            Update.preparingUpdate >>= \preparing -> when preparing (putStrLn "update: failed" >> hFlush stdout)
+            Update.preparingUpdate >>= \preparing -> when preparing Update.reportCandidateFailure
             closeHost host
             writeIORef starting False
             storageScript ("window.storageError(" ++ T.unpack (TE.decodeUtf8 $ L.toStrict $ encode message) ++ ")")
           recoverStartup message = do
-            Update.preparingUpdate >>= \preparing -> when preparing (putStrLn "update: failed" >> hFlush stdout)
+            Update.preparingUpdate >>= \preparing -> when preparing Update.reportCandidateFailure
             modifyIORef' storageAttempt (+1)
             writeIORef (origin host) Nothing
             atomicModifyIORef' workerRef (\old -> (Nothing,old)) >>= mapM_ cancel
@@ -430,8 +436,8 @@ desktopSession memory probe args host configRoot = do
                         when (field "workspaceReady" message==Bool True || candidate && field "workspaceShellReady" message==Bool True) $ commitWorkspace DesktopStorage.WorkspaceReady
                         unless candidate $ case field "appUpdate" message of
                           String "check" -> void $ async $ do
-                            available <- Update.updateAvailable
-                            post $ reportUpdate (if available then "available" else "none")
+                            offer <- Update.updateOffer
+                            post $ reportUpdate offer
                           String "start" -> beginUpdate hwnd
                           _ -> pure ()
                         applyWindowTheme hwnd light dark lastTheme message

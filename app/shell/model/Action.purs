@@ -11,6 +11,8 @@ import Sapiens.Model (DialogKind)
 import Sapiens.Navigation (Activity, Scope, Pane, Period)
 import Web.Event.Event (Event)
 
+data AppUpdateNotice = OfferAvailable | OfferHidden | Preparing | Blocked | Failed
+
 data Action
   = Initialize
   | LoadRegistry
@@ -49,7 +51,7 @@ data Action
   | GlobalEvent String Event
   | DrainNative
   | NativeReport Browser.NativeReport
-  | AppUpdateStatus Json
+  | AppUpdateStatus AppUpdateNotice
   | StartAppUpdate
   | MentionChoice Int
   | MentionCursor

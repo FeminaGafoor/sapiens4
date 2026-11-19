@@ -27,6 +27,7 @@ import System.Timeout
 import qualified Update
 import UpdateNative (ProcessObservation(..), pollProcess)
 import UpdatePlatform (waitForJobExit)
+import HostUpdateProtocol (HostCommand, HostReply, hostStopLine)
 import qualified Data.Aeson.KeyMap as K
 
 data Host = Host
@@ -181,7 +182,7 @@ stopServer server = mask_ $ do
     streams = [processInput server, processOutput server, processErrors server]
     stop = do
       let input = processInput server
-      (hPutStrLn input "stop" >> hFlush input >> hClose input) `catch` \(_ :: IOException) -> pure ()
+      (hPutStrLn input hostStopLine >> hFlush input >> hClose input) `catch` \(_ :: IOException) -> pure ()
       result <- timeout 10000000 (waitForJobExit (processHandle server))
       when (isNothing result) $ do
         terminateProcess (processHandle server)
@@ -192,7 +193,7 @@ stopServer server = mask_ $ do
 closeStream :: Handle -> IO ()
 closeStream stream = hClose stream `catch` \(_ :: IOException) -> pure ()
 
-updateCommand :: Host -> String -> IO String
+updateCommand :: Host -> HostCommand -> IO (Maybe HostReply)
 updateCommand host command = do
  server <- readIORef (serverProcess host) >>= maybe (fail "Application server unavailable") pure
  reader <- maybe (fail "Application output reader unavailable") pure (outputReader server)

@@ -1,21 +1,23 @@
-module Update (UpdateBusy(..), updateAndRestart, updateMode, updateAvailable, candidateReady, preparingUpdate, tryUpdate, sendUpdateCommand) where
+module Update
+ ( UpdateBusy(..), UpdateHandoff(..), updateAndRestart, updateMode
+ , candidateReady, reportCandidateFailure, preparingUpdate, tryUpdate, sendUpdateCommand
+ , UpdateNotice(..), updateOffer, renderUpdateNotice
+ ) where
 
 import Control.Concurrent (Chan, MVar, readChan, withMVar)
 import Control.Concurrent.Async (Async, race, waitCatch)
 import Control.Exception
 import Control.Monad
-import qualified Crypto.Hash.SHA256 as SHA256
-import Data.ByteArray.Encoding (Base(Base16), convertToBase)
 import qualified Data.ByteString as B
-import qualified Data.ByteString.Char8 as BC
 import qualified Data.ByteString.Lazy as BL
 import Data.Aeson
-import Data.Aeson.Types (parseEither)
-import Data.List (stripPrefix)
+import Data.Either (isRight)
+import Data.List (find, stripPrefix)
 import Data.IORef
 import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 import Data.Unique (hashUnique, newUnique)
+import Numeric.Natural (Natural)
 import Text.Read (readMaybe)
 import Network.HTTP.Client
 import Network.HTTP.Client.TLS
@@ -29,79 +31,120 @@ import UpdateState
 import UpdatePlatform
 import UpdateBackup
 import Installation
+import HostUpdateProtocol
 
 tryUpdate :: IO a -> IO (Either SomeException a)
 tryUpdate = tryJust $ \problem -> case fromException problem :: Maybe SomeAsyncException of
  Just _ -> Nothing
  Nothing -> Just problem
 
-candidateReady :: (String -> IO String) -> IO ()
+candidateReady :: (HostCommand -> IO (Maybe HostReply)) -> IO ()
 candidateReady send = do
  preparing <- preparingUpdate
  when preparing $ do
-  prepared <- send "prepare-ready"
-  unless (prepared == "prepared") (fail "Candidate could not prepare the Workspace")
-  putStrLn "update: ready" >> hFlush stdout
+  prepared <- send PrepareReady
+  unless (prepared == Just Prepared) (fail "Candidate could not prepare the Workspace")
+  reportMilestone CandidateReady
   command <- getLine
-  unless (command == "commit") (fail "Invalid Coordinator activation message")
+  unless (command == renderCoordinatorMessage Commit) (fail "Invalid Coordinator activation message")
   (root,version) <- installed
   state <- readUpdateState root
   unless (case state of Settled s -> current s == version; _ -> False) (fail "Candidate is not durably selected")
-  active <- send "activate"
-  unless (active == "active") (fail "Candidate could not activate")
+  active <- send Activate
+  unless (active == Just Active) (fail "Candidate could not activate")
   unsetEnv "SAPIENS_UPDATE_ATTEMPT"
-  (putStrLn "update: active" >> hFlush stdout) `catch` \(_::IOException) -> pure ()
+  reportMilestone CandidateActive `catch` \(_::IOException) -> pure ()
 
 installed :: IO (FilePath,Version)
 installed = installation >>= maybe (fail "Updates require an installed Sapiens version") pure
 
+data ReleaseVersion = ReleaseVersion Natural Natural Natural deriving (Eq, Ord)
+
 data Release = Release
- { releaseVersion :: [Integer]
+ { releaseVersion :: ReleaseVersion
  , releaseURL :: String
- , releaseDigest :: String
+ , releaseDigest :: Sha256
  }
+
+data ReleaseAsset = ReleaseAsset
+ { assetName :: String
+ , assetURL :: String
+ , assetDigest :: Maybe String
+ }
+
+data ReleaseFeed = ReleaseFeed T.Text [ReleaseAsset]
+
+instance FromJSON ReleaseFeed where
+ parseJSON = withObject "release" $ \o -> ReleaseFeed <$> o .: "tag_name" <*> (o .: "assets" >>= mapM asset)
+  where
+  asset = withObject "release asset" $ \o ->
+   ReleaseAsset <$> o .: "name" <*> o .: "browser_download_url" <*> o .:? "digest"
+
+data ReleaseError
+ = InvalidReleaseVersion
+ | AlreadyUpToDate
+ | MissingPlatformPayload
+ | UnexpectedDownloadOrigin
+ | InvalidPayloadDigest
+ deriving Show
+
+instance Exception ReleaseError where
+ displayException InvalidReleaseVersion = "Expected a release version in MAJOR.MINOR.PATCH format"
+ displayException AlreadyUpToDate = "Sapiens is already up to date."
+ displayException MissingPlatformPayload = "No update payload for this platform is available in the latest release"
+ displayException UnexpectedDownloadOrigin = "Unexpected update download origin"
+ displayException InvalidPayloadDigest = "Missing or invalid update payload SHA-256"
 
 data UpdateBusy = UpdateBusy deriving Show
 instance Exception UpdateBusy where
  displayException _ = "Sapiens is busy. Finish accepted work before updating."
 
-sendUpdateCommand :: MVar () -> Handle -> Chan String -> Async () -> String -> IO String
+sendUpdateCommand :: MVar () -> Handle -> Chan String -> Async () -> HostCommand -> IO (Maybe HostReply)
 sendUpdateCommand commandLock input replies reader command = withMVar commandLock $ \_ -> do
  token <- show . hashUnique <$> newUnique
- hPutStrLn input (command ++ " " ++ token)
+ hPutStrLn input (renderHostCommand command ++ " " ++ token)
  hFlush input
  let awaitReply = do
       (received,reply) <- break (==' ') <$> readChan replies
       if received == token then pure (drop 1 reply) else awaitReply
      response = race (waitCatch reader) awaitReply
- outcome <- if command == "prepare-ready" then Just <$> response else timeout 15000000 response
+ outcome <- case command of
+  PrepareReady -> Just <$> response
+  _ -> timeout 15000000 response
  case outcome of
-  Just (Right reply) -> pure reply
+  Just (Right reply) -> pure (parseHostReply reply)
   Just (Left _) -> fail "Application server exited during update coordination"
   Nothing -> fail "Application server did not respond to update coordination"
 
-updateAndRestart :: IO () -> (String -> IO String) -> IO () -> IO () -> FilePath -> FilePath -> IO ()
-updateAndRestart preparing command flushPreferences stop dataDirectory configDirectory = do
+data UpdateHandoff = UpdateHandoff
+ { showPreparing :: IO ()
+ , commandHost :: HostCommand -> IO (Maybe HostReply)
+ , savePreferences :: IO ()
+ , stopHost :: IO ()
+ }
+
+updateAndRestart :: UpdateHandoff -> UpdateRoots -> IO ()
+updateAndRestart handoff directories = do
  (root,owner) <- installed
- validateRoots root dataDirectory configDirectory
- requireIdle "check-busy" "Sapiens could not check for unfinished work. Update cancelled."
+ validateRoots root directories
+ requireIdle CheckBusy "Sapiens could not check for unfinished work. Update cancelled."
  mask $ \unmask -> do
   next <- freshVersion
   handoffStarted <- newIORef False
   result <- try $ do
    unmask (requestUpdate root owner next)
-   withCandidate (versionExecutable root owner) ["--update-coordinate",versionName next,dataDirectory,configDirectory] [] $ \coordinator -> do
-    let quiet = requireIdle "quiesce" "Sapiens could not pause safely. Update cancelled."
+   withCandidate (versionExecutable root owner) ["--update-coordinate",versionName next,dataRoot directories,configRoot directories] [] $ \coordinator -> do
+    let quiet = requireIdle Quiesce "Sapiens could not pause safely. Update cancelled."
     (do
       unmask $ do
-       preparing
-       await 15 coordinator "update: coordinator"
-       (quiet >> flushPreferences) `onException` void (tryUpdate (command "resume"))
-       stop
+       showPreparing handoff
+       await 15 coordinator CoordinatorListening
+       (quiet >> savePreferences handoff) `onException` void (tryUpdate (commandHost handoff Resume))
+       stopHost handoff
       candidateOwnership coordinator True)
      `onException` candidateOwnership coordinator False
     writeIORef handoffStarted True
-    sendCandidate coordinator "handoff"
+    sendCandidate coordinator (renderCoordinatorMessage Handoff)
   case result of
    Right () -> pure ()
    Left problem -> do
@@ -109,9 +152,9 @@ updateAndRestart preparing command flushPreferences stop dataDirectory configDir
     unless started $ discardAfterStaging problem [versionPath root next]
     throwIO problem
  where
- requireIdle action message = command action >>= \reply -> case reply of
-  "quiet" -> pure ()
-  "busy" -> throwIO UpdateBusy
+ requireIdle action message = commandHost handoff action >>= \reply -> case reply of
+  Just Quiet -> pure ()
+  Just Busy -> throwIO UpdateBusy
   _ -> fail message
 
 requestUpdate :: FilePath -> Version -> Version -> IO ()
@@ -139,59 +182,102 @@ discardAfterStaging problem paths = case fromException problem of
  Just (_::StagingNotJoined) -> pure ()
  Nothing -> discard paths
 
-verifyPayloadDigest :: String -> FilePath -> IO ()
+verifyPayloadDigest :: Sha256 -> FilePath -> IO ()
 verifyPayloadDigest expected path = withBinaryFile path ReadMode $ \file -> do
- digest <- convertToBase Base16 . SHA256.hashlazy <$> BL.hGetContents file
- unless (digest == BC.pack expected) (fail "Update payload SHA-256 differs from the release")
+ digest <- sha256 <$> BL.hGetContents file
+ unless (digest == expected) (fail "Update payload SHA-256 differs from the release")
 
-updateAvailable :: IO Bool
-updateAvailable = do
+data UpdateNotice = OfferAvailable | OfferHidden | UpdatePreparing | UpdateBlocked | UpdateFailed
+
+renderUpdateNotice :: UpdateNotice -> T.Text
+renderUpdateNotice notice = case notice of
+ OfferAvailable -> "available"
+ OfferHidden -> "none"
+ UpdatePreparing -> "updating"
+ UpdateBlocked -> "busy"
+ UpdateFailed -> "error"
+
+updateOffer :: IO UpdateNotice
+updateOffer = do
  result <- tryUpdate $ do
   (root,owner) <- installed
   manager <- newManager tlsManagerSettings
-  void (discoverRelease manager root owner)
- pure (either (const False) (const True) result)
+  discoverRelease manager root owner
+ pure (if isRight result then OfferAvailable else OfferHidden)
 
-installedVersion :: FilePath -> Version -> IO [Integer]
-installedVersion root version = readFile (versionPath root version </> "sapiens-release.version") >>= parseReleaseVersion
+installedVersion :: FilePath -> Version -> IO ReleaseVersion
+installedVersion root version =
+ readFile (versionPath root version </> "sapiens-release.version") >>= either throwIO pure . parseReleaseVersion . T.pack
 
 discoverRelease :: Manager -> FilePath -> Version -> IO Release
 discoverRelease manager root owner = do
  installedRelease <- installedVersion root owner
- let repository = "aleski-green/sapiens4"
- request <- parseRequest ("https://api.github.com/repos/" ++ repository ++ "/releases/latest")
+ request <- parseRequest ("https://api.github.com/repos/" ++ releaseRepository ++ "/releases/latest")
  body <- responseBody <$> httpLbs request {requestHeaders=[("User-Agent","Sapiens4-Updater"),("Accept","application/vnd.github+json")]} manager
- (tag,entries) <- either fail pure (eitherDecode body >>= parseEither (withObject "release" fields))
+ feed <- either fail pure (eitherDecode body)
+ either throwIO pure (selectRelease installedRelease payloadName feed)
+
+releaseRepository :: String
+releaseRepository = "aleski-green/sapiens4"
+
+selectRelease :: ReleaseVersion -> String -> ReleaseFeed -> Either ReleaseError Release
+selectRelease installedRelease platformPayload (ReleaseFeed tag assets) = do
  available <- parseReleaseVersion tag
- unless (available > installedRelease) (fail "Sapiens is already up to date.")
- (url,publishedDigest) <- maybe (fail "No update payload for this platform is available in the latest release") pure (lookup payloadName entries)
- unless (url == "https://github.com/" ++ repository ++ "/releases/download/" ++ tag ++ "/" ++ payloadName) (fail "Unexpected update download origin")
- case publishedDigest >>= stripPrefix "sha256:" of
-  Just digest | validDigest digest -> pure (Release available url digest)
-  _ -> fail "Missing or invalid update payload SHA-256"
+ unless (available > installedRelease) (Left AlreadyUpToDate)
+ asset <- maybe (Left MissingPlatformPayload) Right (find ((== platformPayload) . assetName) assets)
+ let expectedURL = "https://github.com/" ++ releaseRepository ++ "/releases/download/" ++ T.unpack tag ++ "/" ++ platformPayload
+ unless (assetURL asset == expectedURL) (Left UnexpectedDownloadOrigin)
+ case assetDigest asset >>= stripPrefix "sha256:" >>= parseSha256 of
+  Just digest -> Right (Release available expectedURL digest)
+  _ -> Left InvalidPayloadDigest
+
+parseReleaseVersion :: T.Text -> Either ReleaseError ReleaseVersion
+parseReleaseVersion input =
+ case traverse component (T.splitOn "." (fromMaybe trimmed (T.stripPrefix "v" trimmed))) of
+  Just [major,minor,patch] -> Right (ReleaseVersion major minor patch)
+  _ -> Left InvalidReleaseVersion
  where
- fields o = (,) <$> o .: "tag_name" <*> (o .: "assets" >>= mapM asset)
- asset = withObject "release asset" $ \o -> (,) <$> o .: "name" <*> ((,) <$> o .: "browser_download_url" <*> o .:? "digest")
+ trimmed = T.stripEnd input
+ component field
+  | T.all (\c -> c >= '0' && c <= '9') field = readMaybe (T.unpack field)
+  | otherwise = Nothing
 
-parseReleaseVersion :: String -> IO [Integer]
-parseReleaseVersion input = do
- let trimmed = T.stripEnd (T.pack input)
-     fields = T.splitOn "." (fromMaybe trimmed (T.stripPrefix "v" trimmed))
-     digits field = not (T.null field) && T.all (\c -> c >= '0' && c <= '9') field
- case traverse (readMaybe . T.unpack) fields of
-  Just release | length fields == 3 && all digits fields -> pure release
-  _ -> fail "Expected a release version in MAJOR.MINOR.PATCH format"
+data CoordinatorIntent
+ = RecoverOrLaunch
+ | StartStaged { stagedVersion :: Version, stagedRoots :: UpdateRoots }
 
+data CoordinatorMessage = Handoff | Commit
+
+renderCoordinatorMessage :: CoordinatorMessage -> String
+renderCoordinatorMessage Handoff = "handoff"
+renderCoordinatorMessage Commit = "commit"
+
+data Milestone = CoordinatorListening | CandidateReady | CandidateActive
+
+renderMilestone :: Milestone -> String
+renderMilestone CoordinatorListening = "update: coordinator"
+renderMilestone CandidateReady = "update: ready"
+renderMilestone CandidateActive = "update: active"
+
+reportMilestone :: Milestone -> IO ()
+reportMilestone milestone = putStrLn (renderMilestone milestone) >> hFlush stdout
+
+candidateFailureLine :: String
+candidateFailureLine = "update: failed"
+
+reportCandidateFailure :: IO ()
+reportCandidateFailure = putStrLn candidateFailureLine >> hFlush stdout
 
 updateMode :: [String] -> IO Bool
 updateMode args = case args of
  ["--update-coordinate",name,dataDirectory,configDirectory] -> do
-  version <- either fail pure (parseEither parseJSON (toJSON name))
-  putStrLn "update: coordinator" >> hFlush stdout
+  version <- either fail pure (parseVersion name)
+  reportMilestone CoordinatorListening
   command <- getLine `catch` \(_::IOException) -> pure ""
-  when (command == "handoff") $ report (coordinate (Just (version,dataDirectory,configDirectory)))
+  let intent = StartStaged {stagedVersion=version, stagedRoots=UpdateRoots {dataRoot=dataDirectory, configRoot=configDirectory}}
+  when (command == renderCoordinatorMessage Handoff) $ report (coordinate intent)
   pure True
- ["--update-recover"] -> report (coordinate Nothing) >> pure True
+ ["--update-recover"] -> report (coordinate RecoverOrLaunch) >> pure True
  _ -> pure False
  where
  report action = tryUpdate action >>= either (\problem -> showUpdateError (displayException problem) >> exitFailure) pure
@@ -202,21 +288,21 @@ discard :: [FilePath] -> IO ()
 discard paths = forM_ paths $ \path ->
  (pathPresent path >>= flip when (removePathForcibly path)) `catch` \(_::IOException) -> pure ()
 
-coordinate :: Maybe (Version,FilePath,FilePath) -> IO ()
-coordinate requested = do
+coordinate :: CoordinatorIntent -> IO ()
+coordinate intent = do
  (root,owner) <- installed
  dispatch <- bracket (acquire root) releaseLease $ \lease -> do
   state <- readUpdateState root
-  case (state,requested) of
+  case (state,intent) of
    (Pending pending,_) -> do
     unless (owner == current (original pending)) (fail "Recovery must run through retained original version")
     restoreSnapshot root pending (writeUpdateState root (Settled (original pending)))
     discard [versionPath root (target pending), backupPath root (attempt pending)]
     pure (Launch (current (original pending)))
-   (Settled selected,Nothing) -> pure (Launch (current selected))
-   (Settled selected,Just (next,dataDirectory,configDirectory)) -> do
-    unless (owner == current selected && next /= owner && Just next /= (previousVersion <$> previous selected)) (fail "Update selection changed")
-    nonce <- freshVersion
+   (Settled selected,RecoverOrLaunch) -> pure (Launch (current selected))
+   (Settled selected,StartStaged {stagedVersion=next, stagedRoots=directories}) -> do
+    unless (owner == current selected && newTarget selected next) (fail "Update selection changed")
+    nonce <- freshAttemptId
     let backup = backupPath root nonce
         discardUnpublished = do
          decision <- tryUpdate (readUpdateState root)
@@ -224,9 +310,10 @@ coordinate requested = do
           Right (Settled unchanged) | unchanged == selected -> discard [versionPath root next,backup]
           _ -> pure ()
     result <- tryUpdate $ flip onException discardUnpublished $ do
-     originalData <- canonicalizePath dataDirectory
-     originalConfig <- canonicalizePath configDirectory
-     validateRoots root originalData originalConfig
+     originalData <- canonicalizePath (dataRoot directories)
+     originalConfig <- canonicalizePath (configRoot directories)
+     let originalRoots = UpdateRoots {dataRoot=originalData, configRoot=originalConfig}
+     validateRoots root originalRoots
      claimConfigRoot originalConfig
      let backups = root </> "backups"
      exists <- pathPresent backups
@@ -234,9 +321,11 @@ coordinate requested = do
      validatePath (versionExecutable root next)
      withRootIdentity originalData $ \dataId -> withRootIdentity originalConfig $ \configId -> do
       saved <- withRootLocks originalData $ do
-       fingerprint <- snapshot backup originalData originalConfig
-       reserveDataRoot originalData root nonce
-       let pending = PendingUpdate selected next nonce originalData originalConfig dataId configId fingerprint
+       fingerprint <- snapshot backup originalRoots
+       reserveDataRoot originalData (DataReservation root nonce)
+       let pending = PendingUpdate
+            { original=selected, target=next, attempt=nonce, roots=originalRoots
+            , dataIdentity=dataId, configIdentity=configId, backupDigest=fingerprint }
        writeUpdateState root (Pending pending)
        pure pending
       downgradeLease lease
@@ -244,48 +333,60 @@ coordinate requested = do
     case result of
      Right () -> do
       forM_ (previous selected) $ \old ->
-       discard [versionPath root (previousVersion old),root </> "backups" </> versionName (previousBackup old)]
+       discard [versionPath root (previousVersion old),backupPath root (previousBackup old)]
       pure Running
      Left problem -> do
       decision <- readUpdateState root
       hPutStrLn stderr ("Sapiens update: " ++ displayException problem) `catch` \(_::IOException) -> pure ()
-      case decision of
-       Settled selection | current selection == next ->
-        fail ("The update was committed, but activation failed. Quit Sapiens, then open it from the installed shortcut to start the selected version. " ++ displayException problem)
-       Settled selection -> pure (Launch (current selection))
-       Pending _ | Just (_::CandidateNotJoined) <- fromException problem -> throwIO problem
-       Pending _ -> pure Recover
+      either throwIO pure (afterCandidateFailure next problem decision)
  case dispatch of
   Running -> pure ()
   Launch version -> launchVersion root version []
-  Recover -> coordinate Nothing
+  Recover -> coordinate RecoverOrLaunch
  where
- acquire root = case requested of
-  Just _ -> acquireLease (leasePath root) True
-  Nothing -> acquireLease (leasePath root) True `catch` \(problem::IOException) ->
+ acquire root = case intent of
+  StartStaged {} -> acquireLease (leasePath root) True
+  RecoverOrLaunch -> acquireLease (leasePath root) True `catch` \(problem::IOException) ->
    fail ("Recovery is deferred until Sapiens releases the installation lease. Close Sapiens and relaunch from its installed shortcut. " ++ displayException problem)
+
+afterCandidateFailure :: Version -> SomeException -> UpdateState -> Either SomeException Dispatch
+afterCandidateFailure next problem state = case state of
+ Settled selection
+  | current selection == next -> Left (toException (userError committedError))
+  | otherwise -> Right (Launch (current selection))
+ Pending _ | Just (_::CandidateNotJoined) <- fromException problem -> Left problem
+ Pending _ -> Right Recover
+ where
+ committedError = "The update was committed, but activation failed. Quit Sapiens, then open it from the installed shortcut to start the selected version. " ++ displayException problem
+
+commitSelection :: PendingUpdate -> UpdateState -> Maybe Selection
+commitSelection expected observed = do
+ guard (observed == Pending expected)
+ let retained = Previous (current (original expected)) (attempt expected) (backupDigest expected)
+ pure (Selection (target expected) (Just retained))
 
 runCandidate :: FilePath -> PendingUpdate -> IO ()
 runCandidate root pending = mask $ \restore -> withCandidate (versionExecutable root (target pending)) []
- [("SAPIENS_UPDATE_ATTEMPT",versionName (attempt pending)),("SAPIENS_DATA_DIR",dataRoot pending),("SAPIENS_CONFIG_DIR",configRoot pending)] $ \candidate -> do
+ [("SAPIENS_UPDATE_ATTEMPT",attemptName (attempt pending)),("SAPIENS_DATA_DIR",dataRoot (roots pending)),("SAPIENS_CONFIG_DIR",configRoot (roots pending))] $ \candidate -> do
   (do
-   restore (await (60 * 60) candidate "update: ready")
+   restore (await (60 * 60) candidate CandidateReady)
    alive <- candidateAlive candidate
    unless alive (fail "Candidate exited before commit")
    state <- readUpdateState root
-   unless (state == Pending pending) (fail "Update decision changed before Ready")
-   writeUpdateState root (Settled (Selection (target pending) (Just (Previous (current (original pending)) (attempt pending) (backupDigest pending)))))
+   selection <- maybe (fail "Update decision changed before Ready") pure (commitSelection pending state)
+   writeUpdateState root (Settled selection)
    candidateOwnership candidate True)
    `onException` (tryUpdate (candidateOwnership candidate False) >>= either (throwIO . CandidateNotJoined) pure)
   restore $ do
-   sendCandidate candidate "commit"
-   await 60 candidate "update: active"
+   sendCandidate candidate (renderCoordinatorMessage Commit)
+   await 60 candidate CandidateActive
 
-await :: Int -> Candidate -> String -> IO ()
-await seconds candidate expected =
+await :: Int -> Candidate -> Milestone -> IO ()
+await seconds candidate milestone =
  timeout (seconds * 1000000) loop >>= maybe (fail ("Timed out waiting for " ++ expected)) pure
  where
+ expected = renderMilestone milestone
  loop = do
   message <- candidateMessage candidate
-  when (message == "update: failed") (fail ("Candidate failed before " ++ expected))
+  when (message == candidateFailureLine) (fail ("Candidate failed before " ++ expected))
   unless (message == expected) loop

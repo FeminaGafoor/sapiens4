@@ -7,6 +7,7 @@ import Installation (checkCandidateData, withConfigAccess, withInstalledVersion)
 #endif
 import DataRoot
 import HostServer
+import qualified HostUpdateProtocol as Update
 import qualified Telemetry
 import Assets
 import BuildUI
@@ -136,32 +137,32 @@ hostMain root args = do
    let commands = do
         command <- getLine
         let (verb,token) = break (==' ') command
-            reply message = putStrLn ("UPDATE:" ++ token ++ " " ++ message)
+            reply message = putStrLn ("UPDATE:" ++ token ++ " " ++ Update.renderHostReply message)
             synchronous problem = case fromException problem :: Maybe SomeAsyncException of
              Just _ -> Nothing
              Nothing -> Just problem
             reportIdle action = do
              result <- tryJust synchronous (timeout 5000000 action)
              reply $ case result of
-              Right (Just True) -> "quiet"
-              Right (Just False) -> "busy"
-              _ -> "error"
+              Right (Just True) -> Update.Quiet
+              Right (Just False) -> Update.Busy
+              _ -> Update.CommandError
              commands
             finishUpdate action response after = do
              result <- tryJust synchronous action
              case result of
               Right () -> reply response >> after >> commands
-              Left _ -> reply "error" >> shutdown
-        case verb of
-         "check-busy" -> reportIdle (not <$> hostBusy host)
-         "quiesce" -> reportIdle (hostQuiesce host)
-         "resume" -> hostResume host >> reply "resumed" >> commands
-         "prepare-ready" -> finishUpdate (hostPrepareReady host) "prepared" (pure ())
-         "activate" -> finishUpdate (hostActivate host) "active" $ do
+              Left _ -> reply Update.CommandError >> shutdown
+        case Update.parseHostCommand verb of
+         Just Update.CheckBusy -> reportIdle (not <$> hostBusy host)
+         Just Update.Quiesce -> reportIdle (hostQuiesce host)
+         Just Update.Resume -> hostResume host >> reply Update.Resumed >> commands
+         Just Update.PrepareReady -> finishUpdate (hostPrepareReady host) Update.Prepared (pure ())
+         Just Update.Activate -> finishUpdate (hostActivate host) Update.Active $ do
           reporters <- readIORef (serviceTelemetry (hostService host))
           void $ tryJust synchronous $ forM_ reporters $ \reporter -> Telemetry.emit reporter Telemetry.AppUpdated Nothing mempty
-         "stop" -> shutdown
-         _ -> commands
+         Nothing | verb == Update.hostStopLine -> shutdown
+                 | otherwise -> commands
    commands `catch` \(_::IOException) -> shutdown
   when ("--open" `elem` args) (void (createProcess (proc (if os=="darwin" then "open" else if os=="mingw32" then "explorer" else "xdg-open") [url])))
   takeMVar finished
