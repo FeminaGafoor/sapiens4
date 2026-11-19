@@ -249,7 +249,7 @@ metadata path = inspect path $ \info -> do
   (check path (securityText sd #{const SDDL_REVISION_1} securityFlags text count) >> peek text)
   (void . freeLocal) (\p -> peek count >>= \n -> B.packCStringLen (castPtr p,fromIntegral n*2))
  content <- streams path $ \name -> do
-  digest <- withRead (path++name) $ \h -> SHA.finalize <$> readChunks h (\ctx bytes -> pure (SHA.update ctx bytes)) SHA.init
+  digest <- withRead (path++name) $ \h -> SHA.finalize <$> readChunks h (\ctx bytes -> evaluate (SHA.update ctx bytes)) SHA.init
   withCWStringLen (name ++ "\0") $ \(p,n) ->
    (<>digest) <$> B.packCStringLen (castPtr p,n * #{size WCHAR})
  kind <- #{peek BY_HANDLE_FILE_INFORMATION, dwFileAttributes} info :: IO Word32
