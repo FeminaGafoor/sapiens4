@@ -111,6 +111,9 @@ prepareUpdatedService s = locked s $ do
  GC.reconcileGroups s
  DB.values s DB.Groups >>= mapM_ (G.folder s . (`at` "id"))
  prepareQueues s
+ -- A saved Remote selection can load the shell while Remote is offline.
+ -- Prove the prepared local state can still serve a Workspace snapshot.
+ void (snapshotUnlocked s >>= evaluate . BL.length . encode)
 
 prepareQueues :: Service -> IO ()
 prepareQueues s = D.pendingWorks s >> GC.projectQueuedGroups s
