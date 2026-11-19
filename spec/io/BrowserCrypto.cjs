@@ -89,6 +89,16 @@ process.on('SIGINT', () => close().finally(() => process.exit(0)));
       process.stdout.write(JSON.stringify(result) + '\n');
       continue;
     }
+    if (input.operation === 'workspace') {
+      const result = await evaluate(`(async text => {
+        const content = () => document.querySelector('#workspace-content');
+        for (let tries = 0; tries < 200 && !content()?.querySelector('iframe'); tries++) await new Promise(resolve => setTimeout(resolve, 50));
+        const frame = content()?.querySelector('iframe');
+        return {sandbox: frame?.getAttribute('sandbox') ?? null, rendered: !!frame?.srcdoc.includes(text), code: !!content()?.querySelector('pre')};
+      })(${JSON.stringify(input.text)})`);
+      process.stdout.write(JSON.stringify(result) + '\n');
+      continue;
+    }
     const result = await evaluate(`(input => {
       const C = SapiensCrypto;
       if (input.operation === 'crypto') {

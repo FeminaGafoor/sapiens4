@@ -24,6 +24,7 @@ def headlessJobs : List Job := [
   ("Complete work through MCP and enforce pause and resume", User.completeWorkThroughMcp),
   ("Process redelivered encrypted remote work once across restart", Founder.processRedeliveredRemoteWorkOnce),
   ("Restore private notes and bookmarks without disclosing them", User.retainPrivateNotesAndBookmarks),
+  ("Show HTML workspace files as a locked page, not as code", User.showHtmlFilesAsLockedPages),
   ("Complete one scheduled review on the real minute pulse", User.finishOneScheduledReview),
   ("Delegate one review and preserve its owner and result", User.delegateOneAccountableReview),
   ("Migrate interrupted work without replaying it or replacing the backup", SystemJobs.preserveInterruptedWorkDuringUpgrade),

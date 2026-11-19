@@ -1,4 +1,5 @@
 import io.Host
+import io.CryptoWindow
 
 open Lean
 namespace Spec.User
@@ -60,5 +61,18 @@ def retainPrivateNotesAndBookmarks : IO Unit := IO.FS.withTempDir fun directory 
     discard <| host.completedMessage colleague "Recall my review notes"
     let #[second] ← prompts.readDir | throw <| IO.userError "Expected one colleague prompt"
     IO.ofExcept <| requireThat "provider disclosed another owner's notes" (!(← IO.FS.readFile second.path).contains marker)
+
+def showHtmlFilesAsLockedPages : IO Unit := IO.FS.withTempDir fun directory =>
+  withHost directory fun host => do
+    let owner ← host.chief
+    let status ← host.control owner (json% {op: "status"})
+    let folder ← IO.ofExcept do stringField (← status.getObjVal? "notes") "workspace"
+    let file := System.FilePath.mk folder / "dashboard.html"
+    IO.FS.writeFile file "<h1>Dashboard 902</h1><svg><rect width=\"9\" height=\"9\"/></svg>"
+    discard <| host.control owner (json% {op: "workspace_open", path: $(file.toString)})
+    discard <| host.api "PUT" "/api/preferences" (json% {selected: $(owner)})
+    withCryptoSession host fun browser => do
+      let shown ← browser (json% {operation: "workspace", text: "Dashboard 902"})
+      IO.ofExcept <| fieldsMatch shown (json% {sandbox: "", rendered: true, code: false})
 
 end Spec.User
