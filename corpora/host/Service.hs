@@ -69,7 +69,8 @@ openService gate telemetry choice path = do
       revision <- newTVarIO 0
       subscribers <- newTVarIO 0
       files <- newIORef Set.empty
-      let s=Service gate root repo guard lock stopping worker runs lease endpoint pulse actors database states revision subscribers files telemetry corporaId
+      voicePieces <- newIORef M.empty
+      let s=Service gate root repo guard lock stopping worker runs lease endpoint pulse actors database states revision subscribers files voicePieces telemetry corporaId
       DB.initialize s
       migrateWorkspaces s
       rows <- DB.agents s
