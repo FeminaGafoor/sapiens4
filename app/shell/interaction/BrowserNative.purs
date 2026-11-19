@@ -105,7 +105,6 @@ foreign import setProperty :: Node -> String -> Json -> Effect Unit
 foreign import nodeAttribute :: Node -> String -> String -> Effect Unit
 foreign import listen :: String -> String -> (Event -> Effect Unit) -> Effect Unit
 foreign import detail :: Event -> Int
-foreign import customEventDetail :: Event -> Json
 foreign import callback2 :: String -> (Json -> Json -> Effect Unit) -> Effect Unit
 foreign import rootAttribute :: String -> Effect String
 foreign import topFrame :: Effect Boolean

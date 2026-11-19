@@ -1,8 +1,17 @@
 import io.Host
-import pure.Controls
 
 open Lean System
 namespace Spec
+
+def enabledControl (nodes : Array Json) (label : String) : Except String (Option Json) := do
+  let candidates := nodes.filter fun node =>
+    (node.getObjValAs? Bool "enabled").toOption == some true &&
+    ["title", "description", "value"].any (fun key => (stringField node key).toOption == some label)
+  match candidates.toList with
+  | [] => return none
+  | [button] => return some button
+  | _ => throw s!"Ambiguous accessible control: {label}"
+
 
 structure Desktop where
   driver : String
@@ -47,29 +56,24 @@ def Desktop.findRole (desktop : Desktop) (role : String) : IO (Array Json) := do
     found.getObjValAs? (Array Json) "matches"
 
 def Desktop.button (desktop : Desktop) (label : String) : IO Json :=
-  untilSome s!"the {label} button" do
-    IO.ofExcept <| enabledControl (← desktop.findRole "AXButton") label
+  untilSome label do
+    IO.ofExcept <| enabledControl ((← desktop.findRole "AXButton") ++ (← desktop.findRole "AXCheckBox")) label
+
+def Desktop.pressControl (desktop : Desktop) (control : Json) (label : String) : IO Unit := do
+  let path ← IO.ofExcept <| stringField control "path"
+  let description := (stringField control "description").toOption.getD ""
+  let guard := if description.isEmpty then #["--require-value-path", path, "--require-value", label]
+    else #["--expect-description", description]
+  discard <| desktop.invoke "press" (#["--path", path] ++ guard)
 
 def Desktop.clickButton (desktop : Desktop) (label : String) : IO Unit := do
-  let click := do
-    let windows ← desktop.findRole "AXWindow"
-    let control ← desktop.button label
-    let (x, y) ← IO.ofExcept <| visibleCenter control windows
-    let clicked ← desktop.invoke "click" #["--x", toString x, "--y", toString y]
-    IO.ofExcept <| fieldsMatch clicked (json% {ok: true})
-  try click
-  catch error =>
-    unless error.toString.contains "Click point belongs to another process" do throw error
-    discard <| desktop.invoke "activate"
-    IO.sleep 250
-    try click
-    catch retry => throw <| IO.userError s!"Clicking {label}: {retry}"
+  desktop.pressControl (← desktop.button label) label
 
-private def withDesktopConfig (use : FilePath → IO Unit) : IO Unit := do
+def withDesktopConfig (use : FilePath → IO α) : IO α := do
   let config ← IO.FS.createTempDir
   try use config
   finally
-    discard <| untilSome "WebView profile cleanup" (do
+    discard <| untilSome "profile cleanup" (do
       try
         if ← config.pathExists then IO.FS.removeDirAll config
         return some ()
@@ -77,51 +81,59 @@ private def withDesktopConfig (use : FilePath → IO Unit) : IO Unit := do
         if error.toString.contains "resource busy" || error.toString.contains "no such file or directory" then return none
         throw error) 20000 100
 
+def withWindow (executable : FilePath) (arguments : Array String)
+    (env : Array (String × Option String)) (use : Desktop → IO α) : IO α := do
+  let root ← repoRoot
+  let driver ← IO.getEnv "SAPIENS_TEST_BLINDLY4"
+  let driver := driver.getD (root / "submodules/blindly4/.build" /
+    (if Platform.isWindows then "windows/blindly4.exe" else "release/blindly4")).toString
+  let child ← IO.Process.spawn {
+    cmd := executable.toString, args := arguments, cwd := root
+    env,
+    stdin := .piped, stdout := .null }
+  let desktop := Desktop.mk driver child.pid
+  let exited ← IO.asTask child.wait .dedicated
+  let poll := do
+    if ← IO.hasFinished exited then return some (← IO.ofExcept exited.get)
+    return none
+  try
+    if Platform.isOSX && arguments.contains "--fixture" then
+      child.stdin.putStrLn (json% {width: 900, height: 680}).compress
+      child.stdin.flush
+    discard <| untilSome "fixture window" do
+      if let some status ← poll then throw <| IO.userError s!"Desktop exited with {status}"
+      try
+        let windows ← desktop.findRole "AXWindow"
+        return if windows.isEmpty then none else some ()
+      catch error =>
+        if error.toString.contains "not a running application" ||
+            error.toString.contains "No visible windows" ||
+            error.toString.contains s!"No accessible application for PID {child.pid}" then return none
+        throw error
+    discard <| desktop.invoke "activate"
+    use desktop
+  finally
+    if (← poll).isNone then
+      if Platform.isWindows then
+        try
+          let closed ← IO.Process.output {
+            cmd := "powershell.exe"
+            args := #["-NoProfile", "-Command", s!"(Get-Process -Id {child.pid}).CloseMainWindow() | Out-Null"],
+            env := #[("PSModulePath", none)]}
+          unless closed.exitCode == 0 do throw <| IO.userError closed.stderr
+          discard <| untilSome "desktop shutdown" poll
+        catch error =>
+          child.kill
+          throw error
+      else child.kill
+    discard <| untilSome "desktop shutdown" poll
+
 def withDesktop (directory : FilePath) (use : Desktop → IO Unit) : IO Unit := withDesktopConfig fun config => do
   let root ← repoRoot
   -- These jobs exercise an existing workspace, not first-run storage selection.
   withHost directory fun _ => pure ()
-  let driver ← IO.getEnv "SAPIENS_TEST_BLINDLY4"
-  let driver := driver.getD (root / "submodules/blindly4/.build" /
-    (if Platform.isWindows then "windows/blindly4.exe" else "release/blindly4")).toString
-  let launch := fun (executable : FilePath) (arguments : Array String) => do
-    let child ← IO.Process.spawn {
-      cmd := executable.toString, args := arguments, cwd := root
-      env := (← fixtureEnvironment directory).push ("SAPIENS_CONFIG_DIR", some config.toString),
-      stdin := .piped, stdout := .null }
-    let desktop := Desktop.mk driver child.pid
-    let exited ← IO.asTask child.wait .dedicated
-    try
-      if Platform.isOSX then
-        child.stdin.putStrLn (json% {width: 900, height: 680}).compress
-        child.stdin.flush
-      discard <| untilSome "a visible fixture window" do
-        if ← IO.hasFinished exited then throw <| IO.userError s!"Desktop exited with {← IO.ofExcept exited.get}"
-        try
-          let windows ← desktop.findRole "AXWindow"
-          return if windows.isEmpty then none else some ()
-        catch error =>
-          if error.toString.contains "not a running application" ||
-              error.toString.contains "No visible windows" ||
-              error.toString.contains s!"No accessible application for PID {child.pid}" then return none
-          throw error
-      discard <| desktop.invoke "activate"
-      use desktop
-    finally
-      unless ← IO.hasFinished exited do
-        if Platform.isWindows then
-          try
-            let closed ← IO.Process.output {
-              cmd := "powershell.exe"
-              args := #["-NoProfile", "-Command", s!"(Get-Process -Id {child.pid}).CloseMainWindow() | Out-Null"],
-              env := #[("PSModulePath", none)]}
-            unless closed.exitCode == 0 do throw <| IO.userError closed.stderr
-            discard <| untilSome "desktop shutdown" child.tryWait
-          catch error =>
-            child.kill
-            throw error
-        else child.kill
-      discard <| IO.ofExcept (← IO.wait exited)
+  let launch := fun executable arguments => do
+    withWindow executable arguments ((← fixtureEnvironment directory).push ("SAPIENS_CONFIG_DIR", some config.toString)) use
   if Platform.isOSX then
     let bundle ← IO.getEnv "SAPIENS_TEST_MACOS_APP"
     let executable := bundle.map (fun path => FilePath.mk path / "Contents/MacOS/Sapiens4")

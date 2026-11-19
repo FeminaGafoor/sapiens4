@@ -5,6 +5,10 @@ import Data.Argonaut.Core (Json, toObject)
 import Data.Array as A
 import Data.Foldable (for_, traverse_)
 import Data.Maybe (fromMaybe)
+import Control.Monad.Except (runExcept)
+import Data.Either (hush)
+import Foreign (readString)
+import Web.Event.CustomEvent as CustomEvent
 import Data.String as S
 import Data.Traversable (traverse)
 import Data.Tuple (Tuple(..))
@@ -48,7 +52,7 @@ install arguments = do
       N.setAttribute "html" "inert" ""
       keys <- preferenceKeys
       values <- O.fromFoldable <$> traverse (\key -> Tuple key <$> N.storageRead key) keys
-      N.nativeMessage $ D.json {preferencesFlush: {nonce: D.str (N.customEventDetail event), values}}
+      N.nativeMessage $ D.json {preferencesFlush: {nonce: fromMaybe "" (CustomEvent.fromEvent event >>= hush <<< runExcept <<< readString <<< CustomEvent.detail), values}}
     void $ N.subscribeEvent "window" "sapiens-preferences-resume" $ const $ N.removeAttribute "html" "inert"
     void $ N.subscribe "window" "pagehide" $ const publish
 

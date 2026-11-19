@@ -87,7 +87,6 @@ export const setProperty = node => key => value => () => {node[key]=value;};
 export const nodeAttribute = node => key => value => () => node.setAttribute(key,value);
 export const listen = selector => event => action => () => {const node=document.querySelector(selector);node?.addEventListener(event,e=>action(e)());};
 export const detail = event => event.detail||0;
-export const customEventDetail = event => event.detail ?? null;
 export const callback2 = name => action => () => {window[name]=(a,b)=>action(a)(b)();};
 export const rootAttribute = name => () => document.documentElement.getAttribute(name)||'';
 export const topFrame = () => window.top===window;

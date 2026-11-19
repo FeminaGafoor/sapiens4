@@ -30,7 +30,7 @@ def fixtureEnvironment (directory : FilePath) : IO (Array (String × Option Stri
   let provider := root / "spec/.lake/build/bin" / (if Platform.isWindows then "fixtureProvider.exe" else "fixtureProvider")
   unless ← provider.pathExists do throw <| IO.userError "Missing Lean fixture provider"
   return #[("SAPIENS_TEST_PROMPTS", (directory / "fixture-prompts").toString), ("SAPIENS_CODEX_BINARY", provider.toString),
-    ("SAPIENS_REPOSITORY", root.toString), ("SAPIENS_WHISPER_URL", "http://127.0.0.1:9")]
+    ("SAPIENS_REPOSITORY", (root / ".build/spec").toString), ("SAPIENS_WHISPER_URL", "http://127.0.0.1:9")]
 
 def withHost (directory : FilePath) (use : Host → IO α) : IO α := do
   let root ← repoRoot
