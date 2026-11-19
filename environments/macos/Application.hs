@@ -15,6 +15,7 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC
 import qualified Data.ByteString.Lazy as L
 import qualified Update
+import UpdateState (UpdateRoots(..))
 import qualified Data.UUID as UUID
 import qualified Data.UUID.V4 as UUID
 import qualified UpdatePlatform
@@ -762,7 +763,7 @@ beginUpdate application = do
                             graceful <- stopOwnedServer application
                             unless graceful (fail "The idle backend did not shut down cleanly; update cancelled")
                     Update.updateAndRestart (post application $ reportUpdate application "updating") (updateCommand application)
-                        (flushPreferences application) stop (serverDirectory server) config
+                        (flushPreferences application) stop UpdateRoots {dataRoot=serverDirectory server, configRoot=config}
                 post application $ case result of
                     Left problem -> do
                         writeIORef (starting application) False

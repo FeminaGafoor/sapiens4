@@ -109,10 +109,10 @@ sendUpdateCommand commandLock input replies reader command = withMVar commandLoc
   Just (Left _) -> fail "Application server exited during update coordination"
   Nothing -> fail "Application server did not respond to update coordination"
 
-updateAndRestart :: IO () -> (String -> IO String) -> IO () -> IO () -> FilePath -> FilePath -> IO ()
-updateAndRestart preparing command flushPreferences stop dataDirectory configDirectory = do
+updateAndRestart :: IO () -> (String -> IO String) -> IO () -> IO () -> UpdateRoots -> IO ()
+updateAndRestart preparing command flushPreferences stop directories = do
  (root,owner) <- installed
- validateRoots root dataDirectory configDirectory
+ validateRoots root directories
  requireIdle "check-busy" "Sapiens could not check for unfinished work. Update cancelled."
  mask $ \unmask -> do
   next <- freshVersion
@@ -121,7 +121,7 @@ updateAndRestart preparing command flushPreferences stop dataDirectory configDir
        unless started (discard [versionPath root next])
   unmask (do
    requestUpdate root owner next
-   withCandidate (versionExecutable root owner) ["--update-coordinate",versionName next,dataDirectory,configDirectory] [] $ \coordinator -> mask $ \restoreHandoff -> do
+   withCandidate (versionExecutable root owner) ["--update-coordinate",versionName next,dataRoot directories,configRoot directories] [] $ \coordinator -> mask $ \restoreHandoff -> do
     let quiet = requireIdle "quiesce" "Sapiens could not pause safely. Update cancelled."
     (do
       restoreHandoff $ do
@@ -252,7 +252,8 @@ coordinate requested = do
     result <- tryUpdate $ flip onException discardUnpublished $ do
      originalData <- canonicalizePath dataDirectory
      originalConfig <- canonicalizePath configDirectory
-     validateRoots root originalData originalConfig
+     let originalRoots = UpdateRoots {dataRoot=originalData, configRoot=originalConfig}
+     validateRoots root originalRoots
      claimConfigRoot originalConfig
      let backups = root </> "backups"
      exists <- pathPresent backups
@@ -260,9 +261,11 @@ coordinate requested = do
      validatePath (versionExecutable root next)
      withRootIdentity originalData $ \dataId -> withRootIdentity originalConfig $ \configId -> do
       saved <- withRootLocks originalData $ do
-       fingerprint <- snapshot backup originalData originalConfig
+       fingerprint <- snapshot backup originalRoots
        reserveDataRoot originalData (DataReservation root nonce)
-       let pending = PendingUpdate selected next nonce originalData originalConfig dataId configId fingerprint
+       let pending = PendingUpdate
+            { original=selected, target=next, attempt=nonce, roots=originalRoots
+            , dataIdentity=dataId, configIdentity=configId, backupDigest=fingerprint }
        writeUpdateState root (Pending pending)
        pure pending
       downgradeLease lease
@@ -288,7 +291,7 @@ coordinate requested = do
 
 runCandidate :: FilePath -> PendingUpdate -> IO ()
 runCandidate root pending = withCandidate (versionExecutable root (target pending)) []
- [("SAPIENS_UPDATE_ATTEMPT",attemptName (attempt pending)),("SAPIENS_DATA_DIR",dataRoot pending),("SAPIENS_CONFIG_DIR",configRoot pending)] $ \candidate -> do
+ [("SAPIENS_UPDATE_ATTEMPT",attemptName (attempt pending)),("SAPIENS_DATA_DIR",dataRoot (roots pending)),("SAPIENS_CONFIG_DIR",configRoot (roots pending))] $ \candidate -> do
   (do
    await (60 * 60) candidate "update: ready"
    alive <- candidateAlive candidate

@@ -27,6 +27,7 @@ import Browser
 import Host
 import qualified Update as Update
 import Installation (withConfigAccess, withInstalledVersion)
+import qualified UpdateState as UpdateState
 import qualified Data.UUID as UUID
 import qualified Data.UUID.V4 as UUID
 import Native
@@ -133,7 +134,8 @@ desktopSession memory probe args host configRoot = do
                     Just (Right ()) -> writeIORef preferenceFlushNonce Nothing
                     _ -> fail "Native preferences could not be saved; update cancelled."
             Update.updateAndRestart (postUpdate hwnd $ reportUpdate "updating")
-              (updateCommand host) flush (stopQuietHost host) directory configRoot
+              (updateCommand host) flush (stopQuietHost host)
+              UpdateState.UpdateRoots {UpdateState.dataRoot=directory, UpdateState.configRoot=configRoot}
             writeIORef closing True
           let complete = case result of
                 Right () -> closeViews >> void (destroyWindow hwnd)

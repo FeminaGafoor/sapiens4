@@ -73,7 +73,7 @@ checkCandidateData directory = do
   (root,_) <- installation >>= maybe (fail "Candidate requires an installation") pure
   path <- canonicalizePath directory
   state <- readUpdateState root
-  unless (case state of Pending pending -> equalFilePath path (dataRoot pending); Settled _ -> False) $
+  unless (case state of Pending pending -> equalFilePath path (dataRoot (roots pending)); Settled _ -> False) $
    fail "Candidate Data Root differs from the reserved directory."
  pure preparing
 

@@ -2,7 +2,7 @@ module UpdateState
  ( Version, versionName, freshVersion, parseVersion, canonicalUUID
  , UpdateAttemptId, attemptName, freshAttemptId
  , Sha256, parseSha256, sha256
- , Previous(..), Selection(..), PendingUpdate(..), UpdateState(..)
+ , Previous(..), Selection(..), UpdateRoots(..), PendingUpdate(..), UpdateState(..)
  , DataReservation(..), newTarget, candidateAuthorized
  , statePath, versionPath, backupPath, containsPath, pathPresentWith, readUpdateState
  , reservationName, configWriterLockName, configOwnerName, readBinding, assertDataAvailable, installationOf
@@ -34,9 +34,10 @@ newtype Sha256 = Sha256 String deriving (Eq, Show)
 
 data Previous = Previous { previousVersion :: Version, previousBackup :: UpdateAttemptId, previousDigest :: Sha256 } deriving (Eq,Show)
 data Selection = Selection { current :: Version, previous :: Maybe Previous } deriving (Eq,Show)
+data UpdateRoots = UpdateRoots { dataRoot :: FilePath, configRoot :: FilePath } deriving (Eq, Show)
 data PendingUpdate = PendingUpdate
  { original :: Selection, target :: Version, attempt :: UpdateAttemptId
- , dataRoot :: FilePath, configRoot :: FilePath, dataIdentity :: String, configIdentity :: String, backupDigest :: Sha256
+ , roots :: UpdateRoots, dataIdentity :: String, configIdentity :: String, backupDigest :: Sha256
  } deriving (Eq,Show)
 data UpdateState = Settled Selection | Pending PendingUpdate deriving (Eq,Show)
 
@@ -101,7 +102,7 @@ instance ToJSON UpdateState where
  toJSON (Settled s) = object ["format" .= (1::Int),"state" .= ("Settled"::String),"selection" .= s]
  toJSON (Pending p) = object
   ["format" .= (1::Int),"state" .= ("Pending"::String),"original" .= original p
-  ,"target" .= target p,"attempt" .= attempt p,"data" .= dataRoot p,"config" .= configRoot p
+  ,"target" .= target p,"attempt" .= attempt p,"data" .= dataRoot (roots p),"config" .= configRoot (roots p)
   ,"dataIdentity" .= dataIdentity p,"configIdentity" .= configIdentity p,"backup" .= backupDigest p]
 instance FromJSON UpdateState where
  parseJSON = withObject "update state" $ \o -> do
@@ -113,10 +114,11 @@ instance FromJSON UpdateState where
    "Pending" -> do
     exact ["format","state","original","target","attempt","data","config","dataIdentity","configIdentity","backup"] o
     digest <- o .: "backup" >>= maybe (fail "Invalid pending update") pure . parseSha256
-    p <- PendingUpdate <$> o .: "original" <*> o .: "target" <*> o .: "attempt" <*> o .: "data" <*> o .: "config"
+    p <- PendingUpdate <$> o .: "original" <*> o .: "target" <*> o .: "attempt"
+     <*> (UpdateRoots <$> o .: "data" <*> o .: "config")
      <*> o .: "dataIdentity" <*> o .: "configIdentity" <*> pure digest
     unless (newTarget (original p) (target p)
-      && all isAbsolute [dataRoot p,configRoot p] && all (not . null) [dataIdentity p,configIdentity p]) (fail "Invalid pending update")
+      && all isAbsolute [dataRoot (roots p),configRoot (roots p)] && all (not . null) [dataIdentity p,configIdentity p]) (fail "Invalid pending update")
     pure (Pending p)
    _ -> fail "Unknown update decision"
 
