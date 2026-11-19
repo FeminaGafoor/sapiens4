@@ -11,11 +11,13 @@ import qualified Data.ByteString.Char8 as BC
 import qualified Data.ByteString.Lazy as BL
 import Data.Aeson
 import Data.Aeson.Types (parseEither)
-import Data.List (stripPrefix)
+import Data.Either (isRight)
+import Data.List (find, stripPrefix)
 import Data.IORef
 import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 import Data.Unique (hashUnique, newUnique)
+import Numeric.Natural (Natural)
 import Text.Read (readMaybe)
 import Network.HTTP.Client
 import Network.HTTP.Client.TLS
@@ -55,11 +57,42 @@ candidateReady send = do
 installed :: IO (FilePath,Version)
 installed = installation >>= maybe (fail "Updates require an installed Sapiens version") pure
 
+data ReleaseVersion = ReleaseVersion Natural Natural Natural deriving (Eq, Ord)
+
 data Release = Release
- { releaseVersion :: [Integer]
+ { releaseVersion :: ReleaseVersion
  , releaseURL :: String
  , releaseDigest :: String
  }
+
+data ReleaseAsset = ReleaseAsset
+ { assetName :: String
+ , assetURL :: String
+ , assetDigest :: Maybe String
+ }
+
+data ReleaseFeed = ReleaseFeed T.Text [ReleaseAsset]
+
+instance FromJSON ReleaseFeed where
+ parseJSON = withObject "release" $ \o -> ReleaseFeed <$> o .: "tag_name" <*> (o .: "assets" >>= mapM asset)
+  where
+  asset = withObject "release asset" $ \o ->
+   ReleaseAsset <$> o .: "name" <*> o .: "browser_download_url" <*> o .:? "digest"
+
+data ReleaseError
+ = InvalidReleaseVersion
+ | AlreadyUpToDate
+ | MissingPlatformPayload
+ | UnexpectedDownloadOrigin
+ | InvalidPayloadDigest
+ deriving Show
+
+instance Exception ReleaseError where
+ displayException InvalidReleaseVersion = "Expected a release version in MAJOR.MINOR.PATCH format"
+ displayException AlreadyUpToDate = "Sapiens is already up to date."
+ displayException MissingPlatformPayload = "No update payload for this platform is available in the latest release"
+ displayException UnexpectedDownloadOrigin = "Unexpected update download origin"
+ displayException InvalidPayloadDigest = "Missing or invalid update payload SHA-256"
 
 data UpdateBusy = UpdateBusy deriving Show
 instance Exception UpdateBusy where
@@ -133,43 +166,47 @@ verifyPayloadDigest expected path = withBinaryFile path ReadMode $ \file -> do
  unless (digest == BC.pack expected) (fail "Update payload SHA-256 differs from the release")
 
 updateAvailable :: IO Bool
-updateAvailable = do
- result <- tryUpdate $ do
-  (root,owner) <- installed
-  manager <- newManager tlsManagerSettings
-  void (discoverRelease manager root owner)
- pure (either (const False) (const True) result)
+updateAvailable = fmap isRight $ tryUpdate $ do
+ (root,owner) <- installed
+ manager <- newManager tlsManagerSettings
+ discoverRelease manager root owner
 
-installedVersion :: FilePath -> Version -> IO [Integer]
-installedVersion root version = readFile (versionPath root version </> "sapiens-release.version") >>= parseReleaseVersion
+installedVersion :: FilePath -> Version -> IO ReleaseVersion
+installedVersion root version =
+ readFile (versionPath root version </> "sapiens-release.version") >>= either throwIO pure . parseReleaseVersion . T.pack
 
 discoverRelease :: Manager -> FilePath -> Version -> IO Release
 discoverRelease manager root owner = do
  installedRelease <- installedVersion root owner
- let repository = "aleski-green/sapiens4"
- request <- parseRequest ("https://api.github.com/repos/" ++ repository ++ "/releases/latest")
+ request <- parseRequest ("https://api.github.com/repos/" ++ releaseRepository ++ "/releases/latest")
  body <- responseBody <$> httpLbs request {requestHeaders=[("User-Agent","Sapiens4-Updater"),("Accept","application/vnd.github+json")]} manager
- (tag,entries) <- either fail pure (eitherDecode body >>= parseEither (withObject "release" fields))
+ feed <- either fail pure (eitherDecode body)
+ either throwIO pure (selectRelease installedRelease payloadName feed)
+
+releaseRepository :: String
+releaseRepository = "aleski-green/sapiens4"
+
+selectRelease :: ReleaseVersion -> String -> ReleaseFeed -> Either ReleaseError Release
+selectRelease installedRelease platformPayload (ReleaseFeed tag assets) = do
  available <- parseReleaseVersion tag
- unless (available > installedRelease) (fail "Sapiens is already up to date.")
- (url,publishedDigest) <- maybe (fail "No update payload for this platform is available in the latest release") pure (lookup payloadName entries)
- unless (url == "https://github.com/" ++ repository ++ "/releases/download/" ++ tag ++ "/" ++ payloadName) (fail "Unexpected update download origin")
- case publishedDigest >>= stripPrefix "sha256:" of
-  Just digest | validDigest digest -> pure (Release available url digest)
-  _ -> fail "Missing or invalid update payload SHA-256"
+ unless (available > installedRelease) (Left AlreadyUpToDate)
+ asset <- maybe (Left MissingPlatformPayload) Right (find ((== platformPayload) . assetName) assets)
+ let expectedURL = "https://github.com/" ++ releaseRepository ++ "/releases/download/" ++ T.unpack tag ++ "/" ++ platformPayload
+ unless (assetURL asset == expectedURL) (Left UnexpectedDownloadOrigin)
+ case assetDigest asset >>= stripPrefix "sha256:" of
+  Just digest | validDigest digest -> Right (Release available expectedURL digest)
+  _ -> Left InvalidPayloadDigest
+
+parseReleaseVersion :: T.Text -> Either ReleaseError ReleaseVersion
+parseReleaseVersion input =
+ case traverse component (T.splitOn "." (fromMaybe trimmed (T.stripPrefix "v" trimmed))) of
+  Just [major,minor,patch] -> Right (ReleaseVersion major minor patch)
+  _ -> Left InvalidReleaseVersion
  where
- fields o = (,) <$> o .: "tag_name" <*> (o .: "assets" >>= mapM asset)
- asset = withObject "release asset" $ \o -> (,) <$> o .: "name" <*> ((,) <$> o .: "browser_download_url" <*> o .:? "digest")
-
-parseReleaseVersion :: String -> IO [Integer]
-parseReleaseVersion input = do
- let trimmed = T.stripEnd (T.pack input)
-     fields = T.splitOn "." (fromMaybe trimmed (T.stripPrefix "v" trimmed))
-     digits field = not (T.null field) && T.all (\c -> c >= '0' && c <= '9') field
- case traverse (readMaybe . T.unpack) fields of
-  Just release | length fields == 3 && all digits fields -> pure release
-  _ -> fail "Expected a release version in MAJOR.MINOR.PATCH format"
-
+ trimmed = T.stripEnd input
+ component field
+  | T.all (\c -> c >= '0' && c <= '9') field = readMaybe (T.unpack field)
+  | otherwise = Nothing
 
 updateMode :: [String] -> IO Bool
 updateMode args = case args of
