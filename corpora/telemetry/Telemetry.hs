@@ -252,7 +252,7 @@ saveConsent explicit telemetry on = mask $ \restore -> do
    if not pending then pure (saved,Nothing) else do
     path <- maybe (fail "Telemetry configuration unavailable until restart") pure (settingsPath telemetry)
     let updated = Saved on credentials
-    writeSaved path updated
+    when (not on || previous /= on) (writeSaved path updated)
     outcome <- atomically $ do
      status <- readTVar (senderStatus telemetry)
      epoch <- readTVar (consentEpoch telemetry)
