@@ -41,12 +41,13 @@ import qualified GHC.ConsoleHandler as Console
 #endif
 
 main :: IO ()
-main =
-#if defined(mingw32_HOST_OS) || defined(darwin_HOST_OS)
- withInstalledVersion
-#endif
- run `catches` [Handler (\(code::ExitCode) -> throwIO code), Handler report]
+main = launch `catches` [Handler (\(code::ExitCode) -> throwIO code), Handler report]
  where
+ launch = do
+  args <- getArgs
+  case args of
+   "mcp":_ -> withInstalledVersion (pure ()) >> run args
+   _ -> withInstalledVersion (run args)
  report (e::SomeException) = do
   let detail = case fromException e of Just (APIError _ message) -> T.unpack message; Nothing -> storageMessage e
   desktop <- elem "--desktop" <$> getArgs
@@ -54,12 +55,16 @@ main =
   when (desktop && isJust mode) $ putStr startupErrorPrefix >> BL.putStrLn (encode detail)
   hPutStrLn stderr detail
   exitFailure
-run :: IO ()
-run = do
+#if !defined(mingw32_HOST_OS) && !defined(darwin_HOST_OS)
+withInstalledVersion :: IO a -> IO a
+withInstalledVersion = id
+#endif
+
+run :: [String] -> IO ()
+run args = do
  setLocaleEncoding utf8
  mapM_ (`hSetEncoding` utf8) [stdin,stdout,stderr]
  hSetBuffering stdout LineBuffering
- args <- getArgs
  root <- repository
  setEnv "SAPIENS_REPOSITORY" root
  case args of
@@ -73,7 +78,7 @@ run = do
   "control":_ -> jsonCommand (failure 400 "Usage: sapiens4 control CONFIG JSON")
   "computer":rest -> jsonCommand (computerMain root rest)
   "relay":rest -> relayMain root (normalized rest)
-  "mcp":rest -> mcpMain (option "--url" "http://127.0.0.1:4174" (normalized rest))
+  "mcp":rest -> mcpMain withInstalledVersion (option "--url" "http://127.0.0.1:4174" (normalized rest))
   _ -> hostMain root (normalized args)
 jsonCommand :: IO ExitCode -> IO ()
 jsonCommand action = do
