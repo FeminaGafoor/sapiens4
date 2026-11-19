@@ -67,13 +67,15 @@ stagePayload :: FilePath -> FilePath -> FilePath -> IO ()
 stagePayload installed payload destination = do
  verifyPublisher installed payload
  createDirectory destination
- let installer = (proc payload ["/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/DIR="++destination])
-       {close_fds=True,use_process_jobs=True}
- code <- bracketOnError (createProcess installer) (\(_,_,_,child) ->
-  abortJob child `catch` (throwIO . StagingNotJoined)) (\(_,_,_,child) -> waitForJobExit child)
+ code <- runStagingInstaller (proc payload ["/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/DIR="++destination])
  unless (code == ExitSuccess) (fail "Update payload could not be staged")
  exists <- doesFileExist (destination </> "Sapiens4.exe")
  unless exists (fail "Update payload is incomplete")
+
+runStagingInstaller :: CreateProcess -> IO ExitCode
+runStagingInstaller installer =
+ bracketOnError (createProcess installer {close_fds=True,use_process_jobs=True}) (\(_,_,_,child) ->
+  abortJob child `catch` (throwIO . StagingNotJoined)) (\(_,_,_,child) -> waitForJobExit child)
 
 launchVersion :: FilePath -> Version -> [String] -> IO ()
 launchVersion root version args = do
