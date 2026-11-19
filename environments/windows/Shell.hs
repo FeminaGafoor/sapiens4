@@ -26,6 +26,7 @@ import Numeric
 import Browser
 import Host
 import qualified Update as Update
+import UpdatePlatform (showUpdateError)
 import Installation (freshVersion, withConfigAccess, withInstalledVersion)
 import UpdateState (versionName)
 import Native
@@ -136,6 +137,10 @@ desktopSession memory probe args host configRoot = do
             writeIORef closing True
           let complete = case result of
                 Right () -> closeViews >> void (destroyWindow hwnd)
+                Left e | Just (_ :: HostStopUnconfirmed) <- fromException e -> do
+                  writeIORef closing False
+                  reportUpdate "error"
+                  showUpdateError (displayException e)
                 Left (e::SomeException) -> do
                   writeIORef updating False
                   writeIORef closing False

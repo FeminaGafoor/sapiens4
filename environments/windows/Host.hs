@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-module Host (Host(..), prepareHost, startHost, closeHost, watchHost, desktopArgs, updateCommand, stopQuietHost) where
+module Host (Host(..), prepareHost, startHost, closeHost, watchHost, desktopArgs, updateCommand, stopQuietHost, HostStopUnconfirmed(..)) where
 
 import DesktopStorage (storageMode, awaitServerAddress, startupTelemetryArguments)
 import Control.Concurrent
@@ -163,26 +163,19 @@ watchHost host recover = mask_ $ do
       Right () -> "The application server stopped. Choose a folder to reopen your workspace."
   writeIORef (serverProcess host) (Just server {exitWatcher=Just observer})
 
-serverRunning :: Maybe ServerProcess -> IO Bool
-serverRunning = maybe (pure False) (fmap isNothing . getProcessExitCode . processHandle)
-
 closeHost :: Host -> IO ()
 closeHost host = mask_ $ do
   current <- atomicModifyIORef' (serverProcess host) $ \owned ->
     (fmap (\server -> server {exitWatcher=Nothing}) owned, owned)
-  let clear = writeIORef (serverProcess host) Nothing >> writeIORef (origin host) Nothing
-  case current of
-    Nothing -> clear
-    Just server -> void (stopServer server) `finally` (do
-      alive <- serverRunning current
-      unless alive clear)
+  writeIORef (origin host) Nothing
+  mapM_ stopServer current
+  writeIORef (serverProcess host) Nothing
 
 stopServer :: ServerProcess -> IO Bool
 stopServer server = mask_ $ do
   mapM_ cancel (exitWatcher server)
-  graceful <- stop
-  mapM_ cancel (catMaybes [outputReader server,errorReader server]) `finally` mapM_ closeStream streams
-  pure graceful
+  stop `finally`
+    (mapM_ cancel (catMaybes [outputReader server,errorReader server]) `finally` mapM_ closeStream streams)
   where
     streams = [processInput server, processOutput server, processErrors server]
     stop = do
@@ -204,10 +197,16 @@ updateCommand host command = do
  reader <- maybe (fail "Application output reader unavailable") pure (outputReader server)
  Update.sendUpdateCommand (updateGuard server) (processInput server) (updateReply server) reader command
 
+newtype HostStopUnconfirmed = HostStopUnconfirmed IOException deriving Show
+
+instance Exception HostStopUnconfirmed where
+ displayException (HostStopUnconfirmed problem) =
+  "The application server could not be confirmed stopped. Close Sapiens and reopen it from the installed shortcut before using the Workspace. " ++ displayException problem
+
 stopQuietHost :: Host -> IO ()
-stopQuietHost host = do
+stopQuietHost host = mask_ $ do
  server <- readIORef (serverProcess host) >>= maybe (fail "Application server unavailable") pure
- graceful <- stopServer server `finally` do
-  alive <- serverRunning (Just server)
-  unless alive $ writeIORef (serverProcess host) Nothing >> writeIORef (origin host) Nothing
+ writeIORef (origin host) Nothing
+ graceful <- stopServer server `catch` (throwIO . HostStopUnconfirmed)
+ writeIORef (serverProcess host) Nothing
  unless graceful (fail "The idle backend did not shut down cleanly. The update was cancelled.")
