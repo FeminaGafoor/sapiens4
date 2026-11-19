@@ -15,6 +15,7 @@ import qualified Crypto.Hash.SHA256 as SHA
 import qualified Data.ByteString as B
 import Foreign hiding (void)
 import Foreign.C
+import Data.List (sort)
 import GHC.Clock (getMonotonicTimeNSec)
 import System.IO.Error
 import UpdateState (pathPresentWith)
@@ -206,7 +207,10 @@ copyMetadata directory source destination = runInBoundThread $ inspect source $ 
 
 metadata :: FilePath -> IO B.ByteString
 metadata path = inspect path $ \info -> do
- fields <- B.packCStringLen (castPtr info,#{size DWORD}+2* #{size FILETIME})
+ fields <- B.concat <$> mapM B.packCStringLen
+  [(#{ptr BY_HANDLE_FILE_INFORMATION, dwFileAttributes} info, #{size DWORD})
+  ,(#{ptr BY_HANDLE_FILE_INFORMATION, ftCreationTime} info, #{size FILETIME})
+  ,(#{ptr BY_HANDLE_FILE_INFORMATION, ftLastWriteTime} info, #{size FILETIME})]
  security <- withSecurity path $ \_ _ _ sd -> alloca $ \text -> alloca $ \count -> bracket
   (check path (securityText sd #{const SDDL_REVISION_1} securityFlags text count) >> peek text)
   (void . freeLocal) (\p -> peek count >>= \n -> B.packCStringLen (castPtr p,fromIntegral n*2))
@@ -215,7 +219,7 @@ metadata path = inspect path $ \info -> do
   withCWStringLen name $ \(p,n) -> (<>digest) <$> B.packCStringLen (castPtr p,(n+1)*2)
  kind <- #{peek BY_HANDLE_FILE_INFORMATION, dwFileAttributes} info :: IO Word32
  when (null content && kind .&. #{const FILE_ATTRIBUTE_DIRECTORY} == 0) (fail "Missing file data stream")
- let result = fields <> security <> B.concat content
+ let result = fields <> security <> B.concat (sort content)
  when (B.length result>65536) (fail "Unsupported Windows metadata size")
  pure result
 
