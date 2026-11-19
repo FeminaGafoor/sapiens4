@@ -7,7 +7,8 @@ import Data.Aeson.Types (parseEither)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as L
 import qualified Crypto.Hash.SHA256 as SHA
-import Data.List (nub, sort)
+import Data.List (isPrefixOf, nub, sort)
+import qualified Data.Set as Set
 import qualified Data.Text as T
 import qualified Data.UUID as UUID
 import Numeric (showHex)
@@ -59,10 +60,23 @@ withSurvivingLock path action = do
  directory <- if exists then doesDirectoryExist parent else pure False
  if directory then withLock path action else action
 
-tree :: FilePath -> [FilePath] -> [FilePath] -> IO [(FilePath,Bool)]
-tree root locks excluded = walk ""
+-- Resolve the actual spelling of reserved entries on the live filesystem.
+-- Inventory keys then use exact equality, including on a different backup volume.
+resolveExclusions :: FilePath -> [FilePath] -> IO (Set.Set FilePath)
+resolveExclusions root paths = Set.fromList . concat <$> mapM (resolve "" . splitDirectories) paths
  where
- walk relative | any (`containsPath` relative) excluded || any (equalFilePath relative) locks = pure []
+ resolve relative [] = pure [relative]
+ resolve relative (name:names) = do
+  let parent = root </> relative
+  validatePath parent
+  directory <- doesDirectoryExist parent
+  found <- if directory then actualName (parent </> name) else pure Nothing
+  maybe (pure []) (\actual -> resolve (relative </> actual) names) found
+
+tree :: FilePath -> Set.Set FilePath -> IO [(FilePath,Bool)]
+tree root excluded = walk ""
+ where
+ walk relative | Set.member relative excluded = pure []
  walk relative = do
   let path = root </> relative
   validatePath path
@@ -70,8 +84,8 @@ tree root locks excluded = walk ""
   children <- if not directory then pure [] else sort <$> listDirectory path >>= fmap concat . mapM (walk . (relative </>))
   pure ((relative,directory):children)
 
-inventory :: FilePath -> [FilePath] -> [FilePath] -> IO [Entry]
-inventory root locks excluded = tree root locks excluded >>= mapM (\(path,directory) -> do
+inventory :: FilePath -> Set.Set FilePath -> IO [Entry]
+inventory root excluded = tree root excluded >>= mapM (\(path,directory) -> do
  fingerprint <- hash <$> metadata (root </> path)
  pure (path,directory,fingerprint))
 
@@ -87,11 +101,11 @@ snapshot destination dataPath configPath = do
     validatePath path
     directory <- doesDirectoryExist path
     unless directory (fail ("Expected a browser profile directory: " ++ path))
- original <- inventories dataPath configPath dataPath configPath
+ original <- inventories resolveExclusions dataPath configPath dataPath configPath
  createDirectory destination
  forM_ (zip [0::Int ..] original) $ \(index,Inventory root _ _ entries) ->
   copyTree root (destination </> show index) entries
- copied <- inventories dataPath configPath (destination </> "0") (destination </> "1")
+ copied <- backupInventories dataPath configPath destination
  unless (copied == original) (fail "Backup verification failed; original data are unchanged")
  pure (hash (L.toStrict (encode original)))
 
@@ -102,15 +116,19 @@ validateRoots installation dataPath configPath = do
  when (overlaps dataPath configPath || any (overlaps installation) [dataPath,configPath]) $
   fail "Installation, Data and Config must be separate roots for updates"
 
-inventories :: FilePath -> FilePath -> FilePath -> FilePath -> IO [Inventory]
-inventories dataPath configPath sourceData sourceConfig = do
+backupInventories :: FilePath -> FilePath -> FilePath -> IO [Inventory]
+backupInventories dataPath configPath backup =
+ inventories (\_ _ -> pure Set.empty) dataPath configPath (backup </> "0") (backup </> "1")
+
+inventories :: (FilePath -> [FilePath] -> IO (Set.Set FilePath)) -> FilePath -> FilePath -> FilePath -> FilePath -> IO [Inventory]
+inventories exclusions dataPath configPath sourceData sourceConfig = do
  corpora <- managedRoots sourceData
  let locks = map (makeRelative sourceData . (</> "host.lock")) corpora
      relative child = if child == sourceData then "" else makeRelative sourceData child
      profiles = [relative child </> profile | child <- corpora, profile <- reservationName:profileExclusions]
- dataEntries <- inventory sourceData locks profiles
+ dataEntries <- exclusions sourceData (locks ++ profiles) >>= inventory sourceData
  let configExcluded = configOwnerName:configWriterLockName:profileExclusions
- configEntries <- inventory sourceConfig [] configExcluded
+ configEntries <- exclusions sourceConfig configExcluded >>= inventory sourceConfig
  pure [Inventory dataPath locks profiles dataEntries,Inventory configPath [] configExcluded configEntries]
 
 copyTree :: FilePath -> FilePath -> [Entry] -> IO ()
@@ -133,7 +151,7 @@ restoreSnapshot installation pending settle = do
   configOwner <- readBinding (originalConfig </> configOwnerName)
   unless (configOwner == Just installation) $
    fail "Config ownership changed. Recovery refused; backup retained."
-  original <- inventories originalData originalConfig (backup </> "0") (backup </> "1")
+  original <- backupInventories originalData originalConfig backup
   unless (hash (L.toStrict (encode original)) == backupDigest pending) (fail "Backup changed or is incomplete; recovery refused")
   let childLocks = nub [root </> lock | Inventory root locks _ _ <- original, lock <- drop 1 locks]
   withLock (originalData </> "host.lock") $ do
@@ -143,16 +161,19 @@ restoreSnapshot installation pending settle = do
    foldr withSurvivingLock (restore backup original >> settle) childLocks
  where
  restore backup original = do
-  live <- forM original $ \(Inventory root locks excluded _) -> tree root locks excluded
-  forM_ (zip3 [0::Int ..] original live) $ \(index,Inventory root locks excluded entries,existing) -> do
+  live <- forM original $ \(Inventory root locks excluded _) -> do
+   skipped <- resolveExclusions root (locks ++ excluded)
+   existing <- tree root skipped
+   pure (skipped,existing)
+  forM_ (zip3 [0::Int ..] original live) $ \(index,Inventory root _ _ entries,(skipped,existing)) -> do
    forM_ (reverse existing) $ \(relative,directory) -> unless (null relative) $ do
     let path = root </> relative
     if not directory then do
      permissions <- getPermissions path
      setPermissions path permissions {writable=True}
      removeFile path
-    else when (not (any (equalFilePath relative) [p | (p,True,_) <- entries])
-      && not (any (containsPath relative) (locks++excluded))) (removeDirectory path)
+    else when (relative `notElem` [p | (p,True,_) <- entries]
+      && not (any ((splitDirectories relative `isPrefixOf`) . splitDirectories) skipped)) (removeDirectory path)
    copyTree (backup </> show index) root entries
-   actual <- inventory root locks excluded
+   actual <- inventory root skipped
    unless (actual == entries) (fail "Recovery verification failed; original backup retained for retry")

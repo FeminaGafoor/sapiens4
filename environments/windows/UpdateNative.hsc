@@ -17,6 +17,7 @@ import Foreign hiding (void)
 import Foreign.C
 import Data.List (sort)
 import GHC.Clock (getMonotonicTimeNSec)
+import System.FilePath (takeFileName)
 import System.IO.Error
 import UpdateState (pathPresentWith)
 
@@ -25,6 +26,7 @@ foreign import ccall safe "CreateFileW" create :: CWString -> Word32 -> Word32 -
 foreign import ccall unsafe "CloseHandle" close :: Handle -> IO CInt
 foreign import ccall unsafe "WaitForSingleObject" waitProcess :: Handle -> Word32 -> IO Word32
 foreign import ccall unsafe "GetLastError" lastError :: IO Word32
+foreign import ccall safe "GetFinalPathNameByHandleW" getFinalPath :: Handle -> CWString -> Word32 -> Word32 -> IO Word32
 foreign import ccall safe "GetFileInformationByHandle" information :: Handle -> Ptr () -> IO CInt
 foreign import ccall safe "LockFileEx" lock :: Handle -> Word32 -> Word32 -> Word32 -> Word32 -> Ptr () -> IO CInt
 foreign import ccall safe "UnlockFileEx" unlock :: Handle -> Word32 -> Word32 -> Word32 -> Ptr () -> IO CInt
@@ -94,6 +96,17 @@ validatePath path = pathPresent path >>= \exists -> unless exists (fail ("Missin
 pathPresent :: FilePath -> IO Bool
 pathPresent = pathPresentWith $ \path -> inspect path (const (pure True)) `catch` \e ->
  if isDoesNotExistError e then pure False else throwIO e
+actualName :: FilePath -> IO (Maybe FilePath)
+actualName path = catchJust (guard . isDoesNotExistError) readName (const (pure Nothing))
+ where
+ readName = withFile path 0 #{const FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE} #{const OPEN_EXISTING}
+  #{const FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS} $ \h ->
+   runInBoundThread $ allocaArray 32768 $ \buffer -> do
+    count <- getFinalPath h buffer 32768 #{const VOLUME_NAME_NONE}
+    when (count == 0) (lastError >>= status path)
+    unless (count < 32768) (fail ("Filesystem name too long: " ++ path))
+    Just . takeFileName <$> peekCWStringLen (buffer,fromIntegral count)
+
 withRootIdentity :: FilePath -> (String -> IO a) -> IO a
 withRootIdentity path action = validatePath path >> withFile path #{const FILE_READ_ATTRIBUTES} #{const FILE_SHARE_READ | FILE_SHARE_WRITE}
  #{const OPEN_EXISTING} #{const FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS} (\h -> allocaBytes #{size BY_HANDLE_FILE_INFORMATION} $ \p -> do

@@ -8,6 +8,7 @@ module UpdateNative where
 #include <sys/attr.h>
 #include <copyfile.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <unistd.h>
 #include <stdio.h>
 
@@ -41,6 +42,7 @@ foreign import capi safe "stdio.h renamex_np" renameExclusive :: CString -> CStr
 foreign import ccall safe "rename" rename :: CString -> CString -> IO CInt
 foreign import ccall safe "unlink" unlink :: CString -> IO CInt
 foreign import capi safe "copyfile.h copyfile" copy :: CString -> CString -> Ptr () -> CUInt -> IO CInt
+foreign import capi safe "unistd.h getattrlist" getAttributes :: CString -> Ptr () -> Ptr () -> CSize -> CULong -> IO CInt
 foreign import capi safe "unistd.h setattrlist" attributes :: CString -> Ptr () -> Ptr () -> CSize -> CULong -> IO CInt
 foreign import ccall safe "acl_get_file" acl :: CString -> CInt -> IO (Ptr ())
 foreign import ccall safe "acl_to_text" aclText :: Ptr () -> Ptr CLong -> IO CString
@@ -76,6 +78,22 @@ validatePath path = pathPresent path >>= \exists -> unless exists (fail ("Missin
 pathPresent :: FilePath -> IO Bool
 pathPresent = pathPresentWith $ \path -> (validateEntry path >> pure True) `catch` \e ->
  if isDoesNotExistError e then pure False else throwIO e
+
+actualName :: FilePath -> IO (Maybe FilePath)
+actualName path = catchJust (guard . isDoesNotExistError) readName (const (pure Nothing))
+ where
+ readName = zeroed #{size struct attrlist} $ \request -> allocaBytes capacity $ \buffer -> do
+  #{poke struct attrlist, bitmapcount} request (#{const ATTR_BIT_MAP_COUNT} :: CUShort)
+  #{poke struct attrlist, commonattr} request (#{const ATTR_CMN_NAME} :: CUInt)
+  withCString path $ \name -> void $ checked path (getAttributes name request buffer (fromIntegral capacity) #{const FSOPT_NOFOLLOW})
+  size <- fromIntegral <$> (peek (castPtr buffer) :: IO CUInt)
+  let ref = buffer `plusPtr` #{size uint32_t}
+  offset <- fromIntegral <$> (#{peek attrreference_t, attr_dataoffset} ref :: IO CInt)
+  count <- fromIntegral <$> (#{peek attrreference_t, attr_length} ref :: IO CUInt)
+  unless (offset >= #{size attrreference_t} && count > 1 && #{size uint32_t} + offset + count <= size && size <= capacity) $
+   fail ("Invalid filesystem name for " ++ path)
+  Just <$> peekCStringLen (ref `plusPtr` offset,count-1)
+ capacity = #{size uint32_t} + #{size attrreference_t} + #{const NAME_MAX} + 1
 
 withRootIdentity :: FilePath -> (String -> IO a) -> IO a
 withRootIdentity path action = validatePath path >> withFD path (#{const O_RDONLY} .|. #{const O_DIRECTORY}) (\fd ->
