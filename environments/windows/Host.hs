@@ -14,7 +14,7 @@ import Data.Maybe
 import DataRoot (configDirectory, defaultDataDirectory, externalStoragePath, StorageChoice(..), containedPath)
 import Network.HTTP.Client
 import Network.URI
-import Native (processId, waitProcessHandle)
+import Native (processId)
 import System.Process.Internals (ProcessHandle__(..), withProcessHandle)
 import qualified Data.ByteString as BS
 import System.Directory
@@ -25,6 +25,7 @@ import System.IO
 import System.Process
 import System.Timeout
 import qualified Update
+import UpdateNative (ProcessObservation(..), pollProcess)
 import qualified Data.Aeson.KeyMap as K
 
 data Host = Host
@@ -151,10 +152,7 @@ watchHost host recover = mask_ $ do
         OpenHandle root -> signaled root
         ClosedHandle _ -> pure True
       -- Poll the borrowed root handle only while process keeps it open.
-      signaled root = waitProcessHandle root 0 >>= \result -> case result of
-        0 -> pure True
-        258 -> pure False
-        _ -> fail "Could not observe the application server process."
+      signaled root = (==ProcessExited) <$> pollProcess root
       awaitExit = do
         exited <- poll
         unless exited (threadDelay 250000 >> awaitExit)

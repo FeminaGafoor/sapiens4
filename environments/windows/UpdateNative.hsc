@@ -23,6 +23,7 @@ import UpdateState (pathPresentWith)
 type Handle = Ptr ()
 foreign import ccall safe "CreateFileW" create :: CWString -> Word32 -> Word32 -> Ptr () -> Word32 -> Word32 -> Handle -> IO Handle
 foreign import ccall unsafe "CloseHandle" close :: Handle -> IO CInt
+foreign import ccall unsafe "WaitForSingleObject" waitProcess :: Handle -> Word32 -> IO Word32
 foreign import ccall unsafe "GetLastError" lastError :: IO Word32
 foreign import ccall safe "GetFileInformationByHandle" information :: Handle -> Ptr () -> IO CInt
 foreign import ccall safe "LockFileEx" lock :: Handle -> Word32 -> Word32 -> Word32 -> Word32 -> Ptr () -> IO CInt
@@ -55,6 +56,20 @@ status operation code = unless (code==0) $ ioError $ mkIOError
  (if code `elem` [2,3] then doesNotExistErrorType else userErrorType) (operation ++ ": Windows error " ++ show code) Nothing Nothing
 check :: String -> IO CInt -> IO ()
 check operation action = runInBoundThread $ action >>= \ok -> when (ok==0) (lastError >>= status operation)
+data ProcessObservation = ProcessRunning | ProcessExited deriving Eq
+
+pollProcess :: Handle -> IO ProcessObservation
+pollProcess process = runInBoundThread $ do
+ result <- waitProcess process 0
+ case result of
+  #{const WAIT_OBJECT_0} -> pure ProcessExited
+  #{const WAIT_TIMEOUT} -> pure ProcessRunning
+  #{const WAIT_FAILED} -> do
+   code <- lastError
+   fail ("Cannot observe Windows process: Windows error " ++ show code)
+  #{const WAIT_ABANDONED} -> fail "Windows reported an abandoned mutex while observing a process"
+  _ -> fail ("Unexpected Windows process wait result: " ++ show result)
+
 zeroed :: Int -> (Ptr () -> IO a) -> IO a
 zeroed size action = allocaBytes size $ \p -> fillBytes p 0 size >> action p
 open :: FilePath -> Word32 -> Word32 -> Word32 -> Word32 -> IO Handle

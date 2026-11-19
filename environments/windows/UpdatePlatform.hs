@@ -23,7 +23,6 @@ import UpdateState
 
 foreign import ccall safe "MessageBoxW" cMessageBox :: Ptr () -> CWString -> CWString -> Word32 -> IO CInt
 foreign import ccall unsafe "GetSystemDirectoryW" cSystemDirectory :: CWString -> Word32 -> IO Word32
-foreign import ccall safe "WaitForSingleObject" waitProcess :: Ptr () -> Word32 -> IO Word32
 showUpdateError :: String -> IO ()
 showUpdateError message = withCWString message $ \body -> withCWString "Sapiens update" $ \title -> void (cMessageBox nullPtr body title 0x10)
 
@@ -101,7 +100,7 @@ candidateMessage candidate@(Candidate _ _ output) = race exited (hGetLine output
 
 candidateAlive :: Candidate -> IO Bool
 candidateAlive (Candidate child _ _) = withProcessHandle child $ \state -> case state of
- OpenExtHandle handle _ -> (/=0) <$> waitProcess handle 0
+ OpenExtHandle handle _ -> (==ProcessRunning) <$> pollProcess handle
  _ -> pure False
 
 sendCandidate :: Candidate -> String -> IO ()
