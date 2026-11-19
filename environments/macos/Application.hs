@@ -15,8 +15,8 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC
 import qualified Data.ByteString.Lazy as L
 import qualified Update
-import Installation (freshVersion)
-import UpdateState (versionName)
+import qualified Data.UUID as UUID
+import qualified Data.UUID.V4 as UUID
 import qualified UpdatePlatform
 import DataRoot
 import DesktopStorage
@@ -722,7 +722,7 @@ flushPreferences application = modifyMVarMasked_ (preferencesDirty application) 
         serialization <- cls "NSPropertyListSerialization"
         encoded <- obj4 serialization "dataWithPropertyList:format:options:error:" (clientPreferences application) (int 200) nullPtr nullPtr >>= bytes
         when (BS.null encoded) (fail "Native preferences could not be serialized")
-        nonce <- versionName <$> freshVersion
+        nonce <- UUID.toString <$> UUID.nextRandom
         let path = preferencesFile application
         UpdatePlatform.publish path (path ++ "." ++ nonce) encoded
     pure False

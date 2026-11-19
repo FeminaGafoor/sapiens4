@@ -4,13 +4,9 @@ import Control.Concurrent (Chan, MVar, readChan, withMVar)
 import Control.Concurrent.Async (Async, race, waitCatch)
 import Control.Exception
 import Control.Monad
-import qualified Crypto.Hash.SHA256 as SHA256
-import Data.ByteArray.Encoding (Base(Base16), convertToBase)
 import qualified Data.ByteString as B
-import qualified Data.ByteString.Char8 as BC
 import qualified Data.ByteString.Lazy as BL
 import Data.Aeson
-import Data.Aeson.Types (parseEither)
 import Data.Either (isRight)
 import Data.List (find, stripPrefix)
 import Data.IORef
@@ -62,7 +58,7 @@ data ReleaseVersion = ReleaseVersion Natural Natural Natural deriving (Eq, Ord)
 data Release = Release
  { releaseVersion :: ReleaseVersion
  , releaseURL :: String
- , releaseDigest :: String
+ , releaseDigest :: Sha256
  }
 
 data ReleaseAsset = ReleaseAsset
@@ -160,10 +156,10 @@ requestUpdate root owner next = flip finally (discard [payload]) $ do
  unless (staged == releaseVersion release) (fail "Update payload version differs from the release tag")
  where payload = root </> (versionName next ++ "-" ++ payloadName)
 
-verifyPayloadDigest :: String -> FilePath -> IO ()
+verifyPayloadDigest :: Sha256 -> FilePath -> IO ()
 verifyPayloadDigest expected path = withBinaryFile path ReadMode $ \file -> do
- digest <- convertToBase Base16 . SHA256.hashlazy <$> BL.hGetContents file
- unless (digest == BC.pack expected) (fail "Update payload SHA-256 differs from the release")
+ digest <- sha256 <$> BL.hGetContents file
+ unless (digest == expected) (fail "Update payload SHA-256 differs from the release")
 
 updateAvailable :: IO Bool
 updateAvailable = fmap isRight $ tryUpdate $ do
@@ -193,8 +189,8 @@ selectRelease installedRelease platformPayload (ReleaseFeed tag assets) = do
  asset <- maybe (Left MissingPlatformPayload) Right (find ((== platformPayload) . assetName) assets)
  let expectedURL = "https://github.com/" ++ releaseRepository ++ "/releases/download/" ++ T.unpack tag ++ "/" ++ platformPayload
  unless (assetURL asset == expectedURL) (Left UnexpectedDownloadOrigin)
- case assetDigest asset >>= stripPrefix "sha256:" of
-  Just digest | validDigest digest -> Right (Release available expectedURL digest)
+ case assetDigest asset >>= stripPrefix "sha256:" >>= parseSha256 of
+  Just digest -> Right (Release available expectedURL digest)
   _ -> Left InvalidPayloadDigest
 
 parseReleaseVersion :: T.Text -> Either ReleaseError ReleaseVersion
@@ -211,7 +207,7 @@ parseReleaseVersion input =
 updateMode :: [String] -> IO Bool
 updateMode args = case args of
  ["--update-coordinate",name,dataDirectory,configDirectory] -> do
-  version <- either fail pure (parseEither parseJSON (toJSON name))
+  version <- either fail pure (parseVersion name)
   putStrLn "update: coordinator" >> hFlush stdout
   command <- getLine `catch` \(_::IOException) -> pure ""
   when (command == "handoff") $ report (coordinate (Just (version,dataDirectory,configDirectory)))
@@ -245,8 +241,8 @@ coordinate requested = do
     pure (Launch (current (original pending)))
    (Settled selected,Nothing) -> pure (Launch (current selected))
    (Settled selected,Just (next,dataDirectory,configDirectory)) -> do
-    unless (owner == current selected && next /= owner && Just next /= (previousVersion <$> previous selected)) (fail "Update selection changed")
-    nonce <- freshVersion
+    unless (owner == current selected && newTarget selected next) (fail "Update selection changed")
+    nonce <- freshAttemptId
     let backup = backupPath root nonce
         discardUnpublished = do
          decision <- tryUpdate (readUpdateState root)
@@ -265,7 +261,7 @@ coordinate requested = do
      withRootIdentity originalData $ \dataId -> withRootIdentity originalConfig $ \configId -> do
       saved <- withRootLocks originalData $ do
        fingerprint <- snapshot backup originalData originalConfig
-       reserveDataRoot originalData root nonce
+       reserveDataRoot originalData (DataReservation root nonce)
        let pending = PendingUpdate selected next nonce originalData originalConfig dataId configId fingerprint
        writeUpdateState root (Pending pending)
        pure pending
@@ -274,7 +270,7 @@ coordinate requested = do
     case result of
      Right () -> do
       forM_ (previous selected) $ \old ->
-       discard [versionPath root (previousVersion old),root </> "backups" </> versionName (previousBackup old)]
+       discard [versionPath root (previousVersion old),backupPath root (previousBackup old)]
       pure Running
      Left problem -> do
       decision <- readUpdateState root
@@ -292,7 +288,7 @@ coordinate requested = do
 
 runCandidate :: FilePath -> PendingUpdate -> IO ()
 runCandidate root pending = withCandidate (versionExecutable root (target pending)) []
- [("SAPIENS_UPDATE_ATTEMPT",versionName (attempt pending)),("SAPIENS_DATA_DIR",dataRoot pending),("SAPIENS_CONFIG_DIR",configRoot pending)] $ \candidate -> do
+ [("SAPIENS_UPDATE_ATTEMPT",attemptName (attempt pending)),("SAPIENS_DATA_DIR",dataRoot pending),("SAPIENS_CONFIG_DIR",configRoot pending)] $ \candidate -> do
   (do
    await (60 * 60) candidate "update: ready"
    alive <- candidateAlive candidate

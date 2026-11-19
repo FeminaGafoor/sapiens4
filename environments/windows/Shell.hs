@@ -26,8 +26,9 @@ import Numeric
 import Browser
 import Host
 import qualified Update as Update
-import Installation (freshVersion, withConfigAccess, withInstalledVersion)
-import UpdateState (versionName)
+import Installation (withConfigAccess, withInstalledVersion)
+import qualified Data.UUID as UUID
+import qualified Data.UUID.V4 as UUID
 import Native
 import qualified Navigation as Navigation
 import System.Environment
@@ -122,7 +123,7 @@ desktopSession memory probe args host configRoot = do
           result <- Update.tryUpdate $ do
             directory <- readIORef activeRoot
             let flush = do
-                  nonce <- versionName <$> freshVersion
+                  nonce <- UUID.toString <$> UUID.nextRandom
                   writeIORef preferenceFlushNonce (Just nonce)
                   void (tryTakeMVar preferencesFlushed)
                   let export = readIORef shellRef >>= mapM_ (\view -> execute memory view ("window.dispatchEvent(new CustomEvent('sapiens-preferences-flush',{detail:" ++ jsonString nonce ++ "}))") (const (pure ())))

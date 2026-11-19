@@ -1,43 +1,94 @@
-module UpdateState where
+module UpdateState
+ ( Version, versionName, freshVersion, parseVersion, canonicalUUID
+ , UpdateAttemptId, attemptName, freshAttemptId
+ , Sha256, parseSha256, sha256
+ , Previous(..), Selection(..), PendingUpdate(..), UpdateState(..)
+ , DataReservation(..), newTarget, candidateAuthorized
+ , statePath, versionPath, backupPath, containsPath, pathPresentWith, readUpdateState
+ , reservationName, configWriterLockName, configOwnerName, readBinding, assertDataAvailable, installationOf
+ ) where
 
 import Control.Monad
 import Control.Exception (catchJust)
+import qualified Crypto.Hash.SHA256 as SHA256
 import Data.Aeson
 import Data.Aeson.Types (Parser)
 import qualified Data.Aeson.KeyMap as K
+import Data.ByteArray.Encoding (Base(Base16), convertToBase)
+import qualified Data.ByteString.Char8 as BC
 import qualified Data.ByteString.Lazy as B
 import Data.Char (toLower)
 import Data.List (isPrefixOf)
 import qualified Data.Text as T
 import qualified Data.UUID as UUID
-import System.Directory
+import qualified Data.UUID.V4 as UUID
+import System.Directory hiding (executable)
 import System.Environment (getExecutablePath, lookupEnv)
 import System.FilePath
 import System.IO.Error (isDoesNotExistError)
 import System.Info (os)
 
-newtype Version = Version { versionName :: String } deriving (Eq,Show)
-data Previous = Previous { previousVersion :: Version, previousBackup :: Version, previousDigest :: String } deriving (Eq,Show)
+newtype Version = Version UUID.UUID deriving (Eq, Show)
+newtype UpdateAttemptId = UpdateAttemptId UUID.UUID deriving (Eq, Show)
+newtype Sha256 = Sha256 String deriving (Eq, Show)
+
+data Previous = Previous { previousVersion :: Version, previousBackup :: UpdateAttemptId, previousDigest :: Sha256 } deriving (Eq,Show)
 data Selection = Selection { current :: Version, previous :: Maybe Previous } deriving (Eq,Show)
 data PendingUpdate = PendingUpdate
- { original :: Selection, target :: Version, attempt :: Version
- , dataRoot :: FilePath, configRoot :: FilePath, dataIdentity :: String, configIdentity :: String, backupDigest :: String
+ { original :: Selection, target :: Version, attempt :: UpdateAttemptId
+ , dataRoot :: FilePath, configRoot :: FilePath, dataIdentity :: String, configIdentity :: String, backupDigest :: Sha256
  } deriving (Eq,Show)
 data UpdateState = Settled Selection | Pending PendingUpdate deriving (Eq,Show)
 
+data DataReservation = DataReservation FilePath UpdateAttemptId deriving Eq
+
+canonicalUUID :: T.Text -> Maybe UUID.UUID
+canonicalUUID name = do
+ uuid <- UUID.fromText name
+ guard (UUID.toText uuid == name)
+ pure uuid
+
+parseVersion :: String -> Either String Version
+parseVersion = maybe (Left "Invalid immutable version identifier") (Right . Version) . canonicalUUID . T.pack
+
+versionName :: Version -> String
+versionName (Version uuid) = UUID.toString uuid
+
+attemptName :: UpdateAttemptId -> String
+attemptName (UpdateAttemptId uuid) = UUID.toString uuid
+
+freshVersion :: IO Version
+freshVersion = Version <$> UUID.nextRandom
+
+freshAttemptId :: IO UpdateAttemptId
+freshAttemptId = UpdateAttemptId <$> UUID.nextRandom
+
+parseSha256 :: String -> Maybe Sha256
+parseSha256 value
+ | length value == 64 && all (`elem` ("0123456789abcdef"::String)) value = Just (Sha256 value)
+ | otherwise = Nothing
+
+sha256 :: B.ByteString -> Sha256
+sha256 = Sha256 . BC.unpack . convertToBase Base16 . SHA256.hashlazy
+
 instance ToJSON Version where toJSON = toJSON . versionName
 instance FromJSON Version where
- parseJSON = withText "version identifier" $ \s -> case UUID.fromText s of
-  Just uuid | UUID.toText uuid == s -> pure (Version (T.unpack s))
-  _ -> fail "Invalid immutable version identifier"
+ parseJSON = withText "version identifier" (either fail pure . parseVersion . T.unpack)
+instance ToJSON UpdateAttemptId where toJSON = toJSON . attemptName
+instance FromJSON UpdateAttemptId where
+ parseJSON = withText "update attempt identifier" $
+  maybe (fail "Invalid update attempt identifier") (pure . UpdateAttemptId) . canonicalUUID
+instance ToJSON Sha256 where toJSON (Sha256 value) = toJSON value
+instance ToJSON DataReservation where toJSON (DataReservation root nonce) = toJSON (root,nonce)
+instance FromJSON DataReservation where
+ parseJSON value = uncurry DataReservation <$> parseJSON value
 instance ToJSON Previous where
  toJSON p = object ["version" .= previousVersion p,"backup" .= previousBackup p,"digest" .= previousDigest p]
 instance FromJSON Previous where
  parseJSON = withObject "previous version and data" $ \o -> do
   exact ["version","backup","digest"] o
-  p <- Previous <$> o .: "version" <*> o .: "backup" <*> o .: "digest"
-  unless (validDigest (previousDigest p)) (fail "Invalid Previous backup digest")
-  pure p
+  digest <- o .: "digest" >>= maybe (fail "Invalid Previous backup digest") pure . parseSha256
+  Previous <$> o .: "version" <*> o .: "backup" <*> pure digest
 instance ToJSON Selection where
  toJSON s = object ["current" .= current s,"previous" .= previous s]
 instance FromJSON Selection where
@@ -61,13 +112,19 @@ instance FromJSON UpdateState where
    "Settled" -> exact ["format","state","selection"] o >> Settled <$> o .: "selection"
    "Pending" -> do
     exact ["format","state","original","target","attempt","data","config","dataIdentity","configIdentity","backup"] o
+    digest <- o .: "backup" >>= maybe (fail "Invalid pending update") pure . parseSha256
     p <- PendingUpdate <$> o .: "original" <*> o .: "target" <*> o .: "attempt" <*> o .: "data" <*> o .: "config"
-     <*> o .: "dataIdentity" <*> o .: "configIdentity" <*> o .: "backup"
-    unless (target p /= current (original p) && Just (target p) /= (previousVersion <$> previous (original p))
-      && all isAbsolute [dataRoot p,configRoot p] && all (not . null) [dataIdentity p,configIdentity p]
-      && validDigest (backupDigest p)) (fail "Invalid pending update")
+     <*> o .: "dataIdentity" <*> o .: "configIdentity" <*> pure digest
+    unless (newTarget (original p) (target p)
+      && all isAbsolute [dataRoot p,configRoot p] && all (not . null) [dataIdentity p,configIdentity p]) (fail "Invalid pending update")
     pure (Pending p)
    _ -> fail "Unknown update decision"
+
+newTarget :: Selection -> Version -> Bool
+newTarget selection version = version /= current selection && Just version /= (previousVersion <$> previous selection)
+
+candidateAuthorized :: PendingUpdate -> Version -> Maybe String -> Bool
+candidateAuthorized pending version ticket = version == target pending && ticket == Just (attemptName (attempt pending))
 
 exact :: [Key] -> Object -> Parser ()
 exact names o = unless (length names == K.size o && all (`K.member` o) names) (fail "Unexpected or missing update state fields")
@@ -76,8 +133,8 @@ statePath :: FilePath -> FilePath
 statePath root = root </> "update-state.json"
 versionPath :: FilePath -> Version -> FilePath
 versionPath root v = root </> "versions" </> versionName v
-backupPath :: FilePath -> Version -> FilePath
-backupPath root nonce = root </> "backups" </> versionName nonce
+backupPath :: FilePath -> UpdateAttemptId -> FilePath
+backupPath root nonce = root </> "backups" </> attemptName nonce
 
 containsPath :: FilePath -> FilePath -> Bool
 containsPath parent path = p == q || addTrailingPathSeparator p `isPrefixOf` q
@@ -116,14 +173,14 @@ assertDataAvailable = check True
  where
  check ownsLock directory = do
   binding <- readBinding (directory </> reservationName)
-  forM_ binding $ \(owner,nonce) -> do
+  forM_ binding $ \(DataReservation owner nonce) -> do
    unless (isAbsolute owner) (fail "Invalid Data Root update owner")
    state <- readUpdateState owner
    case state of
     Pending pending | attempt pending == nonce -> do
      home <- getExecutablePath >>= installationOf
      ticket <- lookupEnv "SAPIENS_UPDATE_ATTEMPT"
-     unless (home == Just (owner,target pending) && ticket == Just (versionName nonce)) $
+     unless (maybe False (\(root,version) -> root == owner && candidateAuthorized pending version ticket) home) $
       fail "This Data Root has an unfinished Sapiens update. Launch its original installed shortcut to recover."
     _ -> when ownsLock (removeFile (directory </> reservationName))
   let container = takeDirectory directory
@@ -141,10 +198,6 @@ installationOf executable = do
   ("mingw32",name:rest) | map toLower name == "sapiens4.exe" -> managed rest
   _ -> pure Nothing
  where
- managed (name:parent:root@(_:_)) | equalFilePath parent "versions" = case fromJSON (toJSON name) of
-  Success version -> pure (Just (joinPath (reverse root),version))
-  Error e -> fail e
+ managed (name:parent:root@(_:_)) | equalFilePath parent "versions" =
+  either fail (\version -> pure (Just (joinPath (reverse root),version))) (parseVersion name)
  managed _ = pure Nothing
-
-validDigest :: String -> Bool
-validDigest value = length value == 64 && all (`elem` ("0123456789abcdef"::String)) value
