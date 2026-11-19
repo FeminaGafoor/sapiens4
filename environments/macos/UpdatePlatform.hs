@@ -171,7 +171,6 @@ watchCoordinator :: IO ()
 watchCoordinator = do
  candidate <- lookupEnv "SAPIENS_UPDATE_ATTEMPT"
  forM_ candidate $ \_ -> void $ async $ do
-  -- A queued commit or EOF wakes the watcher without consuming the message.
   threadWaitRead stdInput
   installed <- getExecutablePath >>= installationOf
   selected <- (case installed of
