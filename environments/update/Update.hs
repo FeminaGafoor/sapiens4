@@ -260,8 +260,6 @@ coordinate requested = do
   Launch version -> launchVersion root version []
   Recover -> coordinate Nothing
  where
- -- The macOS backend owns a separate session and shares this lease for its
- -- entire lifetime. Recovery must wait for it even after the shell exits.
  acquire root = case requested of
   Just _ -> acquireLease (leasePath root) True
   Nothing -> acquireLease (leasePath root) True `catch` \(problem::IOException) ->

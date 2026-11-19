@@ -60,8 +60,6 @@ withSurvivingLock path action = do
  directory <- if exists then doesDirectoryExist parent else pure False
  if directory then withLock path action else action
 
--- Resolve the actual spelling of reserved entries on the live filesystem.
--- Inventory keys then use exact equality, including on a different backup volume.
 resolveExclusions :: FilePath -> [FilePath] -> IO (Set.Set FilePath)
 resolveExclusions root paths = Set.fromList . concat <$> mapM (resolve "" . splitDirectories) paths
  where

@@ -351,8 +351,6 @@ whisper manager base path = do
   Just value | String raw <- get value "text" -> pure (T.unwords (T.words raw))
   _ -> failure 502 "Whisper returned no text"
 
--- Pieces normally arrive every two seconds. Allow a minute for upload retries
--- and stalls. Progress and PCM remain durable so a late client can still resume.
 recentPieces :: Word64 -> M.Map (Text,Text) Word64 -> M.Map (Text,Text) Word64
 recentPieces now = M.filter (\lastPiece -> now - lastPiece < 60 * 1000000000)
 
