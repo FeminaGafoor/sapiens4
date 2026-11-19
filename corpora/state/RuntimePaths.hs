@@ -11,7 +11,7 @@ import System.Environment
 import System.FilePath
 import System.IO.Error (catchIOError, isDoesNotExistError)
 import System.Info
-import UpdateState (configOwnerName, installationOf, readBinding)
+import UpdateState (configOwnerName, containsPath, installationOf, readBinding, statePath)
 
 newtype Profile = Profile String
 instance FromJSON Profile where
@@ -51,16 +51,22 @@ containedPath root path = do
 externalStoragePath :: FilePath -> IO FilePath
 externalStoragePath path = do
  full <- storagePath path
- bin <- takeDirectory <$> (getExecutablePath >>= canonicalizePath)
- let bundle = find ((==".app") . map toLower . takeExtension) (ancestors bin)
+ executable <- getExecutablePath >>= canonicalizePath
+ installed <- installationOf executable
+ let bin = takeDirectory executable
+     bundle = find ((==".app") . map toLower . takeExtension) (ancestors bin)
      runtime = takeDirectory (takeDirectory bin)
  launcher <- doesDirectoryExist (bin </> "runtime")
  let backend = takeFileName runtime == "runtime" && takeFileName (takeDirectory bin) == ".build"
      packages = catMaybes [bundle] ++ [bin | os=="mingw32" && launcher] ++ [takeDirectory runtime | os=="mingw32" && backend]
  let foldCase = if os `elem` ["mingw32","darwin"] then map toLower else id
      inside package = any (equalFilePath (foldCase package) . foldCase) (ancestors full)
- when (any inside packages) $
-  fail "Choose a data or configuration folder outside the installed Sapiens4 application."
+     overlaps (root,_) = containsPath root full || containsPath full root
+ insideInstallation <- or <$> forM (ancestors full) (\parent -> do
+  marked <- doesFileExist (statePath parent)
+  if marked then doesDirectoryExist (parent </> "versions") else pure False)
+ when (any inside packages || any overlaps installed || insideInstallation) $
+  fail "Choose a data or configuration folder outside the Sapiens installation."
  pure full
 
 profileRoot :: IO FilePath

@@ -15,7 +15,7 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC
 import qualified Data.ByteString.Lazy as L
 import qualified Update
-import Installation (checkCandidateData, claimConfigRoot, outsideInstallation, freshVersion)
+import Installation (checkCandidateData, claimConfigRoot, freshVersion)
 import UpdateState (versionName)
 import qualified UpdatePlatform
 import DataRoot
@@ -74,8 +74,6 @@ startServer :: Application -> StorageChoice -> FilePath -> FilePath -> IO (Serve
 startServer application choice runtime destination = do
     telemetryArguments <- startupTelemetryArguments
     configRoot <- configDirectory
-    outsideInstallation configRoot
-    outsideInstallation destination
     checkCandidateData destination
     let binary = runtime </> ".build/bin/sapiens4"
     present <- doesFileExist binary
@@ -452,8 +450,8 @@ runSession isFixture initialAddress = do
     problem <- newIORef Nothing
     closing <- newIORef False
     (preferencesPath,preferences,imported) <- if isFixture then pure ("",nullPtr,False) else do
-        config <- configDirectory >>= canonicalizePath
-        outsideInstallation config
+        lookupEnv "SAPIENS_DATA_DIR" >>= mapM_ externalStoragePath
+        config <- configDirectory
         claimConfigRoot config
         createDirectoryIfMissing True config
         let path = config </> "macos-preferences.plist"
@@ -662,7 +660,7 @@ startSelected application requestedChoice directory = mask $ \unmask -> do
             Just _ -> throwIO e
             Nothing -> postCurrent (recoverStartup application (T.pack (storageMessage e)))) $ unmask $ do
                 void (stopOwnedServer application)
-                selected <- canonicalizePath directory
+                selected <- externalStoragePath directory
                 choice <- maybe (storageChoiceForDirectory selected) pure requestedChoice
                 guestScript <- TIO.readFile (runtime application </> ".build/web/guest.js")
                 when (T.null (T.strip guestScript)) $ ioError (userError "The packaged guest.js is empty. Reinstall the complete Sapiens4 app.")

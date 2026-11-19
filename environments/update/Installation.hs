@@ -1,4 +1,4 @@
-module Installation (withInstalledVersion, installation, writeUpdateState, reserveDataRoot, claimConfigRoot, checkCandidateData, freshVersion, leasePath, preparingUpdate, starter, outsideInstallation) where
+module Installation (withInstalledVersion, installation, writeUpdateState, reserveDataRoot, claimConfigRoot, checkCandidateData, freshVersion, leasePath, preparingUpdate, starter) where
 
 import Control.Monad
 import qualified Data.ByteString as Strict
@@ -19,14 +19,6 @@ leasePath :: FilePath -> FilePath
 leasePath root = root </> "installation.lock"
 installation :: IO (Maybe (FilePath,Version))
 installation = getExecutablePath >>= installationOf
-
-outsideInstallation :: FilePath -> IO ()
-outsideInstallation directory = do
- home <- installation
- forM_ home $ \(root,_) -> do
-  path <- canonicalizePath directory
-  when (containsPath root path || containsPath path root) $
-   fail "Choose a Data or Config folder outside the Sapiens installation."
 
 writeUpdateState :: FilePath -> UpdateState -> IO ()
 writeUpdateState root = publishJSON publish (statePath root)

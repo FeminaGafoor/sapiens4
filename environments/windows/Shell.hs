@@ -26,7 +26,7 @@ import Numeric
 import Browser
 import Host
 import qualified Update as Update
-import Installation (claimConfigRoot, freshVersion, outsideInstallation, withInstalledVersion)
+import Installation (claimConfigRoot, freshVersion, withInstalledVersion)
 import UpdateState (versionName)
 import Native
 import qualified Navigation as Navigation
@@ -57,7 +57,6 @@ desktopSession memory probe = do
   args <- desktopArgs <$> getArgs
   host <- prepareHost args
   configRoot <- configDirectory
-  outsideInstallation configRoot
   claimConfigRoot configRoot
   dataEnv <- lookupEnv "SAPIENS_DATA_DIR"
   let explicit = listToMaybe [value | (key,value) <- zip args (drop 1 args), key=="--data-dir"] `mplus` dataEnv
@@ -343,7 +342,7 @@ desktopSession memory probe = do
                 Just _ -> throwIO e
                 Nothing -> post (recoverStartup $ storageMessage e)) $ unmask $ do
                   closeHost host
-                  selectedDirectory <- canonicalizePath directory
+                  selectedDirectory <- externalStoragePath directory
                   choice <- maybe (storageChoiceForDirectory selectedDirectory) pure requestedChoice
                   let selected = host {dataDirectory=selectedDirectory}
                   guestScript <- B.readFile (runtimeDirectory host </> ".build/web/guest.js")

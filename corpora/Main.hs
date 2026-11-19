@@ -103,7 +103,7 @@ hostMain root args = do
  consent <- traverse (either (failure 400 . T.pack) pure . eitherDecode . BL.pack) (optionValue Telemetry.startupConsentOption args)
  port <- validated (parseIntegerOption "--port" "4174" args)
  require (port>=0 && port<=65535) 400 "Port must be between 0 and 65535"
- directory <- case optionValue "--data-dir" args of
+ directory <- externalStoragePath =<< case optionValue "--data-dir" args of
   Just "" -> failure 400 "Data directory must not be empty"
   Just path -> makeAbsolute path
   Nothing -> do

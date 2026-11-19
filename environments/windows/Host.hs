@@ -11,8 +11,7 @@ import Data.Aeson
 import Data.Char (toUpper)
 import Data.IORef
 import Data.Maybe
-import DataRoot (configDirectory, defaultDataDirectory, StorageChoice(..), containedPath)
-import Installation (outsideInstallation)
+import DataRoot (configDirectory, defaultDataDirectory, externalStoragePath, StorageChoice(..), containedPath)
 import Network.HTTP.Client
 import Network.URI
 import Native (processId, waitProcessHandle)
@@ -77,13 +76,12 @@ prepareHost args = do
   let paths = hostPaths args executable fallback dataEnv runtimeEnv
   when (null (dataPath paths)) $ fail "Data directory must not be empty"
   when (null (runtimePath paths)) $ fail "Runtime directory must not be empty"
-  directory <- makeAbsolute (dataPath paths)
+  directory <- externalStoragePath (dataPath paths)
   runtime <- makeAbsolute (runtimePath paths)
   Host directory runtime <$> newIORef Nothing <*> newIORef Nothing
 
 startHost :: StorageChoice -> Host -> IO String
 startHost choice host = do
-  outsideInstallation (dataDirectory host)
   telemetryArguments <- startupTelemetryArguments
   let binary = runtimeDirectory host </> ".build/bin/sapiens4.exe"
   available <- doesFileExist binary
