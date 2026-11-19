@@ -48,7 +48,7 @@ def withHost (directory : FilePath) (use : Host → IO α) : IO α := do
     let some port := (address.toString.splitOn "/").head!.toNat?
       | throw <| IO.userError "Invalid host port"
     let result ← use ⟨s!"http://127.0.0.1:{port}"⟩
-    child.stdin.putStrLn ""
+    child.stdin.putStrLn "stop"
     child.stdin.flush
     let status ← untilSome "clean host shutdown" child.tryWait
     IO.ofExcept <| requireThat "host shutdown failed" (status == 0)

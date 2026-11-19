@@ -1,4 +1,4 @@
-cabal-version: 3.0
+cabal-version: 3.6
 name: sapiens-domain
 version: 0.2.0.0
 build-type: Simple
@@ -9,6 +9,8 @@ flag linux-desktop
   manual: True
 
 common runtime
+  -- Query native layouts without linking probes against application frameworks.
+  hsc2hs-options: --cross-compile --via-asm
   default-language: Haskell2010
   default-extensions: OverloadedStrings, ScopedTypeVariables, TupleSections
   ghc-options: -threaded -rtsopts -O1 -Wall -Werror=incomplete-patterns -Werror=incomplete-uni-patterns -Werror=missing-fields
@@ -30,8 +32,9 @@ executable sapiens-domain
 
 common macos-update
   if os(osx)
-    other-modules: Installation, UpdatePlatform
-    c-sources: environments/macos/Update.c, environments/macos/Desktop.m
+    other-modules: Installation, UpdatePlatform, UpdateNative, ObjC
+    c-sources: environments/macos/Cocoa.c
+    extra-libraries: objc
     frameworks: Cocoa
     cc-options: -Wno-deprecated-declarations
 
@@ -85,9 +88,8 @@ common host
     Wire
   if os(windows)
     hs-source-dirs: environments/windows
-    other-modules: Installation, UpdatePlatform
-    c-sources: environments/windows/Update.c
-    extra-libraries: user32, advapi32, bcrypt
+    other-modules: Installation, UpdatePlatform, UpdateNative
+    extra-libraries: user32, advapi32
 
   if os(osx)
     hs-source-dirs: environments/macos
@@ -125,12 +127,11 @@ executable sapiens-macos
     Application,
     Browser,
     Icon,
-    ObjC,
     Update,
     UpdateBackup
   main-is: MacMain.hs
   if os(osx)
-    c-sources: environments/macos/Cocoa.c, environments/macos/Process.c
+    c-sources: environments/macos/Process.c
     frameworks: WebKit, CoreGraphics
     extra-libraries: objc
   else
@@ -150,6 +151,7 @@ common windows-host
     Installation,
     UpdateState,
     UpdatePlatform,
+    UpdateNative,
     Admission,
     Domain,
     RuntimePaths,
@@ -168,8 +170,8 @@ common windows-host
     Update,
     UpdateBackup
   if os(windows)
-    c-sources: environments/windows/WebView.c, environments/windows/Update.c
-    extra-libraries: user32, ole32, dwmapi, comdlg32, kernel32, advapi32, bcrypt
+    c-sources: environments/windows/WebView.c
+    extra-libraries: user32, ole32, dwmapi, comdlg32, kernel32, advapi32
   else
     buildable: False
 
@@ -185,10 +187,9 @@ executable sapiens-starter
   import: runtime
   hs-source-dirs: environments/windows, environments/update
   main-is: Starter.hs
-  other-modules: Installation, UpdateState, UpdatePlatform
+  other-modules: Installation, UpdateState, UpdatePlatform, UpdateNative
   if os(windows)
-    c-sources: environments/windows/Update.c
-    extra-libraries: user32, advapi32, bcrypt
+    extra-libraries: user32, advapi32
     ghc-options: -optl-mwindows
   else
     buildable: False

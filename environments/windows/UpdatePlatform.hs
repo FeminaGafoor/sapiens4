@@ -1,9 +1,10 @@
 {-# LANGUAGE ForeignFunctionInterface #-}
-module UpdatePlatform where
+module UpdatePlatform (module UpdatePlatform, module UpdateNative) where
+
+import UpdateNative hiding (Handle)
 
 import Control.Exception
 import Control.Monad
-import qualified Data.ByteString as B
 import Data.Char (toLower)
 import Data.Word
 import Foreign hiding (void)
@@ -20,70 +21,11 @@ import System.Process
 import System.Process.Internals (ProcessHandle__(..),withProcessHandle)
 import UpdateState
 
-newtype Lease = Lease (Ptr ())
 foreign import ccall safe "MessageBoxW" cMessageBox :: Ptr () -> CWString -> CWString -> Word32 -> IO CInt
 foreign import ccall unsafe "GetSystemDirectoryW" cSystemDirectory :: CWString -> Word32 -> IO Word32
 foreign import ccall safe "WaitForSingleObject" waitProcess :: Ptr () -> Word32 -> IO Word32
-foreign import ccall safe "sapiens_update_validate" cValidate :: CWString -> IO Word32
-foreign import ccall safe "sapiens_update_open_root" cOpenRoot :: CWString -> Ptr (Ptr ()) -> Ptr Word64 -> IO Word32
-foreign import ccall safe "sapiens_update_lease" cLease :: CWString -> CInt -> IO (Ptr ())
-foreign import ccall unsafe "sapiens_update_close" cClose :: Ptr () -> IO ()
-foreign import ccall safe "sapiens_update_downgrade" cDowngrade :: Ptr () -> IO Word32
-foreign import ccall safe "sapiens_update_publish" cPublish :: CWString -> CWString -> Ptr Word8 -> Word32 -> CInt -> IO Word32
-foreign import ccall safe "sapiens_update_copy" cCopy :: CWString -> CWString -> IO Word32
-foreign import ccall safe "sapiens_update_metadata" cMetadata :: CWString -> Ptr Word8 -> Word32 -> IO Word32
-foreign import ccall safe "sapiens_update_copy_metadata" cCopyMetadata :: CWString -> CWString -> IO Word32
-foreign import ccall safe "sapiens_update_job" cJob :: Ptr () -> CInt -> IO Word32
-
-check :: String -> Word32 -> IO ()
-check operation code = unless (code == 0) (fail (operation ++ " failed (Windows error " ++ show code ++ ")"))
-acquireLease :: FilePath -> Bool -> IO Lease
-acquireLease path exclusive = leaseWithMode path (if exclusive then 1 else 0)
-leaseWithMode :: FilePath -> CInt -> IO Lease
-leaseWithMode path mode = withCWString path $ \p -> do
- handle <- cLease p mode
- when (handle == nullPtr) (fail "Could not acquire the installation lease. Close other Sapiens instances and retry.")
- pure (Lease handle)
-releaseLease :: Lease -> IO ()
-releaseLease (Lease handle) = cClose handle
-withLease :: FilePath -> Bool -> (Lease -> IO a) -> IO a
-withLease path exclusive = bracket (acquireLease path exclusive) releaseLease
-withIdleLease :: FilePath -> IO a -> IO a
-withIdleLease path = bracket (leaseWithMode path 2) releaseLease . const
-downgradeLease :: Lease -> IO ()
-downgradeLease (Lease handle) = cDowngrade handle >>= check "Lease handoff"
-publish, publishNew :: FilePath -> FilePath -> B.ByteString -> IO ()
-publish = publishWith 1
-publishNew = publishWith 0
-publishWith :: CInt -> FilePath -> FilePath -> B.ByteString -> IO ()
-publishWith replace path temporary bytes = withCWString path $ \p -> withCWString temporary $ \t ->
- B.useAsCStringLen bytes $ \(buffer,len) -> cPublish p t (castPtr buffer) (fromIntegral len) replace >>= check "Durable update ownership or decision"
-copyOwned :: FilePath -> FilePath -> IO ()
-copyOwned source destination = withCWString source $ \s -> withCWString destination $ \d -> cCopy s d >>= check "Owned file copy"
-copyMetadata :: Bool -> FilePath -> FilePath -> IO ()
-copyMetadata _ source destination = withCWString source $ \s -> withCWString destination $ \d -> cCopyMetadata s d >>= check "Owned metadata copy"
-metadata :: FilePath -> IO B.ByteString
-metadata path = withCWString path $ \p -> allocaBytes 65536 $ \buffer -> do
- count <- cMetadata p buffer 65536
- when (count == 0 || count > 65536) (fail ("Unsupported or unreadable Windows metadata: " ++ path))
- B.packCStringLen (castPtr buffer,fromIntegral count)
 showUpdateError :: String -> IO ()
 showUpdateError message = withCWString message $ \body -> withCWString "Sapiens update" $ \title -> void (cMessageBox nullPtr body title 0x10)
-
-validatePath :: FilePath -> IO ()
-validatePath path = pathPresent path >>= \exists -> unless exists (fail ("Owned path is missing: " ++ path))
-
-withRootIdentity :: FilePath -> (String -> IO a) -> IO a
-withRootIdentity path action = do
- validatePath path
- bracket (withCWString path $ \p -> alloca $ \handle -> allocaArray 2 $ \identity -> do
-  cOpenRoot p handle identity >>= check ("Open Data or Config root: " ++ path)
-  (,) <$> peek handle <*> (show <$> peekArray 2 identity)) (cClose . fst) (action . snd)
-
-pathPresent :: FilePath -> IO Bool
-pathPresent = pathPresentWith $ \path -> do
- code <- withCWString path cValidate
- if code `elem` [2,3] then pure False else check ("Owned path validation: " ++ path) code >> pure True
 
 profileExclusions :: [FilePath]
 profileExclusions = ["WebView2/Shell","WebView2/Guests"]
@@ -147,7 +89,7 @@ withCandidate executable args overrides = bracket acquire close
    ,env=Just (overrides ++ filter (\(key,_) -> key `notElem` map fst overrides) inherited)}
   let candidate = Candidate child input output
   (mapM_ (\stream -> hSetEncoding stream utf8 >> hSetNewlineMode stream universalNewlineMode) [input,output]
-   >> pure candidate) `onException` (candidateOwnership candidate False >> close candidate)
+   >> pure candidate) `onException` (candidateOwnership candidate False `finally` close candidate)
  close (Candidate _ input output) = mapM_ (\h -> hClose h `catch` \(_::IOException) -> pure ()) [input,output]
 
 candidateMessage :: Candidate -> IO String
@@ -167,5 +109,5 @@ sendCandidate (Candidate _ input _) message = hPutStrLn input message >> hFlush 
 
 candidateOwnership :: Candidate -> Bool -> IO ()
 candidateOwnership (Candidate child _ _) commit = withProcessHandle child $ \state -> case state of
- OpenExtHandle _ handle -> cJob handle (if commit then 1 else 0) >>= check "Candidate process ownership"
+ OpenExtHandle _ handle -> candidateJob handle commit
  _ -> fail "Candidate has no owned Windows job"

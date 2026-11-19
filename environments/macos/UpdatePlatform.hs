@@ -1,16 +1,16 @@
-{-# LANGUAGE ForeignFunctionInterface #-}
-module UpdatePlatform where
+module UpdatePlatform (module UpdatePlatform, module UpdateNative) where
+
+import UpdateNative
+import qualified ObjC as O
+import qualified Data.Text as T
 
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async
 import Control.Exception
 import Control.Monad
-import qualified Data.ByteString as B
 import Data.Char (isAsciiUpper, isDigit)
 import Data.List (stripPrefix)
 import Data.Maybe (catMaybes)
-import Foreign hiding (void)
-import Foreign.C
 import System.Directory hiding (executable)
 import System.Environment
 import System.Exit (ExitCode(..))
@@ -18,76 +18,36 @@ import System.FilePath
 import System.IO
 import System.IO.Error (isDoesNotExistError)
 import System.Posix.Process (getProcessID)
+import System.Posix.Types (ProcessID)
 import System.Posix.Signals
 import System.Process
 import System.Timeout
 import UpdateState
 
-newtype Lease = Lease CInt
-foreign import ccall safe "sapiens_update_validate" cValidate :: CString -> IO CInt
-foreign import ccall safe "sapiens_update_open_root" cOpenRoot :: CString -> Ptr CInt -> Ptr Word64 -> IO CInt
-foreign import ccall safe "sapiens_update_lease" cLease :: CString -> CInt -> IO CInt
-foreign import ccall unsafe "close" cClose :: CInt -> IO CInt
-foreign import ccall safe "sapiens_update_downgrade" cDowngrade :: CInt -> IO CInt
-foreign import ccall safe "sapiens_update_publish" cPublish :: CString -> CString -> Ptr Word8 -> CSize -> CInt -> IO CInt
-foreign import ccall safe "sapiens_update_flush" cFlush :: CString -> CInt -> IO CInt
-foreign import ccall safe "sapiens_update_copy" cCopy :: CString -> CString -> CInt -> IO CInt
-foreign import ccall safe "sapiens_update_metadata" cMetadata :: CString -> Ptr Word8 -> IO CInt
-foreign import ccall safe "sapiens_update_error" cError :: CString -> IO ()
-foreign import ccall safe "sapiens_update_activate" cActivate :: CString -> IO CInt
-foreign import ccall unsafe "sapiens_update_hangup" cHangup :: IO CInt
-
-check :: String -> CInt -> IO ()
-check operation code = unless (code == 0) (fail (operation ++ " failed (macOS error " ++ show code ++ ")"))
-acquireLease :: FilePath -> Bool -> IO Lease
-acquireLease path exclusive = leaseWithMode path (if exclusive then 1 else 0)
-leaseWithMode :: FilePath -> CInt -> IO Lease
-leaseWithMode path mode = withCString path $ \p -> do
- fd <- cLease p mode
- when (fd < 0) (fail "Could not acquire the installation lease. Close other Sapiens instances and retry.")
- pure (Lease fd)
-releaseLease :: Lease -> IO ()
-releaseLease (Lease fd) = void (cClose fd)
-withLease :: FilePath -> Bool -> (Lease -> IO a) -> IO a
-withLease path exclusive = bracket (acquireLease path exclusive) releaseLease
-withIdleLease :: FilePath -> IO a -> IO a
-withIdleLease path = bracket (leaseWithMode path 2) releaseLease . const
-downgradeLease :: Lease -> IO ()
-downgradeLease (Lease fd) = cDowngrade fd >>= check "Lease handoff"
-publish, publishNew :: FilePath -> FilePath -> B.ByteString -> IO ()
-publish = publishWith 1
-publishNew = publishWith 0
-publishWith :: CInt -> FilePath -> FilePath -> B.ByteString -> IO ()
-publishWith replace path temporary bytes = withCString path $ \p -> withCString temporary $ \t ->
- B.useAsCStringLen bytes $ \(buffer,len) -> cPublish p t (castPtr buffer) (fromIntegral len) replace >>= check "Durable update ownership or decision"
-copyOwned :: FilePath -> FilePath -> IO ()
-copyOwned = copyWith 0
-
-copyMetadata :: Bool -> FilePath -> FilePath -> IO ()
-copyMetadata directory source destination =
- when directory (copyWith 1 source destination)
-copyWith :: CInt -> FilePath -> FilePath -> IO ()
-copyWith mode source destination = withCString source $ \s -> withCString destination $ \d -> cCopy s d mode >>= check "Owned file copy"
-metadata :: FilePath -> IO B.ByteString
-metadata path = withCString path $ \p -> allocaBytes 32 $ \buffer -> do
- cMetadata p buffer >>= check ("Owned metadata: " ++ path)
- B.packCStringLen (castPtr buffer,32)
-
 showUpdateError :: String -> IO ()
-showUpdateError message = hPutStrLn stderr message >> withCString message cError
-validatePath :: FilePath -> IO ()
-validatePath path = pathPresent path >>= \exists -> unless exists (fail ("Owned path is missing: " ++ path))
+showUpdateError message = hPutStrLn stderr message >> O.withAutoreleasePool (do
+ app <- O.cls "NSApplication" >>= (`O.obj0` "sharedApplication")
+ void (O.obj1 app "setActivationPolicy:" (O.int 1))
+ bracket (O.new "NSAlert") (void . (`O.obj0` "release")) $ \alert -> do
+  O.setText alert "setMessageText:" "Sapiens4 update could not finish"
+  O.setText alert "setInformativeText:" (T.pack message)
+  O.str "OK" >>= void . O.obj1 alert "addButtonWithTitle:"
+  void (O.obj1 app "activateIgnoringOtherApps:" (O.flag True))
+  void (O.long alert "runModal"))
 
-withRootIdentity :: FilePath -> (String -> IO a) -> IO a
-withRootIdentity path action = do
- validatePath path
- bracket (withCString path $ \p -> alloca $ \handle -> allocaArray 2 $ \identity -> do
-  cOpenRoot p handle identity >>= check ("Open Data or Config root: " ++ path)
-  (,) <$> peek handle <*> (show <$> peekArray 2 identity)) (void . cClose . fst) (action . snd)
-pathPresent :: FilePath -> IO Bool
-pathPresent = pathPresentWith $ \path -> do
- code <- withCString path cValidate
- if code == 2 then pure False else check ("Owned path validation: " ++ path) code >> pure True
+activateVersion :: FilePath -> IO Bool
+activateVersion executable = O.withAutoreleasePool $ do
+ target <- canonicalizePath executable
+ apps <- O.cls "NSWorkspace" >>= (`O.obj0` "sharedWorkspace") >>= (`O.obj0` "runningApplications") >>= O.objects
+ let activate [] = pure False
+     activate (app:rest) = do
+      path <- O.obj0 app "executableURL" >>= (`O.obj0` "path") >>= (`O.obj0` "stringByResolvingSymlinksInPath") >>= O.string
+      terminated <- O.booleanValue app "isTerminated"
+      if path==T.pack target && not terminated
+       then O.obj1 app "activateWithOptions:" (O.int 3) >> pure True
+       else activate rest
+ activate apps
+
 profileExclusions :: [FilePath]
 profileExclusions = []
 payloadName :: String
@@ -145,25 +105,24 @@ stageVerifiedPayload verifyApp payload destination = do
  unless (lines ident == ["com.sapiens4.desktop"]) (fail "Unexpected application identity")
  release <- readProcess "/usr/libexec/PlistBuddy" ["-c","Print :CFBundleShortVersionString",app </> "Contents/Info.plist"] ""
  writeFile (destination </> "sapiens-release.version") release
- let flush path full = withCString path (\p -> cFlush p full >>= check "Staged bundle durability")
-     walk path = do
+ let walk path = do
       validatePath path
       directory <- doesDirectoryExist path
       when directory (listDirectory path >>= mapM_ (walk . (path </>)))
-      flush path 0
+      flush path False
  walk destination
- flush (takeDirectory destination) 1
+ flush (takeDirectory destination) True
 
 launchVersion :: FilePath -> Version -> [String] -> IO ()
 launchVersion root version args = do
  let executable = versionExecutable root version
  verifyBundle (appBundle executable)
- active <- if null args then withCString executable cActivate else pure 0
+ active <- if null args then activateVersion executable else pure False
  inherited <- getEnvironment
- when (active == 0) $ void $ createProcess (proc executable args)
+ unless active $ void $ createProcess (proc executable args)
   {env=Just (filter ((/= "SAPIENS_UPDATE_ATTEMPT") . fst) inherited),close_fds=True,new_session=True}
 
-data Candidate = Candidate ProcessHandle Handle Handle
+data Candidate = Candidate ProcessHandle ProcessID Handle Handle
 withCandidate :: FilePath -> [String] -> [(String,String)] -> (Candidate -> IO a) -> IO a
 withCandidate executable args overrides = bracket acquire close
  where
@@ -175,35 +134,43 @@ withCandidate executable args overrides = bracket acquire close
    \pipes -> case pipes of
     (Just input,Just output,Nothing,child) -> do
      mapM_ (\stream -> hSetEncoding stream utf8 >> hSetNewlineMode stream universalNewlineMode) [input,output]
-     pure (Candidate child input output)
+     pid <- getPid child >>= maybe (fail "Candidate process ID unavailable") pure
+     pure (Candidate child pid input output)
     _ -> fail "Candidate process pipes are unavailable"
  abort (input,output,errors,child) =
   (do
    getPid child >>= mapM_ (\pid -> catchJust (guard . isDoesNotExistError) (signalProcessGroup sigKILL pid) (const (pure ())))
    void (waitForProcess child))
   `finally` closeStreams (catMaybes [input,output,errors])
- close (Candidate _ input output) = closeStreams [input,output]
+ close (Candidate _ _ input output) = closeStreams [input,output]
  closeStreams = mapM_ (\h -> hClose h `catch` \(_::IOException) -> pure ())
 candidateMessage :: Candidate -> IO String
-candidateMessage (Candidate _ _ output) = hGetLine output
+candidateMessage (Candidate _ _ _ output) = hGetLine output
 candidateAlive :: Candidate -> IO Bool
-candidateAlive (Candidate child _ _) = (==Nothing) <$> getProcessExitCode child
+candidateAlive (Candidate child _ _ _) = (==Nothing) <$> getProcessExitCode child
 sendCandidate :: Candidate -> String -> IO ()
-sendCandidate (Candidate _ input _) message = hPutStrLn input message >> hFlush input
+sendCandidate (Candidate _ _ input _) message = hPutStrLn input message >> hFlush input
 candidateOwnership :: Candidate -> Bool -> IO ()
-candidateOwnership (Candidate child _ _) commit = unless commit $ do
- terminateProcess child
- done <- timeout 10000000 (waitForProcess child)
+candidateOwnership (Candidate child pid _ _) commit = unless commit $ do
+ let absent action = catchJust (guard . isDoesNotExistError) action (const (pure ()))
+     join = do
+      void (waitForProcess child)
+      let wait = do
+           alive <- catchJust (guard . isDoesNotExistError) (signalProcessGroup nullSignal pid >> pure True) (const (pure False))
+           when alive (threadDelay 100000 >> wait)
+      wait
+ absent (signalProcessGroup sigTERM pid)
+ done <- timeout 10000000 join
  when (done == Nothing) $ do
-  getPid child >>= mapM_ (signalProcess sigKILL)
-  joined <- timeout 10000000 (waitForProcess child)
-  when (joined == Nothing) (fail "Candidate process did not exit after termination")
+  absent (signalProcessGroup sigKILL pid)
+  joined <- timeout 10000000 join
+  when (joined == Nothing) (fail "Candidate process group did not exit")
 
 watchCoordinator :: IO ()
 watchCoordinator = do
  candidate <- lookupEnv "SAPIENS_UPDATE_ATTEMPT"
  forM_ candidate $ \_ -> void $ async $ do
-  let wait = cHangup >>= \closed -> if closed == 0 then threadDelay 100000 >> wait else pure ()
+  let wait = coordinatorClosed >>= \closed -> if not closed then threadDelay 100000 >> wait else pure ()
   wait
   installed <- getExecutablePath >>= installationOf
   selected <- (case installed of
