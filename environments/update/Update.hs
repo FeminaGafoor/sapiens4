@@ -205,7 +205,7 @@ discard paths = forM_ paths $ \path ->
 coordinate :: Maybe (Version,FilePath,FilePath) -> IO ()
 coordinate requested = do
  (root,owner) <- installed
- dispatch <- withLease (leasePath root) True $ \lease -> do
+ dispatch <- bracket (acquire root) releaseLease $ \lease -> do
   state <- readUpdateState root
   case (state,requested) of
    (Pending pending,_) -> do
@@ -259,6 +259,13 @@ coordinate requested = do
   Running -> pure ()
   Launch version -> launchVersion root version []
   Recover -> coordinate Nothing
+ where
+ -- The macOS backend owns a separate session and shares this lease for its
+ -- entire lifetime. Recovery must wait for it even after the shell exits.
+ acquire root = case requested of
+  Just _ -> acquireLease (leasePath root) True
+  Nothing -> acquireLease (leasePath root) True `catch` \(problem::IOException) ->
+   fail ("Recovery is deferred until Sapiens releases the installation lease. Close Sapiens and relaunch from its installed shortcut. " ++ displayException problem)
 
 runCandidate :: FilePath -> PendingUpdate -> IO ()
 runCandidate root pending = mask $ \restore -> withCandidate (versionExecutable root (target pending)) []
