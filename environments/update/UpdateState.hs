@@ -99,6 +99,9 @@ readUpdateState root = do
 reservationName :: FilePath
 reservationName = ".sapiens-update-owner"
 
+configWriterLockName :: FilePath
+configWriterLockName = ".sapiens-config-writers.lock"
+
 configOwnerName :: FilePath
 configOwnerName = ".sapiens-config-owner"
 

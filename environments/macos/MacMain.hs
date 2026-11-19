@@ -3,7 +3,8 @@ module Main where
 import qualified Data.Text as T
 import Application
 import Icon
-import Installation (withInstalledVersion)
+import Installation (withConfigAccess, withInstalledVersion)
+import RuntimePaths (configDirectory)
 import Update (updateMode)
 import UpdatePlatform (watchCoordinator)
 import Control.Monad (unless)
@@ -28,6 +29,8 @@ main = do
         either (ioError . userError) runLaunch (launchOptions args)
 
 runLaunch :: Launch -> IO ()
-runLaunch Desktop = runApplication False (T.pack "http://127.0.0.1:4174")
+runLaunch Desktop = do
+    config <- configDirectory
+    withConfigAccess config $ runApplication False (T.pack "http://127.0.0.1:4174")
 runLaunch (Fixture address) = runApplication True address
 runLaunch (Icon directory source) = createIcon directory source

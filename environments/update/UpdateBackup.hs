@@ -99,7 +99,7 @@ inventories dataPath configPath sourceData sourceConfig = do
      relative child = if child == sourceData then "" else makeRelative sourceData child
      profiles = [relative child </> profile | child <- corpora, profile <- reservationName:profileExclusions]
  dataEntries <- inventory sourceData locks profiles
- let configExcluded = configOwnerName:profileExclusions
+ let configExcluded = configOwnerName:configWriterLockName:profileExclusions
  configEntries <- inventory sourceConfig [] configExcluded
  pure [Inventory dataPath locks profiles dataEntries,Inventory configPath [] configExcluded configEntries]
 

@@ -15,7 +15,7 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC
 import qualified Data.ByteString.Lazy as L
 import qualified Update
-import Installation (claimConfigRoot, freshVersion)
+import Installation (freshVersion)
 import UpdateState (versionName)
 import qualified UpdatePlatform
 import DataRoot
@@ -452,7 +452,6 @@ runSession isFixture initialAddress = do
     (preferencesPath,preferences,imported) <- if isFixture then pure ("",nullPtr,False) else do
         lookupEnv "SAPIENS_DATA_DIR" >>= mapM_ externalStoragePath
         config <- configDirectory
-        claimConfigRoot config
         createDirectoryIfMissing True config
         let path = config </> "macos-preferences.plist"
         (dictionary,legacy) <- loadPreferences config path

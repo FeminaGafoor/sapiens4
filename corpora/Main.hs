@@ -3,7 +3,7 @@ module Main where
 
 import Types
 #if defined(mingw32_HOST_OS) || defined(darwin_HOST_OS)
-import Installation (checkCandidateData, claimConfigRoot, withInstalledVersion)
+import Installation (checkCandidateData, withConfigAccess, withInstalledVersion)
 #endif
 import DataRoot
 import HostServer
@@ -120,11 +120,13 @@ hostMain root args = do
  void (asset root "/workspace/app.js")
 #if defined(mingw32_HOST_OS) || defined(darwin_HOST_OS)
  preparing <- checkCandidateData directory
- claimConfigRoot =<< configDirectory
+ config <- configDirectory
+ let ownConfig = withConfigAccess config
 #else
  let preparing = False
+     ownConfig = id
 #endif
- bracket (startHost consent directory port preparing) hostStop $ \host -> do
+ ownConfig $ bracket (startHost consent directory port preparing) hostStop $ \host -> do
   let url="http://127.0.0.1:"<>show (hostPort host)<>"/workspace/"
   putStrLn ("Sapiens4: "<>url<>"\nUI database: "<>directory</>"corpora.sqlite3")
   finished <- newEmptyMVar

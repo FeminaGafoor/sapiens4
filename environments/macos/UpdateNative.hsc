@@ -101,7 +101,13 @@ leaseWithMode path mode = mask $ \restore -> do
             if mode/=2 && now<deadline && err `elem` [eACCES,eAGAIN,eINTR]
              then threadDelay 50000 >> retry else throwErrno "Installation lease"
       retry
- restore acquire `onException` void (close fd)
+ let validate = allocaBytes #{size struct stat} $ \info -> do
+      void (checked path (fstat fd info))
+      modeBits <- #{peek struct stat, st_mode} info :: IO Word16
+      links <- #{peek struct stat, st_nlink} info :: IO Word16
+      unless (modeBits .&. #{const S_IFMT} == #{const S_IFREG} && links == 1) $
+       fail ("Unsupported lock file: " ++ path)
+ (validate >> restore acquire) `onException` void (close fd)
  pure (Lease fd)
 setLock :: CInt -> Bool -> IO CInt
 setLock fd exclusive = zeroed #{size struct flock} $ \p -> do

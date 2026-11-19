@@ -95,8 +95,15 @@ acquireLease :: FilePath -> Bool -> IO Lease
 acquireLease path exclusive = leaseWithMode path (if exclusive then 1 else 0)
 leaseWithMode :: FilePath -> Int -> IO Lease
 leaseWithMode path mode = mask $ \restore -> do
- h <- open path #{const GENERIC_READ | GENERIC_WRITE} #{const FILE_SHARE_READ | FILE_SHARE_WRITE} #{const OPEN_ALWAYS} #{const FILE_ATTRIBUTE_NORMAL}
- let acquire = runInBoundThread $ zeroed #{size OVERLAPPED} $ \range -> do
+ h <- open path #{const GENERIC_READ | GENERIC_WRITE} #{const FILE_SHARE_READ | FILE_SHARE_WRITE}
+  #{const OPEN_ALWAYS} #{const FILE_FLAG_OPEN_REPARSE_POINT}
+ let validate = allocaBytes #{size BY_HANDLE_FILE_INFORMATION} $ \info -> do
+      check path (information h info)
+      attrs <- #{peek BY_HANDLE_FILE_INFORMATION, dwFileAttributes} info :: IO Word32
+      links <- #{peek BY_HANDLE_FILE_INFORMATION, nNumberOfLinks} info :: IO Word32
+      unless (attrs .&. #{const FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT} == 0 && links == 1) $
+       fail ("Unsupported lock file: " ++ path)
+     acquire = runInBoundThread $ zeroed #{size OVERLAPPED} $ \range -> do
       deadline <- (+15000000000) <$> getMonotonicTimeNSec
       let retry = do
            ok <- lock h (#{const LOCKFILE_FAIL_IMMEDIATELY} .|. if mode==0 then 0 else #{const LOCKFILE_EXCLUSIVE_LOCK}) 0 1 0 range
@@ -105,7 +112,7 @@ leaseWithMode path mode = mask $ \restore -> do
             now <- getMonotonicTimeNSec
             if err== #{const ERROR_LOCK_VIOLATION} && mode/=2 && now<deadline then threadDelay 50000 >> retry else status path err
       retry
- restore acquire `onException` void (close h)
+ (validate >> restore acquire) `onException` void (close h)
  pure (Lease h)
 releaseLease :: Lease -> IO ()
 releaseLease (Lease h) = void (close h)

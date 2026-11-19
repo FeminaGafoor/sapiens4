@@ -26,7 +26,7 @@ import Numeric
 import Browser
 import Host
 import qualified Update as Update
-import Installation (claimConfigRoot, freshVersion, withInstalledVersion)
+import Installation (freshVersion, withConfigAccess, withInstalledVersion)
 import UpdateState (versionName)
 import Native
 import qualified Navigation as Navigation
@@ -43,21 +43,22 @@ import qualified Data.Text.Encoding as TE
 
 runDesktop :: Bool -> IO ()
 runDesktop probe = withInstalledVersion $ runInBoundThread $
-  -- Release callbacks only after COM has finished releasing its references.
-  (bracket newArena freeArena $ \memory ->
-    bracket_ (check =<< coInitialize nullPtr 2) coUninitialize (desktopSession memory probe))
+  (do
+    args <- desktopArgs <$> getArgs
+    host <- prepareHost args
+    configRoot <- configDirectory
+    withConfigAccess configRoot $
+      -- Release callbacks only after COM has released its references.
+      bracket newArena freeArena $ \memory ->
+        bracket_ (check =<< coInitialize nullPtr 2) coUninitialize (desktopSession memory probe args host configRoot))
   `catch` \(e :: SomeException) -> case fromException e :: Maybe SomeAsyncException of
     Just _ -> throwIO e
     Nothing -> withWide (storageMessage e ++ "\n\nClose the application and relaunch after correcting the error.") $ \message ->
       withWide "Sapiens4 could not start" $ \title -> void (messageBox nullPtr message title 0x10)
 
-desktopSession :: Arena -> Bool -> IO ()
-desktopSession memory probe = do
+desktopSession :: Arena -> Bool -> [String] -> Host -> FilePath -> IO ()
+desktopSession memory probe args host configRoot = do
   void $ setDpiAwareness (-4)
-  args <- desktopArgs <$> getArgs
-  host <- prepareHost args
-  configRoot <- configDirectory
-  claimConfigRoot configRoot
   dataEnv <- lookupEnv "SAPIENS_DATA_DIR"
   let explicit = listToMaybe [value | (key,value) <- zip args (drop 1 args), key=="--data-dir"] `mplus` dataEnv
   saved <- try (startupDataDirectory explicit) :: IO (Either IOException (Maybe FilePath))
