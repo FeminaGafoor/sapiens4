@@ -216,7 +216,8 @@ metadata path = inspect path $ \info -> do
   (void . freeLocal) (\p -> peek count >>= \n -> B.packCStringLen (castPtr p,fromIntegral n*2))
  content <- streams path $ \name -> do
   digest <- withRead (path++name) $ \h -> SHA.finalize <$> readChunks h (\ctx bytes -> pure (SHA.update ctx bytes)) SHA.init
-  withCWStringLen name $ \(p,n) -> (<>digest) <$> B.packCStringLen (castPtr p,(n+1)*2)
+  withCWStringLen (name ++ "\0") $ \(p,n) ->
+   (<>digest) <$> B.packCStringLen (castPtr p,n * #{size WCHAR})
  kind <- #{peek BY_HANDLE_FILE_INFORMATION, dwFileAttributes} info :: IO Word32
  when (null content && kind .&. #{const FILE_ATTRIBUTE_DIRECTORY} == 0) (fail "Missing file data stream")
  let result = fields <> security <> B.concat (sort content)
