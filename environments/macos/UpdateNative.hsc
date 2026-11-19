@@ -8,7 +8,6 @@ module UpdateNative where
 #include <sys/attr.h>
 #include <copyfile.h>
 #include <fcntl.h>
-#include <poll.h>
 #include <unistd.h>
 #include <stdio.h>
 
@@ -48,7 +47,6 @@ foreign import ccall safe "acl_to_text" aclText :: Ptr () -> Ptr CLong -> IO CSt
 foreign import ccall unsafe "acl_free" aclFree :: Ptr a -> IO CInt
 foreign import ccall safe "listxattr" listAttrs :: CString -> CString -> CSize -> CInt -> IO CLong
 foreign import ccall safe "getxattr" getAttr :: CString -> CString -> CString -> CSize -> CUInt -> CInt -> IO CLong
-foreign import ccall unsafe "poll" poll :: Ptr () -> CUInt -> CInt -> IO CInt
 
 checked :: (Eq a, Num a) => String -> IO a -> IO a
 checked = throwErrnoIfMinus1Retry
@@ -191,10 +189,3 @@ metadata path = do
    actual <- checked path (readBytes buffer (fromIntegral count))
    unless (actual==count) (fail "Metadata changed during backup")
    B.packCStringLen (buffer,fromIntegral count)
-
-coordinatorClosed :: IO Bool
-coordinatorClosed = zeroed #{size struct pollfd} $ \p -> do
- #{poke struct pollfd, fd} p (0 :: CInt)
- void (checked "Coordinator pipe" (poll p 1 0))
- events <- #{peek struct pollfd, revents} p :: IO CShort
- pure (events .&. #{const POLLHUP} /= 0)

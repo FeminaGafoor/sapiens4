@@ -4,7 +4,7 @@ import UpdateNative
 import qualified ObjC as O
 import qualified Data.Text as T
 
-import Control.Concurrent (threadDelay)
+import Control.Concurrent (threadDelay, threadWaitRead)
 import Control.Concurrent.Async
 import Control.Exception
 import Control.Monad
@@ -17,6 +17,7 @@ import System.Exit (ExitCode(..))
 import System.FilePath
 import System.IO
 import System.IO.Error (isDoesNotExistError)
+import System.Posix.IO (stdInput)
 import System.Posix.Process (getProcessID)
 import System.Posix.Types (ProcessID)
 import System.Posix.Signals
@@ -170,8 +171,8 @@ watchCoordinator :: IO ()
 watchCoordinator = do
  candidate <- lookupEnv "SAPIENS_UPDATE_ATTEMPT"
  forM_ candidate $ \_ -> void $ async $ do
-  let wait = coordinatorClosed >>= \closed -> if not closed then threadDelay 100000 >> wait else pure ()
-  wait
+  -- A queued commit or EOF wakes the watcher without consuming the message.
+  threadWaitRead stdInput
   installed <- getExecutablePath >>= installationOf
   selected <- (case installed of
    Nothing -> pure False
