@@ -26,6 +26,7 @@ import System.Process
 import System.Timeout
 import qualified Update
 import UpdateNative (ProcessObservation(..), pollProcess)
+import UpdatePlatform (waitForJobExit)
 import qualified Data.Aeson.KeyMap as K
 
 data Host = Host
@@ -181,10 +182,10 @@ stopServer server = mask_ $ do
     stop = do
       let input = processInput server
       (hPutStrLn input "stop" >> hFlush input >> hClose input) `catch` \(_ :: IOException) -> pure ()
-      result <- timeout 10000000 (waitForProcess (processHandle server))
+      result <- timeout 10000000 (waitForJobExit (processHandle server))
       when (isNothing result) $ do
         terminateProcess (processHandle server)
-        confirmed <- timeout 5000000 (waitForProcess (processHandle server))
+        confirmed <- timeout 5000000 (waitForJobExit (processHandle server))
         when (isNothing confirmed) $ ioError $ userError "The application server could not be stopped"
       pure (result == Just ExitSuccess)
 

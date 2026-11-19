@@ -70,7 +70,7 @@ stagePayload installed payload destination = do
  let installer = (proc payload ["/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/DIR="++destination])
        {close_fds=True,use_process_jobs=True}
  code <- bracketOnError (createProcess installer) (\(_,_,_,child) ->
-  abortJob child `catch` (throwIO . StagingNotJoined)) (\(_,_,_,child) -> waitForProcess child)
+  abortJob child `catch` (throwIO . StagingNotJoined)) (\(_,_,_,child) -> waitForJobExit child)
  unless (code == ExitSuccess) (fail "Update payload could not be staged")
  exists <- doesFileExist (destination </> "Sapiens4.exe")
  unless exists (fail "Update payload is incomplete")
@@ -127,3 +127,14 @@ withJob child action = withProcessHandle child $ \state -> case state of
  OpenExtHandle _ job -> action job
  ClosedHandle _ -> fail "Windows process job is already closed"
  OpenHandle _ -> fail "Windows process has no owned job"
+
+waitForJobExit :: ProcessHandle -> IO ExitCode
+waitForJobExit child = do
+ let awaitEmpty = do
+      empty <- withProcessHandle child $ \state -> case state of
+       OpenExtHandle _ job -> jobEmpty job
+       ClosedHandle _ -> pure True
+       OpenHandle _ -> fail "Windows process has no owned job"
+      unless empty (threadDelay 10000 >> awaitEmpty)
+ awaitEmpty
+ waitForProcess child

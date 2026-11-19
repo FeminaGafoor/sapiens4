@@ -267,11 +267,16 @@ candidateJob job commit = if commit then zeroed #{size JOBOBJECT_EXTENDED_LIMIT_
  else do
   check "Terminate candidate" (terminateJob job 1)
   deadline <- (+30000000000) <$> getMonotonicTimeNSec
-  let join = allocaBytes #{size JOBOBJECT_BASIC_ACCOUNTING_INFORMATION} $ \p -> do
-       check "Join candidate" (queryJob job #{const JobObjectBasicAccountingInformation} p #{size JOBOBJECT_BASIC_ACCOUNTING_INFORMATION} nullPtr)
-       active <- #{peek JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, ActiveProcesses} p :: IO Word32
-       when (active/=0) $ do
+  let join = do
+       empty <- jobEmpty job
+       unless empty $ do
         now <- getMonotonicTimeNSec
         when (now>=deadline) (fail "Candidate process tree did not exit")
         threadDelay 10000 >> join
   join
+
+jobEmpty :: Handle -> IO Bool
+jobEmpty job = allocaBytes #{size JOBOBJECT_BASIC_ACCOUNTING_INFORMATION} $ \p -> do
+ check "Read active Windows job processes" (queryJob job #{const JobObjectBasicAccountingInformation} p #{size JOBOBJECT_BASIC_ACCOUNTING_INFORMATION} nullPtr)
+ active <- #{peek JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, ActiveProcesses} p :: IO Word32
+ pure (active == 0)
