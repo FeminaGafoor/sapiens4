@@ -624,7 +624,7 @@ installServer application readyAddress guestScript directory = do
 
 recoverStartup :: Application -> Text -> IO ()
 recoverStartup application message = do
-    Update.preparingUpdate >>= \candidate -> when candidate (putStrLn "update: failed" >> hFlush stdout)
+    Update.preparingUpdate >>= \candidate -> when candidate Update.reportCandidateFailure
     active <- atomicModifyIORef' (recovering application) (\old -> (True,old))
     closing <- readIORef (quitting application)
     unless (closing || active) $ do

@@ -1,6 +1,6 @@
 module Update
  ( UpdateBusy(..), UpdateHandoff(..), updateAndRestart, updateMode
- , candidateReady, preparingUpdate, tryUpdate, sendUpdateCommand
+ , candidateReady, reportCandidateFailure, preparingUpdate, tryUpdate, sendUpdateCommand
  , UpdateNotice(..), updateOffer, renderUpdateNotice
  ) where
 
@@ -44,16 +44,16 @@ candidateReady send = do
  when preparing $ do
   prepared <- send PrepareReady
   unless (prepared == Just Prepared) (fail "Candidate could not prepare the Workspace")
-  putStrLn "update: ready" >> hFlush stdout
+  reportMilestone CandidateReady
   command <- getLine
-  unless (command == "commit") (fail "Invalid Coordinator activation message")
+  unless (command == renderCoordinatorMessage Commit) (fail "Invalid Coordinator activation message")
   (root,version) <- installed
   state <- readUpdateState root
   unless (case state of Settled s -> current s == version; _ -> False) (fail "Candidate is not durably selected")
   active <- send Activate
   unless (active == Just Active) (fail "Candidate could not activate")
   unsetEnv "SAPIENS_UPDATE_ATTEMPT"
-  (putStrLn "update: active" >> hFlush stdout) `catch` \(_::IOException) -> pure ()
+  reportMilestone CandidateActive `catch` \(_::IOException) -> pure ()
 
 installed :: IO (FilePath,Version)
 installed = installation >>= maybe (fail "Updates require an installed Sapiens version") pure
@@ -140,13 +140,13 @@ updateAndRestart handoff directories = do
     (do
       restoreHandoff $ do
        showPreparing handoff
-       await 15 coordinator "update: coordinator"
+       await 15 coordinator CoordinatorListening
        (quiet >> savePreferences handoff) `onException` void (tryUpdate (commandHost handoff Resume))
        stopHost handoff
       candidateOwnership coordinator True)
      `onException` candidateOwnership coordinator False
     writeIORef handoffStarted True
-    sendCandidate coordinator "handoff")
+    sendCandidate coordinator (renderCoordinatorMessage Handoff))
    `onException` discardStaged
  where
  requireIdle action message = commandHost handoff action >>= \reply -> case reply of
@@ -230,15 +230,42 @@ parseReleaseVersion input =
   | T.all (\c -> c >= '0' && c <= '9') field = readMaybe (T.unpack field)
   | otherwise = Nothing
 
+data CoordinatorIntent
+ = RecoverOrLaunch
+ | StartStaged { stagedVersion :: Version, stagedRoots :: UpdateRoots }
+
+data CoordinatorMessage = Handoff | Commit
+
+renderCoordinatorMessage :: CoordinatorMessage -> String
+renderCoordinatorMessage Handoff = "handoff"
+renderCoordinatorMessage Commit = "commit"
+
+data Milestone = CoordinatorListening | CandidateReady | CandidateActive
+
+renderMilestone :: Milestone -> String
+renderMilestone CoordinatorListening = "update: coordinator"
+renderMilestone CandidateReady = "update: ready"
+renderMilestone CandidateActive = "update: active"
+
+reportMilestone :: Milestone -> IO ()
+reportMilestone milestone = putStrLn (renderMilestone milestone) >> hFlush stdout
+
+candidateFailureLine :: String
+candidateFailureLine = "update: failed"
+
+reportCandidateFailure :: IO ()
+reportCandidateFailure = putStrLn candidateFailureLine >> hFlush stdout
+
 updateMode :: [String] -> IO Bool
 updateMode args = case args of
  ["--update-coordinate",name,dataDirectory,configDirectory] -> do
   version <- either fail pure (parseVersion name)
-  putStrLn "update: coordinator" >> hFlush stdout
+  reportMilestone CoordinatorListening
   command <- getLine `catch` \(_::IOException) -> pure ""
-  when (command == "handoff") $ report (coordinate (Just (version,dataDirectory,configDirectory)))
+  let intent = StartStaged {stagedVersion=version, stagedRoots=UpdateRoots {dataRoot=dataDirectory, configRoot=configDirectory}}
+  when (command == renderCoordinatorMessage Handoff) $ report (coordinate intent)
   pure True
- ["--update-recover"] -> report (coordinate Nothing) >> pure True
+ ["--update-recover"] -> report (coordinate RecoverOrLaunch) >> pure True
  _ -> pure False
  where
  report action = tryUpdate action >>= either (\problem -> showUpdateError (displayException problem) >> exitFailure) pure
@@ -254,19 +281,19 @@ discard :: [FilePath] -> IO ()
 discard paths = forM_ paths $ \path ->
  (pathPresent path >>= flip when (removePathForcibly path)) `catch` \(_::IOException) -> pure ()
 
-coordinate :: Maybe (Version,FilePath,FilePath) -> IO ()
-coordinate requested = do
+coordinate :: CoordinatorIntent -> IO ()
+coordinate intent = do
  (root,owner) <- installed
  dispatch <- withLease (leasePath root) True $ \lease -> do
   state <- readUpdateState root
-  case (state,requested) of
+  case (state,intent) of
    (Pending pending,_) -> do
     unless (owner == current (original pending)) (fail "Recovery must run through retained original version")
     restoreSnapshot root pending (writeUpdateState root (Settled (original pending)))
     discard [versionPath root (target pending), backupPath root (attempt pending)]
     pure (Launch (current (original pending)))
-   (Settled selected,Nothing) -> pure (Launch (current selected))
-   (Settled selected,Just (next,dataDirectory,configDirectory)) -> do
+   (Settled selected,RecoverOrLaunch) -> pure (Launch (current selected))
+   (Settled selected,StartStaged {stagedVersion=next, stagedRoots=directories}) -> do
     unless (owner == current selected && newTarget selected next) (fail "Update selection changed")
     nonce <- freshAttemptId
     let backup = backupPath root nonce
@@ -276,8 +303,8 @@ coordinate requested = do
           Right (Settled unchanged) | unchanged == selected -> discard [versionPath root next,backup]
           _ -> pure ()
     result <- tryUpdate $ flip onException discardUnpublished $ do
-     originalData <- canonicalizePath dataDirectory
-     originalConfig <- canonicalizePath configDirectory
+     originalData <- canonicalizePath (dataRoot directories)
+     originalConfig <- canonicalizePath (configRoot directories)
      let originalRoots = UpdateRoots {dataRoot=originalData, configRoot=originalConfig}
      validateRoots root originalRoots
      claimConfigRoot originalConfig
@@ -304,38 +331,50 @@ coordinate requested = do
      Left problem -> do
       decision <- readUpdateState root
       hPutStrLn stderr ("Sapiens update: " ++ displayException problem) `catch` \(_::IOException) -> pure ()
-      case decision of
-       Settled selection | current selection == next ->
-        fail ("The update was committed, but activation failed. Quit Sapiens, then open it from the installed shortcut to start the selected version. " ++ displayException problem)
-       Settled selection -> pure (Launch (current selection))
-       Pending _ | Just (_::CandidateNotJoined) <- fromException problem -> throwIO problem
-       Pending _ -> pure Recover
+      either throwIO pure (afterCandidateFailure next problem decision)
  case dispatch of
   Running -> pure ()
   Launch version -> launchVersion root version []
-  Recover -> coordinate Nothing
+  Recover -> coordinate RecoverOrLaunch
+
+afterCandidateFailure :: Version -> SomeException -> UpdateState -> Either SomeException Dispatch
+afterCandidateFailure next problem state = case state of
+ Settled selection
+  | current selection == next -> Left (toException (userError committedError))
+  | otherwise -> Right (Launch (current selection))
+ Pending _ | Just (_::CandidateNotJoined) <- fromException problem -> Left problem
+ Pending _ -> Right Recover
+ where
+ committedError = "The update was committed, but activation failed. Quit Sapiens, then open it from the installed shortcut to start the selected version. " ++ displayException problem
+
+commitSelection :: PendingUpdate -> UpdateState -> Maybe Selection
+commitSelection expected observed = do
+ guard (observed == Pending expected)
+ let retained = Previous (current (original expected)) (attempt expected) (backupDigest expected)
+ pure (Selection (target expected) (Just retained))
 
 runCandidate :: FilePath -> PendingUpdate -> IO ()
 runCandidate root pending = withCandidate (versionExecutable root (target pending)) []
  [("SAPIENS_UPDATE_ATTEMPT",attemptName (attempt pending)),("SAPIENS_DATA_DIR",dataRoot (roots pending)),("SAPIENS_CONFIG_DIR",configRoot (roots pending))] $ \candidate -> do
   (do
-   await (60 * 60) candidate "update: ready"
+   await (60 * 60) candidate CandidateReady
    alive <- candidateAlive candidate
    unless alive (fail "Candidate exited before commit")
    state <- readUpdateState root
-   unless (state == Pending pending) (fail "Update decision changed before Ready")
+   selection <- maybe (fail "Update decision changed before Ready") pure (commitSelection pending state)
    mask_ $ do
-    writeUpdateState root (Settled (Selection (target pending) (Just (Previous (current (original pending)) (attempt pending) (backupDigest pending)))))
+    writeUpdateState root (Settled selection)
     candidateOwnership candidate True)
    `onException` (tryUpdate (candidateOwnership candidate False) >>= either (throwIO . CandidateNotJoined) pure)
-  sendCandidate candidate "commit"
-  await 60 candidate "update: active"
+  sendCandidate candidate (renderCoordinatorMessage Commit)
+  await 60 candidate CandidateActive
 
-await :: Int -> Candidate -> String -> IO ()
-await seconds candidate expected =
+await :: Int -> Candidate -> Milestone -> IO ()
+await seconds candidate milestone =
  timeout (seconds * 1000000) loop >>= maybe (fail ("Timed out waiting for " ++ expected)) pure
  where
+ expected = renderMilestone milestone
  loop = do
   message <- candidateMessage candidate
-  when (message == "update: failed") (fail ("Candidate failed before " ++ expected))
+  when (message == candidateFailureLine) (fail ("Candidate failed before " ++ expected))
   unless (message == expected) loop

@@ -227,7 +227,7 @@ desktopSession memory probe args host configRoot = do
             let guarded = readIORef closing >>= \closed -> unless closed action
             unless dead $ atomicModifyIORef' pending (\xs -> (guarded:xs, ())) >> void (postMessage hwnd 0x802A 0 0)
           failStart message = do
-            Update.preparingUpdate >>= \preparing -> when preparing (putStrLn "update: failed" >> hFlush stdout)
+            Update.preparingUpdate >>= \preparing -> when preparing Update.reportCandidateFailure
             modifyIORef' generation (+1)
             cleanup <- try (closeViews `finally` closeHost host)
             let detail = case cleanup of
@@ -241,12 +241,12 @@ desktopSession memory probe args host configRoot = do
           storageScript source = readIORef shellRef >>= mapM_ (\view -> execute memory view source (const $ pure ()))
           storageError :: String -> IO ()
           storageError message = do
-            Update.preparingUpdate >>= \preparing -> when preparing (putStrLn "update: failed" >> hFlush stdout)
+            Update.preparingUpdate >>= \preparing -> when preparing Update.reportCandidateFailure
             closeHost host
             writeIORef starting False
             storageScript ("window.storageError(" ++ T.unpack (TE.decodeUtf8 $ L.toStrict $ encode message) ++ ")")
           recoverStartup message = do
-            Update.preparingUpdate >>= \preparing -> when preparing (putStrLn "update: failed" >> hFlush stdout)
+            Update.preparingUpdate >>= \preparing -> when preparing Update.reportCandidateFailure
             modifyIORef' storageAttempt (+1)
             writeIORef (origin host) Nothing
             atomicModifyIORef' workerRef (\old -> (Nothing,old)) >>= mapM_ cancel

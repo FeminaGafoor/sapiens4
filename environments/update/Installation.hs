@@ -5,6 +5,7 @@ import Control.Monad
 import qualified Data.ByteString as Strict
 import qualified Data.ByteString.Lazy as B
 import Data.Aeson (ToJSON, encode)
+import Data.Maybe (isNothing)
 import qualified Data.UUID as UUID
 import qualified Data.UUID.V4 as UUID
 import System.Environment
@@ -31,7 +32,7 @@ withConfigAccess directory action = installation >>= \home -> case home of
   createDirectoryIfMissing True directory
   withLease (directory </> configWriterLockName) False $ \_ -> do
    owner <- configOwner directory
-   unless (null owner) (fail "This Config folder belongs to an installed Sapiens. Choose a separate Config folder.")
+   unless (isNothing owner) (fail "This Config folder belongs to an installed Sapiens. Choose a separate Config folder.")
    action
 
 claimConfigRoot :: FilePath -> IO ()
@@ -45,16 +46,16 @@ claim root directory = do
  createDirectoryIfMissing True directory
  validatePath directory
  let binding = directory </> configOwnerName
-     owns = maybe False (equalFilePath root)
+     owns = equalFilePath root
  void (pathPresent binding)
  owner <- configOwner directory
- unless (owns owner) $
+ unless (maybe False owns owner) $
   withIdleLease (directory </> configWriterLockName) (do
    void (pathPresent binding)
    currentOwner <- configOwner directory
    case currentOwner of
     Nothing -> publishJSON publishNew binding root
-    Just other | equalFilePath other root -> pure ()
+    Just other | owns other -> pure ()
     Just other -> do
      unless (isAbsolute other) (fail "Invalid Config ownership")
      validatePath (statePath other)
