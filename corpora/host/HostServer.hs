@@ -97,8 +97,8 @@ openLocal gate reporterRef browser startWorkers choice root requested managed = 
  let report phase = when (not managed && mode `elem` [Just "new",Just "existing"]) (putStrLn phase)
  report openingStorage
  bracketOnError (Service.openService gate reporterRef choice root) Service.closeService $ \service -> do
-  opened <- start service
-  report openedStorage
+  opened@(_,host) <- start service
+  report openedStorage `onException` stopLocal host
   pure opened
  where
  start service = do
