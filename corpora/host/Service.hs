@@ -1,7 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE CPP #-}
-module Service (Service, APIError(..), openService, openServiceWith, busyService, prepareService, prepareUpdatedService, startService, closeService, serviceRoot, attachEndpoint, dispatch, corporaIdentity) where
+module Service (Service, APIError(..), openService, busyService, prepareService, prepareUpdatedService, startService, closeService, serviceRoot, attachEndpoint, dispatch, corporaIdentity) where
 
 import Control.Concurrent
 import Admission
@@ -42,11 +42,8 @@ import qualified Groups as G
 import qualified GroupChat as GC
 import qualified GroupWork as GW
 
-openService :: StorageChoice -> FilePath -> IO Service
-openService choice path = newAdmission False >>= \gate -> openServiceWith gate choice path
-
-openServiceWith :: Admission -> StorageChoice -> FilePath -> IO Service
-openServiceWith gate choice path = do
+openService :: Admission -> IORef (Maybe Telemetry.Telemetry) -> StorageChoice -> FilePath -> IO Service
+openService gate telemetry choice path = do
  root <- selectedPath choice path
  repo <- lookupEnv "SAPIENS_REPOSITORY" >>= maybe getCurrentDirectory pure >>= canonicalizePath
  lock <- acquireStorage choice root
@@ -72,7 +69,6 @@ openServiceWith gate choice path = do
       revision <- newTVarIO 0
       subscribers <- newTVarIO 0
       files <- newIORef Set.empty
-      telemetry <- newIORef Nothing
       let s=Service gate root repo guard lock stopping worker runs lease endpoint pulse actors database states revision subscribers files telemetry corporaId
       DB.initialize s
       migrateWorkspaces s

@@ -119,10 +119,12 @@ hostMain root args = do
  void (asset root "/")
  void (asset root "/workspace/app.js")
 #if defined(mingw32_HOST_OS) || defined(darwin_HOST_OS)
- checkCandidateData directory
+ preparing <- checkCandidateData directory
  claimConfigRoot =<< configDirectory
+#else
+ let preparing = False
 #endif
- bracket (startHost consent directory port False) hostStop $ \host -> do
+ bracket (startHost consent directory port preparing) hostStop $ \host -> do
   let url="http://127.0.0.1:"<>show (hostPort host)<>"/workspace/"
   putStrLn ("Sapiens4: "<>url<>"\nUI database: "<>directory</>"corpora.sqlite3")
   finished <- newEmptyMVar

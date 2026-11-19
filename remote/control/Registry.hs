@@ -30,11 +30,19 @@ import System.Directory
 import System.FilePath
 import System.Info
 
+data LocalHost = LocalHost { localRegistry :: Registry, startLocal :: IO (), stopLocal :: IO () }
+
+openedHosts :: LocalHost -> IO [LocalHost]
+openedHosts host = do
+ children <- readIORef (registryLocals (localRegistry host))
+ descendants <- mapM openedHosts (M.elems children)
+ pure (host : concat descendants)
+
 data Registry = Registry
  { registryService :: Service, registryBridge :: Bridge
- , registryOpenChild :: StorageChoice -> FilePath -> IO (Service, Bridge, IO ())
+ , registryOpenChild :: StorageChoice -> FilePath -> IO LocalHost
  , registryGuard :: MVar (), registrySaved :: IORef Value
- , registryLocals :: IORef (M.Map Text (Service, Bridge, IO ()))
+ , registryLocals :: IORef (M.Map Text LocalHost)
  , registryClients :: IORef (M.Map Text Client)
  , registryPending :: IORef (M.Map Text Pairing)
  , registryPairClients :: IORef (M.Map Text Client)
@@ -51,20 +59,20 @@ registryLock registry = withMVar (registryGuard registry) . const
 saveRegistry :: Registry -> IO ()
 saveRegistry registry = readIORef (registrySaved registry) >>= writeJSON (registryPath registry)
 
-newRegistry :: Service -> Bridge -> (StorageChoice -> FilePath -> IO (Service, Bridge, IO ())) -> IO Registry
+newRegistry :: Service -> Bridge -> (StorageChoice -> FilePath -> IO LocalHost) -> IO Registry
 newRegistry service bridge openChild = do
  saved <- readJSON (serviceRoot service </> "host-corpora.json") (obj [("locals",arr []),("remotes",empty)])
- identity <- Service.corporaIdentity service
- registry <- Registry service bridge openChild <$> newMVar () <*> newIORef saved
-   <*> newIORef (M.singleton (at identity "id") (service,bridge,pure ())) <*> newIORef M.empty
+ void (Service.corporaIdentity service)
+ Registry service bridge openChild <$> newMVar () <*> newIORef saved
+   <*> newIORef M.empty <*> newIORef M.empty
    <*> newIORef M.empty <*> newIORef M.empty <*> newIORef False <*> newMVar Nothing
- pure registry
 
-local :: Registry -> Text -> IO (Service, Bridge, IO ())
+local :: Registry -> Text -> IO Registry
+local registry identity | identity == serviceCorporaId (registryService registry) = pure registry
 local registry identity = do
  opened <- readIORef (registryLocals registry)
  case M.lookup identity opened of
-  Just value -> pure value
+  Just value -> pure (localRegistry value)
   Nothing -> do
    saved <- readIORef (registrySaved registry)
    require (str identity `elem` items saved "locals") 404 "Unknown corpora"
@@ -72,21 +80,22 @@ local registry identity = do
    folder <- childPath parent identity
    exists <- doesFileExist (folder </> "corpora-identity.json")
    require exists 409 "Corpora files are unavailable. Restore them before opening."
-   bracketOnError (registryOpenChild registry (AttachChild parent identity) folder) (\(_,_,stop) -> stop) $ \child@(_,bridge,_) -> do
+   bracketOnError (registryOpenChild registry (AttachChild parent identity) folder) stopLocal $ \child -> do
+    let bridge = registryBridge (localRegistry child)
     ownRelay <- savedRelay bridge
     mainRelay <- savedRelay (registryBridge registry)
     when (ownRelay == empty && mainRelay /= empty) $ writeJSON (relayPath bridge) mainRelay
     modifyIORef' (registryLocals registry) (M.insert identity child)
-    pure child
+    pure (localRegistry child)
 
 registryRecords :: Registry -> IO Value
 registryRecords registry = registryLock registry $ do
  saved <- readIORef (registrySaved registry)
  mainIdentity <- Service.corporaIdentity (registryService registry)
  localRecords <- if not localAvailable then pure [] else forM (get mainIdentity "id" : items saved "locals") $ \identity -> do
-  (service, bridge, _) <- local registry (text identity)
-  metadata <- Service.corporaIdentity service
-  status <- bridgeStatus bridge
+  selected <- local registry (text identity)
+  metadata <- Service.corporaIdentity (registryService selected)
+  status <- bridgeStatus (registryBridge selected)
   pure $ merge metadata $ obj [("location",str "Local"),("paired",get status "paired")]
  let remoteRecords = [put "location" (str "Remote") (get config "corpora") | (_,config) <- pairs (get saved "remotes")]
  pure $ obj [("local_available",Bool localAvailable),("corpora",arr (localRecords ++ remoteRecords))]
@@ -111,8 +120,8 @@ registryRoute registry identity method path input = do
    pure (RemoteTarget client)
   else do
    require localAvailable 404 "Local corpora are unavailable on this device"
-   (service,bridge,_) <- local registry identity
-   pure (LocalTarget service bridge)
+   selected <- local registry identity
+   pure (LocalTarget (registryService selected) (registryBridge selected))
  require ("/api/" `T.isPrefixOf` path && not ("/api/host" `T.isPrefixOf` path) && not (T.any (=='%') $ T.takeWhile (/='?') path) && not (".." `T.isInfixOf` path) && not (T.any (=='\\') path)) 400 "Invalid corpora API path"
  prepared <- forM input $ \value -> case (target,method,T.splitOn "/" (T.takeWhile (/='?') path)) of
   (LocalTarget _ _,"POST",["","api","agents",_,"messages"]) -> do
@@ -171,7 +180,10 @@ registryCreate registry input = do
  writeJSON (folder </> "corpora-identity.json") $ obj [("version",num 1),("corpora_id",str identity)]
  mainIdentity <- Service.corporaIdentity (registryService registry)
  writeJSON (folder </> "corpora-settings.json") $ obj [("name",str $ T.strip name),("scope",str $ T.strip $ text scope),("device",get mainIdentity "device"),("status",str "paused"),("revision",num 1),("operations",empty)]
- bracketOnError (registryOpenChild registry CreateCorpora folder) (\(_,_,close) -> close) $ \child@(service,bridge,_) -> do
+ bracketOnError (registryOpenChild registry CreateCorpora folder) stopLocal $ \child -> do
+  let selected = localRegistry child
+      service = registryService selected
+      bridge = registryBridge selected
   metadata <- Service.corporaIdentity service
   registryLock registry $ mask_ $ do
    ownRelay <- savedRelay bridge
@@ -236,7 +248,7 @@ beginPair registry input = do
         saved <- readIORef (registrySaved registry)
         opened <- readIORef (registryLocals registry)
         let corporaId = at corpora "id"
-        require (M.notMember corporaId opened && str corporaId `notElem` items saved "locals") 409 "This corpora is already available locally"
+        require (corporaId /= serviceCorporaId (registryService registry) && M.notMember corporaId opened && str corporaId `notElem` items saved "locals") 409 "This corpora is already available locally"
         configValue <- readMVar (clientConfig client)
         writeIORef (registrySaved registry) $ put "remotes" (put corporaId configValue $ get saved "remotes") saved
         saveRegistry registry
@@ -271,7 +283,7 @@ closeRegistry registry = do
  pending <- readIORef (registryPairClients registry)
  mapM_ revokeClient (M.elems clients ++ M.elems pending)
  opened <- readIORef (registryLocals registry)
- mapM_ (\(_,_,close) -> close) opened
+ mapM_ stopLocal opened
 
 resetSavedConnections :: FilePath -> [Value] -> Value -> IO ()
 resetSavedConnections root identities connection = do
@@ -431,7 +443,7 @@ resetConnections registry connection = do
  pending <- readIORef (registryPairClients registry)
  mapM_ revokeClient (M.elems clients ++ M.elems pending)
  opened <- readIORef (registryLocals registry)
- mapM_ (\(_,bridge,_) -> void $ revokeBridge bridge False) opened
+ forM_ (registry : map localRegistry (M.elems opened)) $ \r -> void (revokeBridge (registryBridge r) False)
  saved <- readIORef (registrySaved registry)
  let unopened=filter (`M.notMember` opened) (map text $ items saved "locals")
  withSavedCorporaLocks (serviceRoot $ registryService registry) unopened $

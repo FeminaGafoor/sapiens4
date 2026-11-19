@@ -15,7 +15,7 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC
 import qualified Data.ByteString.Lazy as L
 import qualified Update
-import Installation (checkCandidateData, claimConfigRoot, freshVersion)
+import Installation (claimConfigRoot, freshVersion)
 import UpdateState (versionName)
 import qualified UpdatePlatform
 import DataRoot
@@ -74,7 +74,6 @@ startServer :: Application -> StorageChoice -> FilePath -> FilePath -> IO (Serve
 startServer application choice runtime destination = do
     telemetryArguments <- startupTelemetryArguments
     configRoot <- configDirectory
-    checkCandidateData destination
     let binary = runtime </> ".build/bin/sapiens4"
     present <- doesFileExist binary
     unless present $ ioError (userError "The application is incomplete. Extract the complete Sapiens4 package.")
@@ -173,22 +172,23 @@ stopServer server = mask_ $ do
         pure sent
     confirmed <- timeout 5000000 $ do
         signal (killServerGroup process)
-        let sweep = do
+        let sweep clean = do
                 owned <- serverProcesses server
-                unless (null owned) $ do
+                if null owned then pure clean else do
                     withServerHandle process $ \state -> case state of
                         OpenHandle root | root==serverSession server -> forM_ owned $ \pid -> do
                             session <- processSession pid
                             when (session==root) (signal (signalProcess sigKILL pid))
                         _ -> pure ()
                     threadDelay 50000
-                    sweep
-        sweep
-        waitForProcess process
+                    sweep False
+        cleanSession <- sweep True
+        code <- waitForProcess process
+        pure (cleanSession && code == ExitSuccess)
     when (isNothing confirmed) (ioError (userError "The application server session could not be stopped."))
     (cancel (serverErrors server) `finally` mapM_ cancel (serverDrain server))
         `finally` mapM_ close [input,serverOutput server]
-    pure (graceful == Just True && confirmed == Just ExitSuccess)
+    pure (graceful == Just True && confirmed == Just True)
     where
         process=serverHandle server
         input=serverInput server

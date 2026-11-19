@@ -49,7 +49,7 @@ claimConfigRoot directory = do
      unless (currentOwner == owner) (fail "Config ownership changed during startup. Relaunch Sapiens.")
      publishJSON publish binding root
 
-checkCandidateData :: FilePath -> IO ()
+checkCandidateData :: FilePath -> IO Bool
 checkCandidateData directory = do
  preparing <- preparingUpdate
  when preparing $ do
@@ -58,6 +58,7 @@ checkCandidateData directory = do
   state <- readUpdateState root
   unless (case state of Pending pending -> equalFilePath path (dataRoot pending); Settled _ -> False) $
    fail "Candidate Data Root differs from the reserved directory."
+ pure preparing
 
 publishJSON :: ToJSON a => (FilePath -> FilePath -> Strict.ByteString -> IO ()) -> FilePath -> a -> IO ()
 publishJSON publishFile path value = do
