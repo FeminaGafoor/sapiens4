@@ -61,14 +61,13 @@ startHostWith consent choice root port managed = do
  preparing <- maybe False (const True) <$> lookupEnv "SAPIENS_UPDATE_ATTEMPT"
  gate <- newAdmission preparing
  activations <- newMVar []
- startHostUsing gate activations Nothing Nothing consent choice root port managed
+ startHostUsing preparing gate activations Nothing Nothing consent choice root port managed
 
-startHostUsing :: Admission -> MVar [(Service,IO (),IO Bool)] -> Maybe Telemetry.Telemetry -> Maybe BrowserCrypto -> Maybe Bool -> StorageChoice -> FilePath -> Int -> Bool -> IO Host
-startHostUsing gate activations inherited inheritedCrypto consent choice root requested managed = mask $ \restore -> do
+startHostUsing :: Bool -> Admission -> MVar [(Service,IO (),IO Bool)] -> Maybe Telemetry.Telemetry -> Maybe BrowserCrypto -> Maybe Bool -> StorageChoice -> FilePath -> Int -> Bool -> IO Host
+startHostUsing preparing gate activations inherited inheritedCrypto consent choice root requested managed = mask $ \restore -> do
  args <- getArgs
  desktopPid <- lookupEnv "SAPIENS_DESKTOP_PID"
  let desktop = "--desktop" `elem` args || desktopPid/=Nothing
- preparing <- not <$> admissionOpen gate
  reporter <- if managed then pure inherited else if preparing then pure Nothing else Just <$> Telemetry.openTelemetry (if desktop then Telemetry.Desktop else Telemetry.Headless) consent
  flip onException (unless managed (mapM_ Telemetry.closeTelemetry reporter)) $ restore $ do
   mode <- lookupEnv "SAPIENS_STORAGE_MODE"
@@ -85,8 +84,11 @@ startHostUsing gate activations inherited inheritedCrypto consent choice root re
    Service.attachEndpoint service ("http://127.0.0.1:"<>T.pack (show port))
    browser <- maybe newBrowserCrypto pure inheritedCrypto
    bridge <- newBridge browser service
+   activated <- newMVar False
    let child selection path = do
-        host <- startHostUsing gate activations reporter (Just browser) Nothing selection path 0 True
+        childPreparing <- if preparing then not <$> readMVar activated else pure False
+        childReporter <- readIORef (serviceTelemetry service)
+        host <- startHostUsing childPreparing gate activations childReporter (Just browser) Nothing selection path 0 True
         pure (hostService host,hostBridge host,hostStop host)
    registry <- Just <$> newRegistry service bridge child
    onboarding <- if managed then pure Nothing else Just <$> O.openOnboarding (repositoryRoot service)
@@ -97,7 +99,6 @@ startHostUsing gate activations inherited inheritedCrypto consent choice root re
    void (race (wait worker) (takeMVar ready))
    heartbeat <- newMVar Nothing
    transcriber <- newMVar (pure ())
-   activated <- newMVar False
    let activate = modifyMVar_ activated $ \done -> if done then pure True else do
         mapM_ startRegistry registry
         Service.startService service
@@ -153,7 +154,7 @@ startHostUsing gate activations inherited inheritedCrypto consent choice root re
         Socket.close socket
         modifyMVar_ activations (pure . filter (\(s,_,_) -> serviceRoot s /= root))
         pure True
-   (admissionOpen gate >>= \open -> if open then Service.prepareService service >> activate else mapM_ prepareRegistry registry) `onException` stop
+   (if preparing then mapM_ prepareRegistry registry else Service.prepareService service >> activate) `onException` stop
    modifyMVar_ activations (pure . ((service,activate,busy):))
    pure (Host port service bridge stop activateAll busyHosts (quiesce `onException` openAdmission gate) (openAdmission gate) prepareReady)
 localRequest :: Int -> Bool -> RequestHeaders -> Validation ()
