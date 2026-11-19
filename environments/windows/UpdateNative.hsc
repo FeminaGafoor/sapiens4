@@ -122,7 +122,6 @@ withIdleLease :: FilePath -> IO a -> IO a
 withIdleLease path = bracket (leaseWithMode path 2) releaseLease . const
 downgradeLease :: Lease -> IO ()
 downgradeLease (Lease h) = zeroed #{size OVERLAPPED} $ \range -> do
- -- Keep the shared range locked while releasing the exclusive lock.
  check "Shared lease" (lock h #{const LOCKFILE_FAIL_IMMEDIATELY} 0 1 0 range)
  check "Exclusive lease release" (unlock h 0 1 0 range)
 

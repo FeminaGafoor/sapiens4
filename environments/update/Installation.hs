@@ -27,8 +27,6 @@ writeUpdateState root = publishJSON publish (statePath root)
 reserveDataRoot :: FilePath -> FilePath -> Version -> IO ()
 reserveDataRoot directory root version = publishJSON publish (directory </> reservationName) (root,version)
 
--- Installed callers already hold their installation lease. It prevents transfer
--- after a claim and excludes this installation's writers during recovery.
 withConfigAccess :: FilePath -> IO a -> IO a
 withConfigAccess directory action = installation >>= \home -> case home of
  Just (root,_) -> claim root directory >> action

@@ -9,7 +9,6 @@ flag linux-desktop
   manual: True
 
 common runtime
-  -- Query native layouts without linking probes against application frameworks.
   hsc2hs-options: --cross-compile --via-asm
   default-language: Haskell2010
   default-extensions: OverloadedStrings, ScopedTypeVariables, TupleSections

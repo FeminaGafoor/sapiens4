@@ -48,7 +48,6 @@ runDesktop probe = withInstalledVersion $ runInBoundThread $
     host <- prepareHost args
     configRoot <- configDirectory
     withConfigAccess configRoot $
-      -- Release callbacks only after COM has released its references.
       bracket newArena freeArena $ \memory ->
         bracket_ (check =<< coInitialize nullPtr 2) coUninitialize (desktopSession memory probe args host configRoot))
   `catch` \(e :: SomeException) -> case fromException e :: Maybe SomeAsyncException of

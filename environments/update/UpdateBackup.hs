@@ -77,8 +77,6 @@ inventory root locks excluded = tree root locks excluded >>= mapM (\(path,direct
 
 snapshot :: FilePath -> FilePath -> FilePath -> IO String
 snapshot destination dataPath configPath = do
- -- The Coordinator holds the installation and Corpora writer locks here.
- -- Excluded browser profiles still need their parents in the verified inventory.
  unless (null profileExclusions) $ do
   roots <- managedRoots dataPath
   forM_ (configPath:roots) $ \root ->

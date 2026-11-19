@@ -141,7 +141,6 @@ publishWith replace path temporary bytes = mask $ \restore -> do
     void (checked temporary (control fd #{const F_FULLFSYNC} 0))
    withCString temporary $ \t -> withCString path $ \p ->
     void (checked path (if replace then rename t p else renameExclusive t p #{const RENAME_EXCL}))
-   -- A flush failure after rename is uncertain: recovery must reread the decision.
    flush (takeDirectory path) True) `onException` cleanup
 
 copyOwned :: FilePath -> FilePath -> IO ()
