@@ -51,6 +51,7 @@ common host
     Paths_sapiens_domain,
     DataRoot,
     UpdateState,
+    HostUpdateProtocol,
     Assets,
     BuildUI,
     Computer,
@@ -121,6 +122,7 @@ executable sapiens-macos
     Paths_sapiens_domain,
     DataRoot,
     UpdateState,
+    HostUpdateProtocol,
     DesktopStorage,
     Types,
     Application,
@@ -149,6 +151,7 @@ common windows-host
   other-modules:
     Installation,
     UpdateState,
+    HostUpdateProtocol,
     UpdatePlatform,
     UpdateNative,
     Admission,

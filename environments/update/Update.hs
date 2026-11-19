@@ -1,4 +1,8 @@
-module Update (UpdateBusy(..), updateAndRestart, updateMode, updateAvailable, candidateReady, preparingUpdate, tryUpdate, sendUpdateCommand) where
+module Update
+ ( UpdateBusy(..), UpdateHandoff(..), updateAndRestart, updateMode
+ , candidateReady, preparingUpdate, tryUpdate, sendUpdateCommand
+ , UpdateNotice(..), updateOffer, renderUpdateNotice
+ ) where
 
 import Control.Concurrent (Chan, MVar, readChan, withMVar)
 import Control.Concurrent.Async (Async, race, waitCatch)
@@ -27,26 +31,27 @@ import UpdateState
 import UpdatePlatform
 import UpdateBackup
 import Installation
+import HostUpdateProtocol
 
 tryUpdate :: IO a -> IO (Either SomeException a)
 tryUpdate = tryJust $ \problem -> case fromException problem :: Maybe SomeAsyncException of
  Just _ -> Nothing
  Nothing -> Just problem
 
-candidateReady :: (String -> IO String) -> IO ()
+candidateReady :: (HostCommand -> IO (Maybe HostReply)) -> IO ()
 candidateReady send = do
  preparing <- preparingUpdate
  when preparing $ do
-  prepared <- send "prepare-ready"
-  unless (prepared == "prepared") (fail "Candidate could not prepare the Workspace")
+  prepared <- send PrepareReady
+  unless (prepared == Just Prepared) (fail "Candidate could not prepare the Workspace")
   putStrLn "update: ready" >> hFlush stdout
   command <- getLine
   unless (command == "commit") (fail "Invalid Coordinator activation message")
   (root,version) <- installed
   state <- readUpdateState root
   unless (case state of Settled s -> current s == version; _ -> False) (fail "Candidate is not durably selected")
-  active <- send "activate"
-  unless (active == "active") (fail "Candidate could not activate")
+  active <- send Activate
+  unless (active == Just Active) (fail "Candidate could not activate")
   unsetEnv "SAPIENS_UPDATE_ATTEMPT"
   (putStrLn "update: active" >> hFlush stdout) `catch` \(_::IOException) -> pure ()
 
@@ -94,26 +99,35 @@ data UpdateBusy = UpdateBusy deriving Show
 instance Exception UpdateBusy where
  displayException _ = "Sapiens is busy. Finish accepted work before updating."
 
-sendUpdateCommand :: MVar () -> Handle -> Chan String -> Async () -> String -> IO String
+sendUpdateCommand :: MVar () -> Handle -> Chan String -> Async () -> HostCommand -> IO (Maybe HostReply)
 sendUpdateCommand commandLock input replies reader command = withMVar commandLock $ \_ -> do
  token <- show . hashUnique <$> newUnique
- hPutStrLn input (command ++ " " ++ token)
+ hPutStrLn input (renderHostCommand command ++ " " ++ token)
  hFlush input
  let awaitReply = do
       (received,reply) <- break (==' ') <$> readChan replies
       if received == token then pure (drop 1 reply) else awaitReply
      response = race (waitCatch reader) awaitReply
- outcome <- if command == "prepare-ready" then Just <$> response else timeout 15000000 response
+ outcome <- case command of
+  PrepareReady -> Just <$> response
+  _ -> timeout 15000000 response
  case outcome of
-  Just (Right reply) -> pure reply
+  Just (Right reply) -> pure (parseHostReply reply)
   Just (Left _) -> fail "Application server exited during update coordination"
   Nothing -> fail "Application server did not respond to update coordination"
 
-updateAndRestart :: IO () -> (String -> IO String) -> IO () -> IO () -> UpdateRoots -> IO ()
-updateAndRestart preparing command flushPreferences stop directories = do
+data UpdateHandoff = UpdateHandoff
+ { showPreparing :: IO ()
+ , commandHost :: HostCommand -> IO (Maybe HostReply)
+ , savePreferences :: IO ()
+ , stopHost :: IO ()
+ }
+
+updateAndRestart :: UpdateHandoff -> UpdateRoots -> IO ()
+updateAndRestart handoff directories = do
  (root,owner) <- installed
  validateRoots root directories
- requireIdle "check-busy" "Sapiens could not check for unfinished work. Update cancelled."
+ requireIdle CheckBusy "Sapiens could not check for unfinished work. Update cancelled."
  mask $ \unmask -> do
   next <- freshVersion
   handoffStarted <- newIORef False
@@ -122,22 +136,22 @@ updateAndRestart preparing command flushPreferences stop directories = do
   unmask (do
    requestUpdate root owner next
    withCandidate (versionExecutable root owner) ["--update-coordinate",versionName next,dataRoot directories,configRoot directories] [] $ \coordinator -> mask $ \restoreHandoff -> do
-    let quiet = requireIdle "quiesce" "Sapiens could not pause safely. Update cancelled."
+    let quiet = requireIdle Quiesce "Sapiens could not pause safely. Update cancelled."
     (do
       restoreHandoff $ do
-       preparing
+       showPreparing handoff
        await 15 coordinator "update: coordinator"
-       (quiet >> flushPreferences) `onException` void (tryUpdate (command "resume"))
-       stop
+       (quiet >> savePreferences handoff) `onException` void (tryUpdate (commandHost handoff Resume))
+       stopHost handoff
       candidateOwnership coordinator True)
      `onException` candidateOwnership coordinator False
     writeIORef handoffStarted True
     sendCandidate coordinator "handoff")
    `onException` discardStaged
  where
- requireIdle action message = command action >>= \reply -> case reply of
-  "quiet" -> pure ()
-  "busy" -> throwIO UpdateBusy
+ requireIdle action message = commandHost handoff action >>= \reply -> case reply of
+  Just Quiet -> pure ()
+  Just Busy -> throwIO UpdateBusy
   _ -> fail message
 
 requestUpdate :: FilePath -> Version -> Version -> IO ()
@@ -161,11 +175,23 @@ verifyPayloadDigest expected path = withBinaryFile path ReadMode $ \file -> do
  digest <- sha256 <$> BL.hGetContents file
  unless (digest == expected) (fail "Update payload SHA-256 differs from the release")
 
-updateAvailable :: IO Bool
-updateAvailable = fmap isRight $ tryUpdate $ do
- (root,owner) <- installed
- manager <- newManager tlsManagerSettings
- discoverRelease manager root owner
+data UpdateNotice = OfferAvailable | OfferHidden | UpdatePreparing | UpdateBlocked | UpdateFailed
+
+renderUpdateNotice :: UpdateNotice -> T.Text
+renderUpdateNotice notice = case notice of
+ OfferAvailable -> "available"
+ OfferHidden -> "none"
+ UpdatePreparing -> "updating"
+ UpdateBlocked -> "busy"
+ UpdateFailed -> "error"
+
+updateOffer :: IO UpdateNotice
+updateOffer = do
+ result <- tryUpdate $ do
+  (root,owner) <- installed
+  manager <- newManager tlsManagerSettings
+  discoverRelease manager root owner
+ pure (if isRight result then OfferAvailable else OfferHidden)
 
 installedVersion :: FilePath -> Version -> IO ReleaseVersion
 installedVersion root version =

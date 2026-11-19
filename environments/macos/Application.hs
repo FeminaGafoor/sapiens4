@@ -15,6 +15,7 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC
 import qualified Data.ByteString.Lazy as L
 import qualified Update
+import HostUpdateProtocol (HostCommand, HostReply, hostStopLine)
 import UpdateState (UpdateRoots(..))
 import qualified Data.UUID as UUID
 import qualified Data.UUID.V4 as UUID
@@ -166,7 +167,7 @@ killServerGroup process = withServerHandle process $ \state -> case state of
 stopServer :: ServerProcess -> IO Bool
 stopServer server = mask_ $ do
     graceful <- timeout 10000000 $ do
-        sent <- (hPutStrLn input "stop" >> hFlush input >> pure True) `catch` (\(_ :: IOException) -> pure False)
+        sent <- (hPutStrLn input hostStopLine >> hFlush input >> pure True) `catch` (\(_ :: IOException) -> pure False)
         close input
         let await = serverExited process >>= \ended -> unless ended (threadDelay 50000 >> await)
         await
@@ -728,32 +729,32 @@ flushPreferences application = modifyMVarMasked_ (preferencesDirty application) 
         UpdatePlatform.publish path (path ++ "." ++ nonce) encoded
     pure False
 
-updateCommand :: Application -> String -> IO String
+updateCommand :: Application -> HostCommand -> IO (Maybe HostReply)
 updateCommand application command = do
     server <- readIORef (child application) >>= maybe (fail "Application server is not running") pure
     reader <- maybe (fail "Application output reader unavailable") pure (serverDrain server)
     Update.sendUpdateCommand (updateGuard server) (serverInput server) (updateReplies server) reader command
 
-reportUpdate :: Application -> Text -> IO ()
+reportUpdate :: Application -> Update.UpdateNotice -> IO ()
 reportUpdate application state = do
     view <- readIORef (browser application) >>= readIORef . shell
-    script view ("window.sapiensAppUpdate?.(" <> jsonText (String state) <> ")")
+    script view ("window.sapiensAppUpdate?.(" <> jsonText (String (Update.renderUpdateNotice state)) <> ")")
 
 handleUpdate :: Application -> Text -> IO ()
 handleUpdate application command = unless (fixture application) $ case command of
     "check" -> void $ async $ do
-        available <- Update.updateAvailable
-        post application $ reportUpdate application (if available then "available" else "none")
+        offer <- Update.updateOffer
+        post application $ reportUpdate application offer
     "start" -> beginUpdate application
     _ -> pure ()
 
 beginUpdate :: Application -> IO ()
 beginUpdate application = do
     busy <- atomicModifyIORef' (starting application) (\value -> (True,value))
-    if busy then reportUpdate application "busy" else do
+    if busy then reportUpdate application Update.UpdateBlocked else do
         saved <- Update.tryUpdate (saveWindowFrame application)
         case saved of
-            Left _ -> writeIORef (starting application) False >> reportUpdate application "error"
+            Left _ -> writeIORef (starting application) False >> reportUpdate application Update.UpdateFailed
             Right () -> void $ async $ do
                 result <- Update.tryUpdate $ do
                     server <- readIORef (child application) >>= maybe (fail "Open a Workspace before updating") pure
@@ -762,13 +763,17 @@ beginUpdate application = do
                             writeIORef (address application) ""
                             graceful <- stopOwnedServer application
                             unless graceful (fail "The idle backend did not shut down cleanly; update cancelled")
-                    Update.updateAndRestart (post application $ reportUpdate application "updating") (updateCommand application)
-                        (flushPreferences application) stop UpdateRoots {dataRoot=serverDirectory server, configRoot=config}
+                    Update.updateAndRestart Update.UpdateHandoff
+                        { Update.showPreparing=post application $ reportUpdate application Update.UpdatePreparing
+                        , Update.commandHost=updateCommand application
+                        , Update.savePreferences=flushPreferences application
+                        , Update.stopHost=stop
+                        } UpdateRoots {dataRoot=serverDirectory server, configRoot=config}
                 post application $ case result of
                     Left problem -> do
                         writeIORef (starting application) False
                         connected <- not . T.null <$> readIORef (address application)
-                        if connected then reportUpdate application (case fromException problem of Just Update.UpdateBusy -> "busy"; Nothing -> "error")
+                        if connected then reportUpdate application (case fromException problem of Just Update.UpdateBusy -> Update.UpdateBlocked; Nothing -> Update.UpdateFailed)
                           else recoverStartup application (T.pack (displayException problem))
                     Right () -> do
                         terminate <- sel "terminate:"
