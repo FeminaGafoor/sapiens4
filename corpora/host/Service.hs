@@ -1,9 +1,10 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE CPP #-}
-module Service (Service, APIError(..), openService, startService, closeService, serviceRoot, attachEndpoint, dispatch, snapshot, corporaIdentity) where
+module Service (Service, APIError(..), openService, busyService, prepareService, prepareUpdatedService, startService, closeService, serviceRoot, attachEndpoint, dispatch, corporaIdentity) where
 
 import Control.Concurrent
+import Admission
 import Control.Concurrent.STM (newTVarIO, readTVarIO)
 import Control.Concurrent.Async
 import Control.Exception
@@ -30,7 +31,7 @@ import qualified Computer
 import qualified Store as DB
 import Population
 import Workspace
-import Voice (receivePiece, cancelRecording, retryTranscription, draftable)
+import Voice (receivePiece, cancelRecording, retryTranscription, draftable, busyVoice)
 import Memo
 import qualified Management as Mgt
 import qualified Provider as Provider
@@ -41,8 +42,8 @@ import qualified Groups as G
 import qualified GroupChat as GC
 import qualified GroupWork as GW
 
-openService :: StorageChoice -> FilePath -> IO Service
-openService choice path = do
+openService :: Admission -> IORef (Maybe Telemetry.Telemetry) -> StorageChoice -> FilePath -> IO Service
+openService gate telemetry choice path = do
  root <- selectedPath choice path
  repo <- lookupEnv "SAPIENS_REPOSITORY" >>= maybe getCurrentDirectory pure >>= canonicalizePath
  lock <- acquireStorage choice root
@@ -68,8 +69,8 @@ openService choice path = do
       revision <- newTVarIO 0
       subscribers <- newTVarIO 0
       files <- newIORef Set.empty
-      telemetry <- newIORef Nothing
-      let s=Service root repo guard lock stopping worker runs lease endpoint pulse actors database states revision subscribers files telemetry corporaId
+      voicePieces <- newIORef M.empty
+      let s=Service gate root repo guard lock stopping worker runs lease endpoint pulse actors database states revision subscribers files voicePieces telemetry corporaId
       DB.initialize s
       migrateWorkspaces s
       rows <- DB.agents s
@@ -93,9 +94,7 @@ openService choice path = do
       writeIORef pulse (obj [("id",str identityPulse),("running",Bool (corporaStatus cfg==Active)),("numbers",merge (obj [(k,num 0) | k<-["bpm120","bpm60","bph60"]]) (get savedPulse "numbers"))])
       R.initializeRoutines s
       D.reconcileWorks s
-      D.pendingWorks s
       GC.reconcileGroups s
-      GC.dispatchGroups s
       DB.record s [chief] "corpora" "system.started" empty "system" Nothing
       pure s
  initialize `onException` (withMVar database (mapM_ DB.closeConnection) `finally` unlockFile lock)
@@ -103,8 +102,32 @@ attachEndpoint :: Service -> Text -> IO ()
 attachEndpoint s url = locked s $ do
  writeIORef (serviceEndpoint s) url
  DB.agents s >>= mapM_ (Mgt.prepare s . (`at` "id"))
+prepareService :: Service -> IO ()
+prepareService s = locked s (prepareQueues s)
+
+prepareUpdatedService :: Service -> IO ()
+prepareUpdatedService s = locked s $ do
+ DB.agents s >>= mapM_ (DB.project s . (`at` "id"))
+ GC.reconcileGroups s
+ DB.values s DB.Groups >>= mapM_ (G.folder s . (`at` "id"))
+ prepareQueues s
+ void (snapshotUnlocked s >>= evaluate . BL.length . encode)
+
+prepareQueues :: Service -> IO ()
+prepareQueues s = D.pendingWorks s >> GC.projectQueuedGroups s
+
 startService :: Service -> IO ()
 startService = E.startExecution
+
+busyService :: Service -> IO Bool
+busyService s = locked s $ do
+ runs <- readMVar (serviceRuns s)
+ turns <- DB.turns s
+ works <- D.readWorks s
+ voices <- busyVoice s
+ groups <- GC.hasQueuedGroups s
+ pure (voices || groups || not (M.null runs) || any (\t -> at t "status" `elem` ["queued","running","output_pending"]) turns
+       || any (any ((`elem` [D.CallQueued,D.CallRunning]) . D.callState) . D.workCalls) works)
 closeService :: Service -> IO ()
 closeService s = do
  already <- atomicModifyIORef' (serviceStopping s) (\old -> (True,old))
@@ -118,8 +141,6 @@ closeService s = do
   (do chief <- DB.mainAgent s
       DB.record s [chief] "corpora" "system.stopped" empty "system" Nothing)
    `finally` (DB.closeDatabase s `finally` unlockFile (serviceFileLock s))
-snapshot :: Service -> IO Value
-snapshot s = locked s (snapshotUnlocked s)
 snapshotUnlocked :: Service -> IO Value
 snapshotUnlocked s = do
  revision <- readTVarIO (serviceRevision s)

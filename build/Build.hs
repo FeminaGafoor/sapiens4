@@ -18,8 +18,11 @@ main = do
      build = platformBuild </> "browser-crypto"
      suffix = if os=="mingw32" then ".exe" else ""
      desktop = os=="linux" && "--desktop" `elem` args
-     buildFlags = ["--flags=" ++ if desktop then "linux-desktop" else "-linux-desktop"]
-     targets = ["sapiens4","sapiens-domain"] ++ if os=="darwin" then ["sapiens-macos"] else if os=="mingw32" then ["sapiens-windows"] else ["sapiens-linux" | desktop]
+     buildFlags = ["--flags=" ++ (if desktop then "linux-desktop" else "-linux-desktop")]
+     targets = ["sapiens4","sapiens-domain"] ++ case os of
+      "darwin" -> ["sapiens-macos","sapiens-macos-starter"]
+      "mingw32" -> ["sapiens-windows","sapiens-starter"]
+      _ -> ["sapiens-linux" | desktop]
  setEnv "CABAL_DIR" cache
  createDirectoryIfMissing True cache
  index <- doesFileExist (cache </> "packages/hackage.haskell.org/01-index.tar")
@@ -35,7 +38,7 @@ main = do
  createDirectoryIfMissing True (root </> ".build/bin")
  createDirectoryIfMissing True (root </> ".build/domain")
  forM_ targets $ \name -> do
-  source <- trim <$> readProcess "cabal" (["--project-file="<>root</>"build/cabal.project","--builddir="<>build,"list-bin","exe:"<>name]++buildFlags) ""
+  source <- trim <$> readProcess "cabal" (["--project-dir="<>root</>"build","--project-file=cabal.project","--builddir="<>build,"list-bin","exe:"<>name]++buildFlags) ""
   let destination = root </> (if name=="sapiens-domain" then ".build/domain" else ".build/bin") </> name<>suffix
   copyFile source (destination<>".installing")
   renameFile (destination<>".installing") destination

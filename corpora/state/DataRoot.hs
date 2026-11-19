@@ -5,6 +5,7 @@ module DataRoot (module DataRoot, module RuntimePaths) where
 
 import Types (writeJSON, migrateAgentState, validateValue, pairs, get)
 import RuntimePaths
+import UpdateState (assertDataAvailable)
 import Control.Exception
 import Control.Monad
 import Data.Aeson hiding (pairs)
@@ -45,13 +46,13 @@ savedDataDirectory = do
  if not exists then pure Nothing else do
   value <- either (ioError . userError . ("Could not read saved storage: " ++)) pure . eitherDecode =<< L.readFile path
   case value of
-   Object fields | Just (Number 1) <- K.lookup "version" fields, Just (String folder) <- K.lookup "directory" fields, isAbsolute (T.unpack folder) -> pure (Just (T.unpack folder))
+   Object fields | Just (Number 1) <- K.lookup "version" fields, Just (String folder) <- K.lookup "directory" fields, isAbsolute (T.unpack folder) -> Just <$> externalStoragePath (T.unpack folder)
    _ -> ioError (userError "Saved storage settings are incompatible. Choose your data directory again.")
 
 startupDataDirectory :: Maybe FilePath -> IO (Maybe FilePath)
 startupDataDirectory (Just explicit) = do
  when (null explicit) $ storageError "Data directory must not be empty"
- makeAbsolute explicit >>= populatedDataDirectory
+ externalStoragePath explicit >>= populatedDataDirectory
 startupDataDirectory Nothing = do
  saved <- savedDataDirectory
  case saved of
@@ -71,8 +72,9 @@ storageChoiceForDirectory directory = do
 
 saveDataDirectory :: FilePath -> IO ()
 saveDataDirectory directory = do
+ root <- externalStoragePath directory
  path <- selectionPath
- writeJSON path (object ["version" .= (1::Int), "directory" .= directory])
+ writeJSON path (object ["version" .= (1::Int), "directory" .= root])
 
 withReadOnlyDatabase :: FilePath -> (Connection -> IO a) -> IO a
 withReadOnlyDatabase root action = do
@@ -151,6 +153,7 @@ acquireStorage choice root = do
  bracketOnError (storageLock root) unlockFile $ \lock -> do
   location <- selectedPath choice root
   unless (equalFilePath location root) $ storageError "The selected data directory changed during startup."
+  assertDataAvailable root
   validateDataRoot choice root
   names <- listDirectory root
   when (names==["host.lock"] && choice `elem` [StartNew,AttachExisting]) $

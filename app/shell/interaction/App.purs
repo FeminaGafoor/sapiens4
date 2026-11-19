@@ -7,6 +7,7 @@ import Sapiens.Platform as Platform
 import Control.Alt ((<|>))
 import Control.Parallel (parallel, sequential)
 import Control.Promise (toAffE)
+import Data.Argonaut.Core (Json, toString)
 import Data.Array as A
 import Data.Either (Either(..), either)
 import Data.Maybe (Maybe(..))
@@ -21,7 +22,7 @@ import Sapiens.Telemetry as Telemetry
 import Halogen as H
 import Halogen.Subscription as HS
 import Sapiens.BrowserFFI as B
-import Sapiens.Action (Action(..), Success(..))
+import Sapiens.Action (Action(..), AppUpdateNotice(..), Success(..))
 import Sapiens.Connections as C
 import Sapiens.CorporaEffects as Corpora
 import Sapiens.Data as D
@@ -45,6 +46,15 @@ component runtime = H.mkComponent
   , eval:H.mkEval $ H.defaultEval {handleAction=handle runtime,initialize=Just Initialize,finalize=Just Finalize}
   }
 
+decodeUpdateNotice :: Json -> Maybe AppUpdateNotice
+decodeUpdateNotice value = case toString value of
+  Just "available" -> Just OfferAvailable
+  Just "none" -> Just OfferHidden
+  Just "updating" -> Just Preparing
+  Just "busy" -> Just Blocked
+  Just "error" -> Just Failed
+  _ -> Nothing
+
 handle :: C.Runtime -> E.Dispatch
 handle runtime input = session input
   where
@@ -64,6 +74,12 @@ handle runtime input = session input
       H.modify_ _ {browserTelemetryEnabled=browserConsent == "true"}
       H.modify_ \m -> m {now=now,theme=if A.elem savedTheme ["dark","light"] then savedTheme else m.theme}
       m <- H.get
+      when (m.env.native && not (M.remote m)) do
+        void $ H.subscribe $ HS.makeEmitter \emit ->
+          B.callback "sapiensAppUpdate" (traverse_ (emit <<< AppUpdateStatus) <<< decodeUpdateNotice)
+        void $ H.fork $ forever do
+          liftEffect $ B.nativeMessage $ D.json {appUpdate:"check"}
+          H.liftAff $ delay $ Milliseconds 43200000.0
       let ios = N.ios m.env
           mobile = ios || D.matches "Android" (m.env.userAgent)
           required = M.remote m && mobile && not (m.env.installed)
@@ -208,6 +224,18 @@ handle runtime input = session input
     CloseMenu -> E.runUpdate runtime dispatch U.CloseMenu
     Scroll -> E.captureScroll *> E.persistLocal
     UserScroll -> H.modify_ _ {scrollPosition=Nothing,restoringScroll=false}
+    AppUpdateStatus notice -> H.modify_ \m -> case notice of
+      OfferAvailable | not (M.updateInProgress m.appUpdate) -> m {appUpdate=M.UpdateAvailable}
+      OfferHidden | not (M.updateInProgress m.appUpdate) -> m {appUpdate=M.UpdateHidden}
+      Preparing -> m {appUpdate=M.UpdatePreparing}
+      Blocked -> m {appUpdate=M.UpdateBusy}
+      Failed -> m {appUpdate=M.UpdateFailed}
+      _ -> m
+    StartAppUpdate -> do
+      m <- H.get
+      unless (M.updateInProgress m.appUpdate) do
+        H.modify_ _ {appUpdate=M.UpdateDownloading}
+        liftEffect $ B.nativeMessage $ D.json {appUpdate:"start"}
     NativeReport report -> E.runUpdate runtime dispatch $ U.QueueNative report
     DrainNative -> E.runUpdate runtime dispatch U.DrainNative
     Browser command -> do

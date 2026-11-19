@@ -18,8 +18,6 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.ByteString as B
 
-foreign import ccall safe "WaitForSingleObject" waitProcessHandle :: Ptr () -> Word32 -> IO Word32
-
 type Object = Ptr ()
 type Window = Ptr ()
 type Wide = Ptr Word16

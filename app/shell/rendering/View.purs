@@ -43,6 +43,7 @@ header m = V.node "header" [V.cls "app-header"] $
   ,V.control [V.id "app-menu",V.cls "icon-button menu-button",V.label "Menu",V.attr "title" "Menu"] "☰" (OpenDialog M.AppMenu F.NoRecord)
   ,V.node "nav" [V.cls "pane-controls",V.label "Panel visibility"] $ map paneButton [Tuple N.Sidebar "chat list",Tuple N.ChatPane "chat",Tuple N.Workspace "workspace"]
   ,V.control [V.cls "theme-toggle",V.label $ "Switch to " <> (if m.theme == "dark" then "light" else "dark") <> " theme"] (if m.theme == "dark" then "☀" else "☾") (Theme)
+  ,appUpdateButton m.appUpdate
   ,V.node "button" [V.id "corpora-picker",V.cls "connection-button",V.attr "aria-controls" "corpora-menu",V.attr "aria-expanded" $ show $ m.menu == Just "corpora",V.click $ Menu "corpora"] [V.span [V.id "corpora-location"] (D.fallback (if M.remote m then "Remote" else "Local") $ X.locationName (M.activeRecord m).location),V.chevron false]
   ,V.node "button" [V.id "connection-status",V.cls "connection-status connection-button",V.attr "aria-controls" "corpora-status-menu",V.attr "aria-expanded" $ show $ m.menu == Just "status",V.attr "aria-live" "polite",V.attr "data-online" $ show $ (M.online m) && not (M.busy m) && (M.activeRecord m).status == X.Active,V.disabled $ m.active == "" || not (M.online m) || (M.busy m),V.click $ Menu "status"] [V.node "span" [V.cls "connection-dot",V.attr "aria-hidden" "true"] [],V.span [V.id "connection-label"] (status m),V.chevron false]]
   <> [corporaMenu m,statusMenu m]
@@ -55,6 +56,22 @@ header m = V.node "header" [V.cls "app-header"] $
       N.Sidebar -> "☷"
       N.ChatPane -> "▤"
       N.Workspace -> "▣") (TogglePane pane)
+
+appUpdateButton :: M.AppUpdate -> V.Html
+appUpdateButton M.UpdateHidden = V.empty
+appUpdateButton state = V.div "app-update"
+  [ V.control [V.id "app-update",V.disabled (M.updateInProgress state),V.attr "aria-live" "polite"] label StartAppUpdate
+  , V.when (notice /= "") $ V.textNode "p" [V.cls "app-update-notice",V.attr "role" "status"] notice
+  ]
+  where
+  label = case state of
+    M.UpdateDownloading -> "Downloading"
+    M.UpdatePreparing -> "Updating"
+    _ -> "Update"
+  notice = case state of
+    M.UpdateBusy -> "Finish current work, then try again."
+    M.UpdateFailed -> "Couldn’t update. Check your connection and try again."
+    _ -> ""
 
 corporaMenu :: M.Model -> V.Html
 corporaMenu m = V.node "section" [V.id "corpora-menu",V.cls "corpora-popover",V.label "Corpora",V.hidden $ m.menu /= Just "corpora",V.attr "data-has-local" $ show local]

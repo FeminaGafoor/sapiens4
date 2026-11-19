@@ -2,8 +2,12 @@
 module Main where
 
 import Types
+#if defined(mingw32_HOST_OS) || defined(darwin_HOST_OS)
+import Installation (checkCandidateData, withConfigAccess, withInstalledVersion)
+#endif
 import DataRoot
 import HostServer
+import qualified HostUpdateProtocol as Update
 import qualified Telemetry
 import Assets
 import BuildUI
@@ -17,6 +21,7 @@ import Control.Monad
 import Data.Aeson hiding (pairs)
 import qualified Data.ByteString.Lazy.Char8 as BL
 import qualified Data.String
+import Data.IORef (readIORef)
 import Data.Maybe
 import GHC.IO.Encoding (setLocaleEncoding)
 import qualified Data.Text as T
@@ -29,6 +34,7 @@ import System.FilePath
 import System.Info
 import System.IO
 import System.Process
+import System.Timeout (timeout)
 #ifndef mingw32_HOST_OS
 import System.Posix.Signals
 #else
@@ -36,8 +42,13 @@ import qualified GHC.ConsoleHandler as Console
 #endif
 
 main :: IO ()
-main = run `catches` [Handler (\(code::ExitCode) -> throwIO code), Handler report]
+main = launch `catches` [Handler (\(code::ExitCode) -> throwIO code), Handler report]
  where
+ launch = do
+  args <- getArgs
+  case args of
+   "mcp":_ -> withInstalledVersion (pure ()) >> run args
+   _ -> withInstalledVersion (run args)
  report (e::SomeException) = do
   let detail = case fromException e of Just (APIError _ message) -> T.unpack message; Nothing -> storageMessage e
   desktop <- elem "--desktop" <$> getArgs
@@ -45,12 +56,16 @@ main = run `catches` [Handler (\(code::ExitCode) -> throwIO code), Handler repor
   when (desktop && isJust mode) $ putStr startupErrorPrefix >> BL.putStrLn (encode detail)
   hPutStrLn stderr detail
   exitFailure
-run :: IO ()
-run = do
+#if !defined(mingw32_HOST_OS) && !defined(darwin_HOST_OS)
+withInstalledVersion :: IO a -> IO a
+withInstalledVersion = id
+#endif
+
+run :: [String] -> IO ()
+run args = do
  setLocaleEncoding utf8
  mapM_ (`hSetEncoding` utf8) [stdin,stdout,stderr]
  hSetBuffering stdout LineBuffering
- args <- getArgs
  root <- repository
  setEnv "SAPIENS_REPOSITORY" root
  case args of
@@ -64,7 +79,7 @@ run = do
   "control":_ -> jsonCommand (failure 400 "Usage: sapiens4 control CONFIG JSON")
   "computer":rest -> jsonCommand (computerMain root rest)
   "relay":rest -> relayMain root (normalized rest)
-  "mcp":rest -> mcpMain (option "--url" "http://127.0.0.1:4174" (normalized rest))
+  "mcp":rest -> mcpMain withInstalledVersion (option "--url" "http://127.0.0.1:4174" (normalized rest))
   _ -> hostMain root (normalized args)
 jsonCommand :: IO ExitCode -> IO ()
 jsonCommand action = do
@@ -94,7 +109,7 @@ hostMain root args = do
  consent <- traverse (either (failure 400 . T.pack) pure . eitherDecode . BL.pack) (optionValue Telemetry.startupConsentOption args)
  port <- validated (parseIntegerOption "--port" "4174" args)
  require (port>=0 && port<=65535) 400 "Port must be between 0 and 65535"
- directory <- case optionValue "--data-dir" args of
+ directory <- externalStoragePath =<< case optionValue "--data-dir" args of
   Just "" -> failure 400 "Data directory must not be empty"
   Just path -> makeAbsolute path
   Nothing -> do
@@ -104,13 +119,51 @@ hostMain root args = do
     else defaultDataDirectory
  void (asset root "/")
  void (asset root "/workspace/app.js")
- bracket (startHost consent directory port False) hostStop $ \host -> do
+#if defined(mingw32_HOST_OS) || defined(darwin_HOST_OS)
+ preparing <- checkCandidateData directory
+ config <- configDirectory
+ let ownConfig = withConfigAccess config
+#else
+ let preparing = False
+     ownConfig = id
+#endif
+ ownConfig $ bracket (startHost consent directory port preparing) hostStop $ \host -> do
   let url="http://127.0.0.1:"<>show (hostPort host)<>"/workspace/"
   putStrLn ("Sapiens4: "<>url<>"\nUI database: "<>directory</>"corpora.sqlite3")
   finished <- newEmptyMVar
   let shutdown=void (tryPutMVar finished ())
   installShutdown shutdown
-  when ("--desktop" `elem` args) (void (forkIO ((void getLine `catch` \(_::IOException)->pure ()) >> shutdown)))
+  when ("--desktop" `elem` args) $ void $ forkIO $ do
+   let commands = do
+        command <- getLine
+        let (verb,token) = break (==' ') command
+            reply message = putStrLn ("UPDATE:" ++ token ++ " " ++ Update.renderHostReply message)
+            synchronous problem = case fromException problem :: Maybe SomeAsyncException of
+             Just _ -> Nothing
+             Nothing -> Just problem
+            reportIdle action = do
+             result <- tryJust synchronous (timeout 5000000 action)
+             reply $ case result of
+              Right (Just True) -> Update.Quiet
+              Right (Just False) -> Update.Busy
+              _ -> Update.CommandError
+             commands
+            finishUpdate action response after = do
+             result <- tryJust synchronous action
+             case result of
+              Right () -> reply response >> after >> commands
+              Left _ -> reply Update.CommandError >> shutdown
+        case Update.parseHostCommand verb of
+         Just Update.CheckBusy -> reportIdle (not <$> hostBusy host)
+         Just Update.Quiesce -> reportIdle (hostQuiesce host)
+         Just Update.Resume -> hostResume host >> reply Update.Resumed >> commands
+         Just Update.PrepareReady -> finishUpdate (hostPrepareReady host) Update.Prepared (pure ())
+         Just Update.Activate -> finishUpdate (hostActivate host) Update.Active $ do
+          reporters <- readIORef (serviceTelemetry (hostService host))
+          void $ tryJust synchronous $ forM_ reporters $ \reporter -> Telemetry.emit reporter Telemetry.AppUpdated Nothing mempty
+         Nothing | verb == Update.hostStopLine -> shutdown
+                 | otherwise -> commands
+   commands `catch` \(_::IOException) -> shutdown
   when ("--open" `elem` args) (void (createProcess (proc (if os=="darwin" then "open" else if os=="mingw32" then "explorer" else "xdg-open") [url])))
   takeMVar finished
 

@@ -10,7 +10,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 if ($Version -notmatch '^\d+\.\d+\.\d+$') { throw 'Version must be MAJOR.MINOR.PATCH' }
-if ($PublicRelease -and ($CertificateThumbprint -notmatch '^[a-fA-F0-9]{40}$' -or $TimestampUrl -notmatch '^https?://[A-Za-z0-9./:_-]+$')) { throw 'Public release requires a valid signing certificate and timestamp URL' }
+if ($PublicRelease -and ($CertificateThumbprint -notmatch '^[a-fA-F0-9]{40}$' -or $TimestampUrl -notmatch '^https?://[A-Za-z0-9./:_-]+$')) { throw 'Public releases require a valid signing certificate thumbprint and timestamp URL' }
 $target = & ghc --print-target-platform
 if ($LASTEXITCODE -ne 0) { throw 'Cannot determine the GHC target' }
 $ghcRuntime = switch -Regex ($target) {
@@ -91,6 +91,8 @@ try {
     Copy-Item -LiteralPath (Join-Path $repo '.build/bin/sapiens-windows.exe') -Destination (Join-Path $package 'Sapiens4.exe')
     Copy-Item -LiteralPath (Join-Path $repo '.build/bin/WebView2Loader.dll'),(Join-Path $repo '.build/bin/WebView2-LICENSE.txt') -Destination $package
     [IO.File]::WriteAllText((Join-Path $package 'sapiens-installation.id'), 'com.sapiens4.desktop')
+    [IO.File]::WriteAllText((Join-Path $package 'sapiens-release.version'), $Version)
+    Copy-Item -LiteralPath (Join-Path $repo '.build/bin/sapiens-starter.exe') -Destination (Join-Path $package 'sapiens-starter.exe')
     Audit-Payload $package
     if ($PublicRelease) {
         Get-ChildItem -LiteralPath $package -Recurse -File | Where-Object { $_.Extension -in @('.exe','.dll') } | ForEach-Object {
@@ -101,17 +103,26 @@ try {
     }
     $product = Join-Path $staging 'product'
     New-Item -ItemType Directory -Path $product | Out-Null
-    $arguments = @('/DPackageName=Sapiens4','/DPackageId=com.sapiens4.desktop','/Qp',("/DSourceDir=$package"),("/DOutputDir=$product"),("/DAppVersion=$Version"),("/DFileVersion=$Version"),("/DPackageArchitecture=$installerArchitecture"),("/DArtifactBaseName="+[IO.Path]::GetFileNameWithoutExtension($artifactName)))
+    $arguments = @('/DPackageName=Sapiens4','/DPackageId=com.sapiens4.desktop','/Qp',("/DSourceDir=$package"),("/DOutputDir=$product"),("/DAppVersion=$Version"),("/DFileVersion=$Version"),("/DPackageArchitecture=$installerArchitecture"))
+    $arguments += '/DInitialVersion=' + [guid]::NewGuid().ToString()
     if ($PublicRelease) {
         $arguments += '/DPublisherSign'
         $arguments += ('/Ssapiens=signtool.exe sign /sha1 '+$CertificateThumbprint+' /fd SHA256 /tr '+$TimestampUrl+' /td SHA256 $f')
     }
-    & $compiler @arguments (Join-Path $repo 'build/package/windows-installer.iss')
-    if ($LASTEXITCODE -ne 0) { throw 'Inno Setup compilation failed' }
-    $installer = Join-Path $product $artifactName
-    if ($PublicRelease) { Verify-Signature $installer }
-    $checksum = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
-    [IO.File]::WriteAllText((Join-Path $product 'SHA256SUMS'), "$checksum  $artifactName`n")
+    $checksums = @()
+    foreach ($payloadOnly in @($false, $true)) {
+        $name = if ($payloadOnly) { "Sapiens-Payload-$Runtime.exe" } else { $artifactName }
+        $compileArguments = @($arguments)
+        $compileArguments += '/DArtifactBaseName=' + [IO.Path]::GetFileNameWithoutExtension($name)
+        if ($payloadOnly) { $compileArguments += '/DStagePayload' }
+        & $compiler @compileArguments (Join-Path $repo 'build/package/windows-installer.iss')
+        if ($LASTEXITCODE -ne 0) { throw "Inno Setup compilation failed: $name" }
+        $installer = Join-Path $product $name
+        if ($PublicRelease) { Verify-Signature $installer }
+        $checksum = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+        $checksums += "$checksum  $name"
+    }
+    [IO.File]::WriteAllText((Join-Path $product 'SHA256SUMS'), ($checksums -join "`n") + "`n")
     [IO.Directory]::Move($product, $output)
     Write-Host "Installer $(Join-Path $output $artifactName)"
 } finally {

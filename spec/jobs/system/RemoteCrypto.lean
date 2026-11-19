@@ -18,7 +18,7 @@ def requireAnOpenBrowserForRemoteCrypto : IO Unit := withRelay fun relay admin =
       IO.ofExcept <| requireThat "untrusted WebSocket acquired browser crypto" (denied.status == 403)
     let qr ← withCryptoWindow host (do
       let pairing ← host.api "POST" "/api/remote/pair" selected 201
-      IO.ofExcept <| pairing.getObjVal? "qr") true
+      IO.ofExcept <| pairing.getObjVal? "qr")
     discard <| untilSome "closed crypto window" do
       let state ← host.api "GET" "/api/host/crypto"
       return if state.getObjValD "connected" == toJson false then some () else none

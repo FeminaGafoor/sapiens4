@@ -16,14 +16,14 @@ import qualified Network.HTTP.Client as H
 import Network.HTTP.Types.Status (statusCode)
 import System.IO
 
-data Endpoint = Endpoint String H.Manager
+data Endpoint = Endpoint String H.Manager (IO Value -> IO Value)
 
 data Tool = Tool Text Text [(Text,Value)] (Endpoint -> Value -> IO Value)
 
-mcpMain :: String -> IO ()
-mcpMain url = do
+mcpMain :: (IO Value -> IO Value) -> String -> IO ()
+mcpMain withVersion url = do
  manager <- H.newManager H.defaultManagerSettings
- let endpoint = Endpoint url manager
+ let endpoint = Endpoint url manager withVersion
      loop = do
       done <- hIsEOF stdin
       unless done $ do
@@ -107,7 +107,7 @@ working :: Text -> Value -> Bool
 working owner turn = at turn "agent" == owner && case fromJSON (get turn "status") of Success status -> activeStatus status; _ -> False
 
 request :: Endpoint -> Text -> Text -> Maybe Value -> IO Value
-request (Endpoint url manager) method path body = do
+request (Endpoint url manager withVersion) method path body = withVersion $ do
  base <- H.parseRequest (url <> T.unpack path)
  response <- H.httpLbs base { H.method = TE.encodeUtf8 method, H.requestHeaders = maybe [] (const [("Content-Type","application/json"),("X-Sapiens-Local","1")]) body, H.requestBody = H.RequestBodyLBS (maybe "" encode body), H.responseTimeout = H.responseTimeoutMicro 30000000, H.redirectCount = 0 } manager
  let code = statusCode (H.responseStatus response)

@@ -3,6 +3,7 @@
 {-# OPTIONS_GHC -Werror=incomplete-patterns #-}
 module Execution where
 
+import Admission (withAdmission)
 import Control.Concurrent
 import Control.Concurrent.Async
 import Control.Exception
@@ -228,7 +229,7 @@ launch s a batch tick slot batching = do
    modifyMVar_ (serviceRuns s) (pure . M.delete i)
    D.pendingWorks s
    G.reconcileGroups s
-   G.dispatchGroups s
+   G.projectQueuedGroups s
    notifyChange s
 publish :: Service -> Text -> Pulse -> IO ()
 publish s a tick = forM_ [1,2] $ \slot -> do
@@ -276,7 +277,7 @@ onPulse s tick = do
  when (pulseFrequency tick==Bph60 || (pulseFrequency tick==Bpm60 && even (pulseNumber tick))) $ do
   D.pendingWorks s
   G.reconcileGroups s
-  G.dispatchGroups s
+  G.projectQueuedGroups s
   rows <- DB.agents s
   forM_ rows $ \row -> do
    let a=at row "id"
@@ -304,7 +305,7 @@ startExecution s = modifyMVar_ (serviceWorker s) $ \existing -> case existing of
   let step = do
        stopped <- readIORef (serviceStopping s)
        unless stopped $ do
-        locked s $ do
+        void $ withAdmission (serviceAdmission s) True $ locked s $ do
          config <- corporaSettings s
          pulse <- readIORef (servicePulse s)
          let active=corporaStatus config==Active

@@ -123,12 +123,21 @@ voiceBusy m = O.member m.selected m.outboxes || case m.voice of
   Just v -> v.owner == m.selected
   Nothing -> false
 
+data AppUpdate = UpdateHidden | UpdateAvailable | UpdateDownloading | UpdatePreparing | UpdateBusy | UpdateFailed
+
+updateInProgress :: AppUpdate -> Boolean
+updateInProgress = case _ of
+  UpdateDownloading -> true
+  UpdatePreparing -> true
+  _ -> false
+
 type Model = Record (InterfaceState (ContentState SessionState))
 
 type InterfaceState r =
   ( selected :: String, activity :: N.Activity, scope :: N.Scope, groupView :: Maybe String
   , panes :: Array N.Pane, search :: String, searchOpen :: Boolean, menu :: Maybe String
   , dialog :: Maybe Dialog, dialogStack :: Array Dialog, theme :: String
+  , appUpdate :: AppUpdate
   , toast :: String, feedback :: String, address :: String, addressOpen :: Boolean
   | r )
 
@@ -164,6 +173,7 @@ initial env =
   , epoch:0, sequence:0, now:0.0, env, panes:[N.ChatPane,N.Sidebar,N.Workspace], search:"", searchOpen:false, menu:Nothing, dialog:Nothing
   , records:[], active:"", connection:Offline, localAvailable:false, showArchived:false
   , telemetryEnabled:false,browserTelemetryEnabled:false,telemetryInterval:0.0,telemetryError:""
+  , appUpdate:UpdateHidden
   , toast:"", feedback:"", theme:if env.dark then "dark" else "light", installRequired:false
   , dialogStack:[], preview:NotAsked, address:"", addressOpen:false, scrollPosition:Nothing, restoringScroll:false, preferencesSaved:""
   }

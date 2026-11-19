@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-module Host (Host(..), prepareHost, startHost, closeHost, watchHost, desktopArgs) where
+module Host (Host(..), prepareHost, startHost, closeHost, watchHost, desktopArgs, updateCommand, stopQuietHost, HostStopUnconfirmed(..)) where
 
 import DesktopStorage (storageMode, awaitServerAddress, startupTelemetryArguments)
 import Control.Concurrent
@@ -11,18 +11,23 @@ import Data.Aeson
 import Data.Char (toUpper)
 import Data.IORef
 import Data.Maybe
-import DataRoot (configDirectory, defaultDataDirectory, StorageChoice(..), containedPath)
+import DataRoot (configDirectory, defaultDataDirectory, externalStoragePath, StorageChoice(..), containedPath)
 import Network.HTTP.Client
 import Network.URI
-import Native (processId, waitProcessHandle)
+import Native (processId)
 import System.Process.Internals (ProcessHandle__(..), withProcessHandle)
 import qualified Data.ByteString as BS
 import System.Directory
 import System.Environment
+import System.Exit (ExitCode(..))
 import System.FilePath
 import System.IO
 import System.Process
 import System.Timeout
+import qualified Update
+import UpdateNative (ProcessObservation(..), pollProcess)
+import UpdatePlatform (waitForJobExit)
+import HostUpdateProtocol (HostCommand, HostReply, hostStopLine)
 import qualified Data.Aeson.KeyMap as K
 
 data Host = Host
@@ -39,6 +44,8 @@ data ServerProcess = ServerProcess
   , processErrors :: Handle
   , outputReader :: Maybe (Async ())
   , exitWatcher :: Maybe (Async ())
+  , updateReply :: Chan String
+  , updateGuard :: MVar ()
   , errorReader :: Maybe (Async ())
   }
 
@@ -72,7 +79,7 @@ prepareHost args = do
   let paths = hostPaths args executable fallback dataEnv runtimeEnv
   when (null (dataPath paths)) $ fail "Data directory must not be empty"
   when (null (runtimePath paths)) $ fail "Runtime directory must not be empty"
-  directory <- makeAbsolute (dataPath paths)
+  directory <- externalStoragePath (dataPath paths)
   runtime <- makeAbsolute (runtimePath paths)
   Host directory runtime <$> newIORef Nothing <*> newIORef Nothing
 
@@ -97,7 +104,9 @@ launchHost :: Host -> CreateProcess -> IO String
 launchHost host command = mask $ \restore -> do
   closeHost host
   (Just input, Just output, Just errors, child) <- createProcess command
-  let owned = ServerProcess child input output errors Nothing Nothing Nothing
+  reply <- newChan
+  guard <- newMVar ()
+  let owned = ServerProcess child input output errors Nothing Nothing reply guard Nothing
   writeIORef (serverProcess host) (Just owned)
   (do
     mapM_ (\stream -> hSetEncoding stream utf8 >> hSetNewlineMode stream universalNewlineMode) [input, output, errors]
@@ -115,7 +124,7 @@ launchHost host command = mask $ \restore -> do
       putMVar readiness result
       case result of
         Left _ -> pure ()
-        Right _ -> (forever (void $ hGetLine output)) `catch` \(_ :: IOException) -> pure ()
+        Right _ -> (forever (hGetLine output >>= \line -> when (take 8 line == "UPDATE: ") (writeChan reply (drop 8 line)))) `catch` \(_ :: IOException) -> pure ()
     writeIORef (serverProcess host) (Just owned {outputReader=Just drain,errorReader=Just collect})
     restore (takeMVar readiness >>= either (\e -> do
       void (timeout 250000 (waitCatch collect))
@@ -145,10 +154,7 @@ watchHost host recover = mask_ $ do
         OpenHandle root -> signaled root
         ClosedHandle _ -> pure True
       -- Poll the borrowed root handle only while process keeps it open.
-      signaled root = waitProcessHandle root 0 >>= \result -> case result of
-        0 -> pure True
-        258 -> pure False
-        _ -> fail "Could not observe the application server process."
+      signaled root = (==ProcessExited) <$> pollProcess root
       awaitExit = do
         exited <- poll
         unless exited (threadDelay 250000 >> awaitExit)
@@ -159,35 +165,50 @@ watchHost host recover = mask_ $ do
       Right () -> "The application server stopped. Choose a folder to reopen your workspace."
   writeIORef (serverProcess host) (Just server {exitWatcher=Just observer})
 
-serverRunning :: Maybe ServerProcess -> IO Bool
-serverRunning = maybe (pure False) (fmap isNothing . getProcessExitCode . processHandle)
-
 closeHost :: Host -> IO ()
 closeHost host = mask_ $ do
   current <- atomicModifyIORef' (serverProcess host) $ \owned ->
     (fmap (\server -> server {exitWatcher=Nothing}) owned, owned)
-  let clear = writeIORef (serverProcess host) Nothing >> writeIORef (origin host) Nothing
-  case current of
-    Nothing -> clear
-    Just server -> stopServer server `finally` (do
-      alive <- serverRunning current
-      unless alive clear)
+  writeIORef (origin host) Nothing
+  mapM_ stopServer current
+  writeIORef (serverProcess host) Nothing
 
-stopServer :: ServerProcess -> IO ()
+stopServer :: ServerProcess -> IO Bool
 stopServer server = mask_ $ do
   mapM_ cancel (exitWatcher server)
-  stop
-  mapM_ cancel (catMaybes [outputReader server,errorReader server]) `finally` mapM_ closeStream streams
+  stop `finally`
+    (mapM_ cancel (catMaybes [outputReader server,errorReader server]) `finally` mapM_ closeStream streams)
   where
     streams = [processInput server, processOutput server, processErrors server]
     stop = do
       let input = processInput server
-      (hPutStrLn input "stop" >> hFlush input >> hClose input) `catch` \(_ :: IOException) -> pure ()
-      result <- timeout 10000000 (waitForProcess (processHandle server))
+      (hPutStrLn input hostStopLine >> hFlush input >> hClose input) `catch` \(_ :: IOException) -> pure ()
+      result <- timeout 10000000 (waitForJobExit (processHandle server))
       when (isNothing result) $ do
         terminateProcess (processHandle server)
-        confirmed <- timeout 5000000 (waitForProcess (processHandle server))
+        confirmed <- timeout 5000000 (waitForJobExit (processHandle server))
         when (isNothing confirmed) $ ioError $ userError "The application server could not be stopped"
+      pure (result == Just ExitSuccess)
 
 closeStream :: Handle -> IO ()
 closeStream stream = hClose stream `catch` \(_ :: IOException) -> pure ()
+
+updateCommand :: Host -> HostCommand -> IO (Maybe HostReply)
+updateCommand host command = do
+ server <- readIORef (serverProcess host) >>= maybe (fail "Application server unavailable") pure
+ reader <- maybe (fail "Application output reader unavailable") pure (outputReader server)
+ Update.sendUpdateCommand (updateGuard server) (processInput server) (updateReply server) reader command
+
+newtype HostStopUnconfirmed = HostStopUnconfirmed IOException deriving Show
+
+instance Exception HostStopUnconfirmed where
+ displayException (HostStopUnconfirmed problem) =
+  "The application server could not be confirmed stopped. Close Sapiens and reopen it from the installed shortcut before using the Workspace. " ++ displayException problem
+
+stopQuietHost :: Host -> IO ()
+stopQuietHost host = mask_ $ do
+ server <- readIORef (serverProcess host) >>= maybe (fail "Application server unavailable") pure
+ writeIORef (origin host) Nothing
+ graceful <- stopServer server `catch` (throwIO . HostStopUnconfirmed)
+ writeIORef (serverProcess host) Nothing
+ unless graceful (fail "The idle backend did not shut down cleanly. The update was cancelled.")

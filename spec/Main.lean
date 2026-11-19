@@ -17,39 +17,44 @@ open Lean Spec
 abbrev Job := String × IO Unit
 
 def headlessJobs : List Job := [
-  ("Preserve onboarding, preferences, storage and audio through browser bindings", SystemJobs.preserveBrowserApplicationBehavior),
-  ("Use shared browser crypto and require an open host window", SystemJobs.requireAnOpenBrowserForRemoteCrypto),
-  ("Resume queued remote work when the host browser reopens", Founder.resumeRemoteWorkWhenBrowserReopens),
-  ("Preserve model settings and reject invalid changes across restart", User.retainModelSettingsAcrossRestart),
-  ("Complete work through MCP and enforce pause and resume", User.completeWorkThroughMcp),
-  ("Process redelivered encrypted remote work once across restart", Founder.processRedeliveredRemoteWorkOnce),
-  ("Restore private notes and bookmarks without disclosing them", User.retainPrivateNotesAndBookmarks),
-  ("Complete one scheduled review on the real minute pulse", User.finishOneScheduledReview),
-  ("Delegate one review and preserve its owner and result", User.delegateOneAccountableReview),
-  ("Migrate interrupted work without replaying it or replacing the backup", SystemJobs.preserveInterruptedWorkDuringUpgrade),
-  ("Recover saved work after storage repair under a single host", SystemJobs.recoverSavedWorkAfterStorageRepair),
-  ("Release exclusive computer access when its owner is cancelled", SystemJobs.releaseExclusiveComputerAccessOnCancellation),
-  ("Review the failed assessment before explicitly retrying it", Founder.reviewFailedWorkBeforeRetry),
-  ("Resume a conversation with its reply and draft after restart", User.resumeConversationAfterRestart),
-  ("Keep scheduled work paused until its owner resumes it", User.keepScheduledWorkPausedUntilItsOwnerResumes),
-  ("Reject untrusted reads and writes without changing the roster", SystemJobs.rejectUntrustedRequestsWithoutDisclosingLocalState),
-  ("Enforce file and attachment ownership after restart", SystemJobs.keepFilePreviewsAndAttachmentsWithTheirOwner),
-  ("Retain authority over scope and lifecycle across retries", Founder.retainControlOverScopeAndSuspendedWork),
-  ("Keep local corpora and their drafts separate after restart", SystemJobs.keepLocalCorporaSeparateAcrossRestart),
-  ("Withdraw pairing consent before the other device approves", Founder.withdrawConsentBeforeTheOtherDeviceApproves),
-  ("Approve one remote device, reconnect, and revoke its access", Founder.approveOneDeviceThenRevokeItsMailbox),
-  ("Erase cancelled audio and refuse stale device retries", SystemJobs.eraseCancelledVoiceDraftsAcrossRestart)]
+  ("Persist valid model settings", User.retainModelSettingsAcrossRestart),
+  ("MCP work, pause and resume", User.completeWorkThroughMcp),
+  ("Restore private notes and bookmarks", User.retainPrivateNotesAndBookmarks),
+  ("Scheduled review timing", User.finishOneScheduledReview),
+  ("Delegated review ownership and results", User.delegateOneAccountableReview),
+  ("Migrate interrupted work; preserve backups", SystemJobs.preserveInterruptedWorkDuringUpgrade),
+  ("Exclusive storage repair and recovery", SystemJobs.recoverSavedWorkAfterStorageRepair),
+  ("Release cancelled computer access", SystemJobs.releaseExclusiveComputerAccessOnCancellation),
+  ("Review failures before retry", Founder.reviewFailedWorkBeforeRetry),
+  ("Restore replies and drafts", User.resumeConversationAfterRestart),
+  ("Owner control of paused schedules", User.keepScheduledWorkPausedUntilItsOwnerResumes),
+  ("Reject untrusted roster access", SystemJobs.rejectUntrustedRequestsWithoutDisclosingLocalState),
+  ("Retain attachment and file ownership", SystemJobs.keepFilePreviewsAndAttachmentsWithTheirOwner),
+  ("Scope and lifecycle authority across retries", Founder.retainControlOverScopeAndSuspendedWork),
+  ("Corpora and draft isolation across restart", SystemJobs.keepLocalCorporaSeparateAcrossRestart),
+  ("Cancelled audio cleanup and stale retries", SystemJobs.eraseCancelledVoiceDraftsAcrossRestart)]
+def browserJobs : List Job := [
+  ("Browser bindings, crypto and onboarding", SystemJobs.preserveBrowserApplicationBehavior),
+  ("Remote crypto requires an open browser", SystemJobs.requireAnOpenBrowserForRemoteCrypto),
+  ("Resume remote work after reopening", Founder.resumeRemoteWorkWhenBrowserReopens),
+  ("Deduplicate remote work across restart", Founder.processRedeliveredRemoteWorkOnce),
+  ("Consent withdrawal before pairing approval", Founder.withdrawConsentBeforeTheOtherDeviceApproves),
+  ("Remote device approval, reconnection and revocation", Founder.approveOneDeviceThenRevokeItsMailbox)]
 
 def desktopJobs : List Job := [
-  ("Send one desktop message and read the persisted reply", User.sendAndReadOneDesktopReply),
-  ("Pause and resume work from the desktop across relaunch", User.pauseAndResumeFromTheDesktop)]
+  ("Desktop messaging and reply persistence", User.sendAndReadOneDesktopReply),
+  ("Desktop pause and resume across relaunch", User.pauseAndResumeFromTheDesktop)]
 
 def main (args : List String) : IO UInt32 := do
+  let root ← repoRoot
+  let built ← IO.Process.output {cmd := "runghc", args := #["spec/BrowserBuild.hs"], cwd := root}
+  unless built.exitCode == 0 do throw <| IO.userError built.stderr
   let jobs ← match args with
-    | [] => pure (headlessJobs ++ desktopJobs)
+    | [] => pure (headlessJobs ++ browserJobs ++ desktopJobs)
     | ["headless"] => pure headlessJobs
+    | ["browser"] => pure browserJobs
     | ["desktop"] => pure desktopJobs
-    | _ => throw <| IO.userError "Usage: lake -d spec test [-- headless|desktop]"
+    | _ => throw <| IO.userError "Usage: lake -d spec test [-- headless|browser|desktop]"
   let mut failures := 0
   let mut examples : Array Json := #[]
   for (name, exercise) in jobs do

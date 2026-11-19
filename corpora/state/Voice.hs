@@ -6,9 +6,10 @@ module Voice
  ( Pcm, pcmBytes, pcmFromWav, wavFromPcm
  , Progress(..), Cut(..), PiecePlan(..), startProgress, planPiece
  , receivePiece, cancelRecording, retryTranscription, draftable
- , startTranscriber
+ , startTranscriber, busyVoice
  ) where
 
+import Admission (admissionOpen, withAdmission)
 import Control.Concurrent (threadDelay, MVar, newMVar, modifyMVar_, withMVar, swapMVar)
 import Control.Concurrent.Async (asyncWithUnmask, cancel, AsyncCancelled(..))
 import Control.Exception (IOException, SomeException, SomeAsyncException, fromException, try, tryJust, throwIO, finally, mask_)
@@ -19,10 +20,13 @@ import qualified Data.ByteString.Base64 as B64
 import qualified Data.ByteString.Builder as BB
 import qualified Data.ByteString.Lazy as BL
 import Data.Char (isHexDigit)
-import Data.IORef (readIORef)
+import Data.IORef (atomicModifyIORef', readIORef)
+import qualified Data.Map.Strict as M
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
+import Data.Word (Word64)
+import GHC.Clock (getMonotonicTimeNSec)
 import qualified Network.HTTP.Client as H
 import qualified Network.Socket as Socket
 import Network.HTTP.Client.MultipartFormData (formDataBody, partBS, partFileSource)
@@ -135,7 +139,9 @@ receivePiece s a d = do
   Left problem -> failure 409 problem
   -- The phone resent a piece because the first reply was lost: answer with the voice
   -- messages that piece created the first time, so the phone still learns their ids.
-  Right DuplicatePiece -> reply recording True . filter (createdBy index) <$> recordingParts s a recording
+  Right DuplicatePiece -> do
+   notePiece s a recording (finished progress)
+   reply recording True . filter (createdBy index) <$> recordingParts s a recording
   Right (AppendPiece next cuts) -> do
    waiting <- readIfPresent (bufferFile dir (nextPiece progress))
    when (BS.length waiting < buffered progress) $ failure 500 "Voice recording state is damaged"
@@ -143,7 +149,9 @@ receivePiece s a d = do
    saved <- recordingParts s a recording
    (rows, leftover) <- foldM (saveCut s a recording index saved) ([], audio) cuts
    atomicBytes (bufferFile dir (nextPiece next)) (BL.fromStrict leftover)
-   atomicBytes progressFile (encode (progressJSON next))
+   mask_ $ do
+    atomicBytes progressFile (encode (progressJSON next))
+    notePiece s a recording (finished next)
    removeIfPresent (bufferFile dir (nextPiece progress))
    when (finished next) $ removeIfPresent (bufferFile dir (nextPiece next))
    pure (reply recording False (filter draftable (reverse rows)))
@@ -194,7 +202,9 @@ cancelRecording s a recording = do
  validRecording recording
  let dir = recordingDir s a recording
  createDirectoryIfMissing True dir
- atomicBytes (dir </> "progress.json") (encode (progressJSON startProgress { finished = True }))
+ mask_ $ do
+  atomicBytes (dir </> "progress.json") (encode (progressJSON startProgress { finished = True }))
+  notePiece s a recording True
  buffers <- filter (\name -> takeExtension name == ".pcm") <$> listDirectory dir
  forM_ buffers (removeIfPresent . (dir </>))
  drafts <- filter draftable <$> recordingParts s a recording
@@ -289,7 +299,7 @@ transcribeLoop s gate manager = do
  let go = do
       stopping <- readIORef (serviceStopping s)
       unless stopping $ do
-       outcome <- tryTranscription (transcribeNext s gate manager base)
+       outcome <- tryTranscription (admissionOpen (serviceAdmission s) >>= \open -> if open then transcribeNext s gate manager base else pure False)
         `finally` modifyMVar_ gate (pure . fmap (const []))
        case outcome of
         -- Never fail silently: report the problem in the host log, then retry calmly.
@@ -315,10 +325,10 @@ transcribeNext s gate manager base = do
      -- Whisper can take seconds; meanwhile the voice message may have been sent (and marked
      -- "sent"). Save the transcript onto the attachment as it is now, not as it was read.
      -- A socket interrupted by shutdown is still pending, not a failed transcription.
-     withMVar gate $ \active -> forM_ active $ \_ -> locked s $ do
+     saved <- withAdmission (serviceAdmission s) True $ withMVar gate $ \active -> forM_ active $ \_ -> locked s $ do
        current <- filter (\fresh -> get fresh "id" == get row "id" && draftable fresh) <$> DB.attachments s (at row "agent")
        forM_ current $ \fresh -> DB.updateAttachment s (merge fresh outcome)
-     pure True
+     pure (saved == Just ())
  where
  unreachable problem = case fromException problem of
   Just (H.HttpExceptionRequest _ (H.ConnectionFailure _)) -> True
@@ -340,3 +350,21 @@ whisper manager base path = do
   -- Whisper returns one line per segment with leading spaces; keep plain sentences.
   Just value | String raw <- get value "text" -> pure (T.unwords (T.words raw))
   _ -> failure 502 "Whisper returned no text"
+
+recentPieces :: Word64 -> M.Map (Text,Text) Word64 -> M.Map (Text,Text) Word64
+recentPieces now = M.filter (\lastPiece -> now - lastPiece < 60 * 1000000000)
+
+notePiece :: Service -> Text -> Text -> Bool -> IO ()
+notePiece s owner recording closed = do
+ now <- getMonotonicTimeNSec
+ atomicModifyIORef' (serviceVoicePieces s) $ \pieces ->
+  let key = (owner,recording)
+      live = recentPieces now pieces
+  in (if closed then M.delete key live else M.insert key now live, ())
+
+busyVoice :: Service -> IO Bool
+busyVoice s = do
+ now <- getMonotonicTimeNSec
+ atomicModifyIORef' (serviceVoicePieces s) $ \pieces ->
+  let live = recentPieces now pieces
+  in (live, not (M.null live))

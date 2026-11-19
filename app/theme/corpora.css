@@ -1,6 +1,10 @@
 
 [hidden]{display:none!important}
 .app-header{position:relative}
+.app-update{position:relative;flex:none}
+#app-update{width:104px;border-radius:7px;padding:5px 11px;background:#155dfc;color:white;font:600 12px/1.5 var(--sapi-font);white-space:nowrap}
+#app-update:disabled{opacity:1}
+.app-update-notice{position:absolute;right:0;top:calc(100% + 8px);width:max-content;max-width:240px;z-index:34;padding:8px 10px;border:1px solid var(--line);border-radius:7px;background:var(--sapi-bg);color:var(--ink);font-size:12px}
 .connection-button{display:inline-flex;align-items:center;gap:8px;white-space:nowrap;min-height:44px;color:var(--muted);font:inherit;border:0;background:transparent;cursor:pointer}
 :root body.sapi-workspace .app-header .connection-button{font:400 12px/1.5 var(--sapi-font);letter-spacing:normal}
 .corpora-popover{position:absolute;z-index:35;right:14px;top:calc(100% + 4px);width:min(620px,calc(100vw - 28px));max-height:70dvh;overflow:auto;padding:16px;background:var(--sapi-bg);color:var(--ink);border:1px solid var(--line);border-radius:12px;box-shadow:0 12px 36px #0003}

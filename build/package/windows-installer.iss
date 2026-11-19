@@ -11,7 +11,13 @@ ArchitecturesInstallIn64BitMode={#PackageArchitecture}
 MinVersion=10.0
 DisableDirPage=yes
 DisableProgramGroupPage=yes
+#ifdef StagePayload
+UsePreviousAppDir=no
+Uninstallable=no
+CreateUninstallRegKey=no
+#else
 UsePreviousAppDir=yes
+#endif
 OutputDir={#OutputDir}
 OutputBaseFilename={#ArtifactBaseName}
 Compression=lzma2/fast
@@ -28,18 +34,35 @@ SignedUninstaller=no
 #endif
 
 [Files]
-Source: "{#SourceDir}\*"; DestDir: "{app}"; Excludes: "sapiens-installation.id"; Flags: ignoreversion recursesubdirs createallsubdirs
+#ifdef StagePayload
+Source: "{#SourceDir}\*"; DestDir: "{app}"; Excludes: "sapiens-installation.id,sapiens-starter.exe"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SourceDir}\sapiens-installation.id"; DestDir: "{app}"; Flags: ignoreversion
+#else
+Source: "{#SourceDir}\*"; DestDir: "{app}\versions\{#InitialVersion}"; Excludes: "sapiens-starter.exe"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#SourceDir}\sapiens-starter.exe"; DestDir: "{app}"; DestName: "Sapiens4.exe"; Flags: ignoreversion
+Source: "{#SourceDir}\sapiens-installation.id"; DestDir: "{app}"; Flags: ignoreversion
+#endif
 
+#ifndef StagePayload
 [Icons]
 Name: "{userprograms}\{#PackageName}"; Filename: "{app}\Sapiens4.exe"
 
 [Run]
 Filename: "{app}\Sapiens4.exe"; Description: "Launch {#PackageName}"; Flags: nowait postinstall skipifsilent unchecked
 
+[UninstallDelete]
+Type: files; Name: "{app}\installation.lock"
+Type: dirifempty; Name: "{app}\backups"
+Type: dirifempty; Name: "{app}\versions"
+
+#endif
+
 [Code]
+#ifndef StagePayload
 const
   Identity = '{#PackageId}';
+  ImageWriteAccess = $40000000;
+  ImageDeleteAccess = $00010000;
 
 function OwnedDirectory: Boolean;
 var Marker: AnsiString; Installed: String;
@@ -50,6 +73,7 @@ begin
     'Software\Microsoft\Windows\CurrentVersion\Uninstall\' + Identity + '_is1', 'InstallLocation', Installed);
   Result := Result and (CompareText(AddBackslash(Installed), AddBackslash(ExpandConstant('{app}'))) = 0);
 end;
+#endif
 
 function FileAttributes(FileName: String): Cardinal;
   external 'GetFileAttributesW@kernel32.dll stdcall';
@@ -79,7 +103,10 @@ begin
     StateRoot := AddBackslash(ExpandFileName(GetEnv('SAPIENS_CONFIG_DIR')));
     if CompareText(Copy(Target, 1, Length(StateRoot)), StateRoot) = 0 then begin Result := False; Exit; end;
   end;
+#ifndef StagePayload
+  if FileExists(ExpandConstant('{app}\update-state.json')) then begin Result := False; Exit; end;
   if OwnedDirectory then Exit;
+#endif
   if FindFirst(Target + '*', Item) then begin
     try
       repeat
@@ -94,9 +121,7 @@ begin
   end;
 end;
 
-function InstallerProcessId: Cardinal;
-  external 'GetCurrentProcessId@kernel32.dll stdcall';
-
+#ifndef StagePayload
 function OpenInstalledImage(FileName: String; Access, Sharing: Cardinal;
   Security: THandle; Creation, Attributes: Cardinal; Template: THandle): THandle;
   external 'CreateFileW@kernel32.dll stdcall';
@@ -110,7 +135,7 @@ function FindImageFile(Pattern: String; var Data: TImageFindData): THandle;
 function CloseImageSearch(Handle: THandle): BOOL;
   external 'FindClose@kernel32.dll stdcall';
 
-function InstallationImagesWritable(Directory, Exempt: String): Boolean;
+function InstallationImagesWritable(Directory, Exempt: String; Access: Cardinal): Boolean;
 var Item: TFindRec; Path, Extension: String; Handle: THandle; Attributes: Cardinal;
     FindData: TImageFindData;
 begin
@@ -134,12 +159,12 @@ begin
       Path := AddBackslash(Directory) + Item.Name;
       if (Item.Attributes and $400) <> 0 then begin Result := False; Exit; end;
       if (Item.Attributes and FILE_ATTRIBUTE_DIRECTORY) <> 0 then
-        Result := InstallationImagesWritable(Path, Exempt)
+        Result := InstallationImagesWritable(Path, Exempt, Access)
       else begin
         Extension := ExtractFileExt(Path);
         if ((CompareText(Extension, '.exe') = 0) or (CompareText(Extension, '.dll') = 0)) and
            (CompareText(Path, Exempt) <> 0) then begin
-          Handle := OpenInstalledImage(Path, $40000000, 7, 0, 3, 0, 0);
+          Handle := OpenInstalledImage(Path, Access, 7, 0, 3, 0, 0);
           Result := Handle <> THandle(-1);
           if Result then Result := CloseInstalledImage(Handle);
         end;
@@ -150,59 +175,56 @@ begin
     FindClose(Item);
   end;
 end;
-
-function ProcessesStopped(ForUninstall: Boolean): Boolean;
-var Locator, Service, Processes, Process, SelfProcess: Variant;
-    I: Integer; ParentId: Cardinal; Prefix, Executable, Uninstaller: String;
-begin
-  Result := False;
-  try
-    Prefix := ExpandConstant('{app}');
-    if DirExists(Prefix) then Prefix := GetShortName(Prefix);
-    Prefix := AddBackslash(Prefix);
-    Locator := CreateOleObject('WbemScripting.SWbemLocator');
-    Service := Locator.ConnectServer('', 'root\CIMV2');
-    ParentId := 0; Uninstaller := '';
-    if ForUninstall then begin
-      SelfProcess := Service.Get('Win32_Process.Handle="' + IntToStr(InstallerProcessId) + '"');
-      ParentId := SelfProcess.ParentProcessId;
-      Uninstaller := GetShortName(ExpandConstant('{uninstallexe}'));
-    end;
-    Processes := Service.ExecQuery('SELECT ExecutablePath, ProcessId FROM Win32_Process WHERE ExecutablePath IS NOT NULL');
-    for I := 0 to Processes.Count - 1 do begin
-      Process := Processes.ItemIndex(I);
-      Executable := Process.ExecutablePath;
-      if FileExists(Executable) then Executable := GetShortName(Executable);
-      if ForUninstall and (CompareText(Executable, Uninstaller) = 0) and
-         ((Process.ProcessId = InstallerProcessId) or (Process.ProcessId = ParentId)) then Continue;
-      if CompareText(Copy(Executable, 1, Length(Prefix)), Prefix) = 0 then begin
-        Log('Install/uninstall refused: an executable from the installation is running.');
-        Exit;
-      end;
-    end;
-    Executable := '';
-    if ForUninstall then Executable := ExpandConstant('{uninstallexe}');
-    Result := InstallationImagesWritable(ExpandConstant('{app}'), Executable);
-  except
-    Log('Cannot establish stopped installation: ' + GetExceptionMessage);
-  end;
-end;
+#endif
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   Result := '';
-  if not SafeDestination then
-    Result := 'Choose a new installation directory. Existing data or unowned files cannot be replaced.'
-  else if not ProcessesStopped(False) then
+#ifdef StagePayload
+  if ExpandConstant('{param:DIR|}') = '' then begin
+    Result := 'Payload staging requires an explicit new /DIR destination.';
+    Exit;
+  end;
+#endif
+  if not SafeDestination then begin
+    Result := 'Choose a new installation directory. Existing data or unowned files cannot be replaced.';
+    Exit;
+  end;
+#ifndef StagePayload
+  if not InstallationImagesWritable(ExpandConstant('{app}'), '', ImageWriteAccess) then
     Result := 'Quit {#PackageName} and its backend, then retry. No running process will be stopped by Setup.';
+#endif
 end;
 
+#ifndef StagePayload
 function InitializeUninstall: Boolean;
 begin
-  Result := OwnedDirectory and ProcessesStopped(True);
+  Result := OwnedDirectory;
   if not Result then begin
-    Log('Uninstall refused: missing installation identity, running process, or process-check failure.');
+    Log('Uninstall refused: the installation directory could not be verified.');
     if not UninstallSilent then
-      MsgBox('Quit {#PackageName} and its backend, then retry uninstall. No running process will be stopped.', mbError, MB_OK);
+      MsgBox('The {#PackageName} installation directory could not be verified.', mbError, MB_OK);
   end;
 end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var Code: Integer;
+begin
+  if CurUninstallStep <> usUninstall then Exit;
+  if InstallationImagesWritable(ExpandConstant('{app}'), ExpandConstant('{uninstallexe}'), ImageWriteAccess or ImageDeleteAccess) then
+    if Exec(ExpandConstant('{app}\Sapiens4.exe'), '--uninstall', '', SW_HIDE, ewWaitUntilTerminated, Code) and (Code = 0) then Exit;
+  Log('Uninstall refused: files are in use, recovery is pending, or cleanup failed.');
+  if not UninstallSilent then
+    MsgBox('Quit {#PackageName} and its backend, then retry. Recover any interrupted update first.', mbError, MB_OK);
+  Abort;
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+var Code: Integer;
+begin
+  if CurStep = ssPostInstall then begin
+    if not Exec(ExpandConstant('{app}\Sapiens4.exe'), '--initialize {#InitialVersion}', '', SW_HIDE, ewWaitUntilTerminated, Code) or (Code <> 0) then
+      RaiseException('Sapiens installation could not publish its initial version.');
+  end;
+end;
+#endif
