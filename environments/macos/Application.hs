@@ -184,11 +184,11 @@ stopServer server = mask_ $ do
                     threadDelay 50000
                     sweep
         sweep
-        void (waitForProcess process)
+        waitForProcess process
     when (isNothing confirmed) (ioError (userError "The application server session could not be stopped."))
     (cancel (serverErrors server) `finally` mapM_ cancel (serverDrain server))
         `finally` mapM_ close [input,serverOutput server]
-    pure (graceful == Just True)
+    pure (graceful == Just True && confirmed == Just ExitSuccess)
     where
         process=serverHandle server
         input=serverInput server
