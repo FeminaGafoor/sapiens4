@@ -2,10 +2,12 @@
 module UpdatePlatform (module UpdatePlatform, module UpdateNative) where
 
 import UpdateNative hiding (Handle)
+import qualified UpdateNative as Native (Handle)
 
 import Control.Exception
 import Control.Monad
 import Data.Char (toLower)
+import Data.Maybe (catMaybes)
 import Data.Word
 import Foreign hiding (void)
 import Foreign.C
@@ -65,8 +67,10 @@ stagePayload :: FilePath -> FilePath -> FilePath -> IO ()
 stagePayload installed payload destination = do
  verifyPublisher installed payload
  createDirectory destination
- (_,_,_,child) <- createProcess (proc payload ["/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/DIR="++destination]) {close_fds=True}
- code <- waitForProcess child
+ let installer = (proc payload ["/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/DIR="++destination])
+       {close_fds=True,use_process_jobs=True}
+ code <- bracketOnError (createProcess installer) (\(_,_,_,child) ->
+  abortJob child `catch` (throwIO . StagingNotJoined)) (\(_,_,_,child) -> waitForProcess child)
  unless (code == ExitSuccess) (fail "Update payload could not be staged")
  exists <- doesFileExist (destination </> "Sapiens4.exe")
  unless exists (fail "Update payload is incomplete")
@@ -83,14 +87,19 @@ withCandidate executable args overrides = bracket acquire close
  where
  acquire = do
   inherited <- getEnvironment
-  (Just input,Just output,_,child) <- createProcess (proc executable args)
+  bracketOnError (createProcess (proc executable args)
    {std_in=CreatePipe,std_out=CreatePipe,std_err=Inherit,use_process_jobs=True,create_group=True,close_fds=True
-   ,env=Just (overrides ++ filter (\(key,_) -> key `notElem` map fst overrides) inherited)}
-  let candidate = Candidate child input output
-  (mapM_ (\stream -> hSetEncoding stream utf8 >> hSetNewlineMode stream universalNewlineMode) [input,output]
-   >> pure candidate) `onException` (candidateOwnership candidate False `finally` close candidate)
- close (Candidate _ input output) = mapM_ (\h -> hClose h `catch` \(_::IOException) -> pure ()) [input,output]
-
+   ,env=Just (overrides ++ filter (\(key,_) -> key `notElem` map fst overrides) inherited)}) abort $ \pipes ->
+    case pipes of
+     (Just input,Just output,Nothing,child) -> do
+      mapM_ (\stream -> hSetEncoding stream utf8 >> hSetNewlineMode stream universalNewlineMode) [input,output]
+      pure (Candidate child input output)
+     _ -> fail "Candidate process pipes are unavailable"
+ abort (input,output,errors,child) =
+  (abortJob child `catch` (throwIO . CandidateNotJoined))
+   `finally` closeStreams (catMaybes [input,output,errors])
+ close (Candidate _ input output) = closeStreams [input,output]
+ closeStreams = mapM_ (\h -> hClose h `catch` \(_::IOException) -> pure ())
 candidateMessage :: Candidate -> IO String
 candidateMessage candidate@(Candidate _ _ output) = race exited (hGetLine output) >>= either (const (fail "Candidate exited")) pure
  where
@@ -107,6 +116,14 @@ sendCandidate :: Candidate -> String -> IO ()
 sendCandidate (Candidate _ input _) message = hPutStrLn input message >> hFlush input
 
 candidateOwnership :: Candidate -> Bool -> IO ()
-candidateOwnership (Candidate child _ _) commit = withProcessHandle child $ \state -> case state of
- OpenExtHandle _ handle -> candidateJob handle commit
- _ -> fail "Candidate has no owned Windows job"
+candidateOwnership (Candidate child _ _) commit =
+ if commit then withJob child (\job -> candidateJob job True) else abortJob child
+
+abortJob :: ProcessHandle -> IO ()
+abortJob child = withJob child (\job -> candidateJob job False) >> void (waitForProcess child)
+
+withJob :: ProcessHandle -> (Native.Handle -> IO a) -> IO a
+withJob child action = withProcessHandle child $ \state -> case state of
+ OpenExtHandle _ job -> action job
+ ClosedHandle _ -> fail "Windows process job is already closed"
+ OpenHandle _ -> fail "Windows process has no owned job"

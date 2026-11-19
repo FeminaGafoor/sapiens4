@@ -88,14 +88,12 @@ updateAndRestart preparing command flushPreferences stop dataDirectory configDir
  mask $ \unmask -> do
   next <- freshVersion
   handoffStarted <- newIORef False
-  let discardStaged = readIORef handoffStarted >>= \started ->
-       unless started (discard [versionPath root next])
-  unmask (do
-   requestUpdate root owner next
-   withCandidate (versionExecutable root owner) ["--update-coordinate",versionName next,dataDirectory,configDirectory] [] $ \coordinator -> mask $ \restoreHandoff -> do
+  result <- try $ do
+   unmask (requestUpdate root owner next)
+   withCandidate (versionExecutable root owner) ["--update-coordinate",versionName next,dataDirectory,configDirectory] [] $ \coordinator -> do
     let quiet = requireIdle "quiesce" "Sapiens could not pause safely. Update cancelled."
     (do
-      restoreHandoff $ do
+      unmask $ do
        preparing
        await 15 coordinator "update: coordinator"
        (quiet >> flushPreferences) `onException` void (tryUpdate (command "resume"))
@@ -103,8 +101,13 @@ updateAndRestart preparing command flushPreferences stop dataDirectory configDir
       candidateOwnership coordinator True)
      `onException` candidateOwnership coordinator False
     writeIORef handoffStarted True
-    sendCandidate coordinator "handoff")
-   `onException` discardStaged
+    sendCandidate coordinator "handoff"
+  case result of
+   Right () -> pure ()
+   Left problem -> do
+    started <- readIORef handoffStarted
+    unless started $ discardAfterStaging problem [versionPath root next]
+    throwIO problem
  where
  requireIdle action message = command action >>= \reply -> case reply of
   "quiet" -> pure ()
@@ -112,20 +115,29 @@ updateAndRestart preparing command flushPreferences stop dataDirectory configDir
   _ -> fail message
 
 requestUpdate :: FilePath -> Version -> Version -> IO ()
-requestUpdate root owner next = flip finally (discard [payload]) $ do
- validatePath (root </> "versions")
- manager <- newManager tlsManagerSettings
- release <- discoverRelease manager root owner
- transfer <- parseRequest (releaseURL release)
- withResponse transfer manager $ \result -> withBinaryFile payload WriteMode $ \file ->
-  let loop = do chunk <- brRead (responseBody result); unless (B.null chunk) (B.hPut file chunk >> loop)
-  in loop
- validatePath payload
- verifyPayloadDigest (releaseDigest release) payload
- stagePayload (versionExecutable root owner) payload (versionPath root next)
- staged <- installedVersion root next
- unless (staged == releaseVersion release) (fail "Update payload version differs from the release tag")
+requestUpdate root owner next = mask $ \restore -> do
+ result <- try $ restore $ do
+  validatePath (root </> "versions")
+  manager <- newManager tlsManagerSettings
+  release <- discoverRelease manager root owner
+  transfer <- parseRequest (releaseURL release)
+  withResponse transfer manager $ \result -> withBinaryFile payload WriteMode $ \file ->
+   let loop = do chunk <- brRead (responseBody result); unless (B.null chunk) (B.hPut file chunk >> loop)
+   in loop
+  validatePath payload
+  verifyPayloadDigest (releaseDigest release) payload
+  stagePayload (versionExecutable root owner) payload (versionPath root next)
+  staged <- installedVersion root next
+  unless (staged == releaseVersion release) (fail "Update payload version differs from the release tag")
+ case result of
+  Right () -> discard [payload]
+  Left problem -> discardAfterStaging problem [payload] >> throwIO problem
  where payload = root </> (versionName next ++ "-" ++ payloadName)
+
+discardAfterStaging :: SomeException -> [FilePath] -> IO ()
+discardAfterStaging problem paths = case fromException problem of
+ Just (_::StagingNotJoined) -> pure ()
+ Nothing -> discard paths
 
 verifyPayloadDigest :: String -> FilePath -> IO ()
 verifyPayloadDigest expected path = withBinaryFile path ReadMode $ \file -> do
@@ -185,11 +197,6 @@ updateMode args = case args of
  report action = tryUpdate action >>= either (\problem -> showUpdateError (displayException problem) >> exitFailure) pure
 
 data Dispatch = Running | Launch Version | Recover
-
-newtype CandidateNotJoined = CandidateNotJoined SomeException deriving Show
-instance Exception CandidateNotJoined where
- displayException (CandidateNotJoined problem) =
-  "The candidate process tree could not be joined. Recovery is deferred. Close Sapiens and relaunch from its installed shortcut. " ++ displayException problem
 
 discard :: [FilePath] -> IO ()
 discard paths = forM_ paths $ \path ->
@@ -254,20 +261,20 @@ coordinate requested = do
   Recover -> coordinate Nothing
 
 runCandidate :: FilePath -> PendingUpdate -> IO ()
-runCandidate root pending = withCandidate (versionExecutable root (target pending)) []
+runCandidate root pending = mask $ \restore -> withCandidate (versionExecutable root (target pending)) []
  [("SAPIENS_UPDATE_ATTEMPT",versionName (attempt pending)),("SAPIENS_DATA_DIR",dataRoot pending),("SAPIENS_CONFIG_DIR",configRoot pending)] $ \candidate -> do
   (do
-   await (60 * 60) candidate "update: ready"
+   restore (await (60 * 60) candidate "update: ready")
    alive <- candidateAlive candidate
    unless alive (fail "Candidate exited before commit")
    state <- readUpdateState root
    unless (state == Pending pending) (fail "Update decision changed before Ready")
-   mask_ $ do
-    writeUpdateState root (Settled (Selection (target pending) (Just (Previous (current (original pending)) (attempt pending) (backupDigest pending)))))
-    candidateOwnership candidate True)
+   writeUpdateState root (Settled (Selection (target pending) (Just (Previous (current (original pending)) (attempt pending) (backupDigest pending)))))
+   candidateOwnership candidate True)
    `onException` (tryUpdate (candidateOwnership candidate False) >>= either (throwIO . CandidateNotJoined) pure)
-  sendCandidate candidate "commit"
-  await 60 candidate "update: active"
+  restore $ do
+   sendCandidate candidate "commit"
+   await 60 candidate "update: active"
 
 await :: Int -> Candidate -> String -> IO ()
 await seconds candidate expected =

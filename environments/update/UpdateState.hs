@@ -1,7 +1,7 @@
 module UpdateState where
 
 import Control.Monad
-import Control.Exception (catchJust)
+import Control.Exception (Exception(..), SomeException, catchJust)
 import Data.Aeson
 import Data.Aeson.Types (Parser)
 import qualified Data.Aeson.KeyMap as K
@@ -24,6 +24,16 @@ data PendingUpdate = PendingUpdate
  , dataRoot :: FilePath, configRoot :: FilePath, dataIdentity :: String, configIdentity :: String, backupDigest :: String
  } deriving (Eq,Show)
 data UpdateState = Settled Selection | Pending PendingUpdate deriving (Eq,Show)
+
+newtype StagingNotJoined = StagingNotJoined SomeException deriving Show
+instance Exception StagingNotJoined where
+ displayException (StagingNotJoined problem) =
+  "The update installer could not be joined. Staging files were retained. " ++ displayException problem
+
+newtype CandidateNotJoined = CandidateNotJoined SomeException deriving Show
+instance Exception CandidateNotJoined where
+ displayException (CandidateNotJoined problem) =
+  "The candidate process tree could not be joined. Recovery is deferred. Close Sapiens and relaunch from its installed shortcut. " ++ displayException problem
 
 instance ToJSON Version where toJSON = toJSON . versionName
 instance FromJSON Version where
