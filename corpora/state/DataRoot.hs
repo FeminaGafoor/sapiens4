@@ -4,6 +4,7 @@
 module DataRoot (module DataRoot, module RuntimePaths) where
 
 import Types (writeJSON)
+import qualified V00_02_02Files as TypedFiles
 import RuntimePaths
 import V00_02_00Launcher (previousLauncherDirectory)
 import UpdateState (assertDataAvailable)
@@ -34,7 +35,7 @@ savedDataDirectory = do
  path <- selectionPath
  exists <- doesFileExist path
  if not exists then pure Nothing else do
-  value <- either (ioError . userError . ("Could not read saved storage: " ++)) pure . eitherDecode =<< L.readFile path
+  value <- TypedFiles.readValue path Null
   case value of
    Object fields | Just (Number 1) <- K.lookup "version" fields, Just (String folder) <- K.lookup "directory" fields, isAbsolute (T.unpack folder) -> Just <$> externalStoragePath (T.unpack folder)
    _ -> ioError (userError "Saved storage settings are incompatible. Choose your data directory again.")
@@ -162,7 +163,7 @@ storageError :: String -> IO a
 storageError = ioError . userError
 
 readDataJSON :: FromJSON a => FilePath -> IO a
-readDataJSON path = either (storageError . ("Could not read data: " ++)) pure . eitherDecode =<< L.readFile path
+readDataJSON path = TypedFiles.readValue path Null >>= \v -> case fromJSON v of Error e -> storageError e; Success a -> pure a
 
 -- Validation is read-only. Versioned conversion runs under host.lock in Migrations.
 validateDataRoot :: StorageChoice -> FilePath -> IO ()
@@ -170,7 +171,7 @@ validateDataRoot choice root = do
  exists <- doesDirectoryExist root
  unless exists $ storageError "This data directory is unavailable."
  names <- filter (/="host.lock") <$> listDirectory root
- forM_ ["corpora.sqlite3","corpora.sqlite3-wal","corpora.sqlite3-journal","corpora.lmdb","corpora.lmdb.migration.lock","corpora.lmdb.migrating","corpora.lmdb.migrating.lock","corpora.lmdb.migrating-lock","corpora.lmdb.lock","corpora.lmdb-lock","corpora-identity.json","workspaces","uploads","agentpy"] $ \name -> void (containedPath root (root </> name))
+ forM_ ["corpora.sqlite3","corpora.sqlite3-wal","corpora.sqlite3-journal","corpora.lmdb","corpora.lmdb.migration.lock","corpora.lmdb.migrating","corpora.lmdb.migrating.lock","corpora.lmdb.migrating-lock","corpora.lmdb.lock","corpora.lmdb-lock","corpora-identity.json","corpora-identity.typed","workspaces","uploads","agentpy"] $ \name -> void (containedPath root (root </> name))
  when ("corpora.append4" `elem` names && not (any (`elem` names) ["corpora.lmdb","corpora.sqlite3"])) $ storageError "Unreleased Append4 journal format has no registered migration; originals retained."
  pending <- doesDirectoryExist (initializingDirectory root)
  when pending $ do

@@ -26,6 +26,13 @@ def digest(root):
     return {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()
             for p in root.rglob('*') if p.is_file() and '.lmdb' not in p.name}
 
+def sources_preserved(root, before):
+    for name, expected in before.items():
+        path=root/name
+        if path.read_bytes().startswith(b'SAPIENS-TYPED-CELLS-1\0'):
+            path=Path(str(path)+'.v00.02.01')
+        assert hashlib.sha256(path.read_bytes()).hexdigest()==expected, name
+
 def fixture(root):
     root.mkdir(parents=True)
     db = sqlite3.connect(root / 'corpora.sqlite3')
@@ -47,6 +54,9 @@ def fixture(root):
     columns=[x[1] for x in db.execute('PRAGMA table_info(activity_events)')]
     values=dict(id=42,owner='sapi_a',timestamp='2026-01-01',actor='admin',entity='work',event='created',agency=None,details=json.dumps({'old':'details'}))
     db.execute('INSERT INTO activity_events VALUES ('+','.join('?' for _ in columns)+')',[values[x] for x in columns])
+    for event_id, event in [(43, 'system.started'), (44, 'system.stopped')]:
+        values.update(id=event_id, actor='system', entity='corpora', event=event, details='{}')
+        db.execute('INSERT INTO activity_events VALUES ('+','.join('?' for _ in columns)+')',[values[x] for x in columns])
     db.commit(); db.close()
     state={'schema_version':3,'agid':'sapi_a','revision':12,'turns':[],'chat':[{'role':'admin','content':'Customer conversation'}],'events':[],'event_sequence':0,'last_output':None,'custom':'keep'}
     write(root,'agentpy/agents/sapi_a/state.json',state)
@@ -74,8 +84,8 @@ with tempfile.TemporaryDirectory(prefix='sapiens-migration-test-') as temporary:
     root=Path(temporary)
     data=root/'customer'; state=fixture(data); before=digest(data)
     result=call('corpora',data)
-    assert digest(data)==before, 'source files changed'
-    assert result['local/app-version']=='v00.02.00'
+    sources_preserved(data,before)
+    assert result['local/app-version']=='v00.02.02'
     assert result['states/sapi_a']==state
     assert result['turns/turn-old']['output']=='Original answer'
     assert result['turns/turn-old']['slot']==2
@@ -91,6 +101,7 @@ with tempfile.TemporaryDirectory(prefix='sapiens-migration-test-') as temporary:
     assert result['local/device']['private']=='private-key'
     assert result['local/registry']['remotes']['remote']['token']=='secret'
     assert result['attachments/group_a/attachment']['agent']=='group_a'
+    assert len(result['events/sapi_a']) == 1
     assert result['events/sapi_a'][0]['details']=={'old':'details'}
     assert call('corpora',data)==result
     print('PASS complete Corpora conversion, source preservation and idempotent reopen')
@@ -121,7 +132,7 @@ with tempfile.TemporaryDirectory(prefix='sapiens-migration-test-') as temporary:
     db.execute('UPDATE agents SET name=?',('Written in WAL',)); db.commit()
     snapshot=digest(wal)
     assert call('corpora',wal)['agents/sapi_a']['name']=='Written in WAL'
-    assert digest(wal)==snapshot
+    sources_preserved(wal,snapshot)
     db.close()
     print('PASS committed SQLite WAL is imported without modifying source')
     relay=root/'relay.sqlite3'; db=sqlite3.connect(relay)
@@ -145,3 +156,44 @@ with tempfile.TemporaryDirectory(prefix='sapiens-migration-test-') as temporary:
     print('PASS killed migration retains the previous committed version')
     call('plan',root/'plan.lmdb')
     print('PASS sequential migration planning, rollback and resume')
+
+    # The real 0.2.0 -> 0.2.1 step removes only lifecycle noise across all owners.
+    events = [
+        {'id': 6, 'actor': 'system', 'entity': 'corpora', 'event': 'system.started', 'details': {}},
+        {'id': 5, 'actor': 'admin', 'entity': 'work', 'event': 'created', 'details': {'keep': True}},
+        {'id': 4, 'actor': 'system', 'entity': 'corpora', 'event': 'system.stopped', 'details': {}},
+        {'id': 3, 'actor': 'admin', 'entity': 'corpora', 'event': 'system.started', 'custom': 'keep'},
+        {'id': 2, 'actor': 'system', 'entity': 'work', 'event': 'system.stopped'},
+        {'id': 1, 'custom': 'unknown record retained'},
+    ]
+    entries = [['local/app-version', 'v00.02.00'], ['events/chief', events],
+               ['events/other', [events[0]]], ['events/empty', []],
+               ['messages/customer', {'input': 'Keep this conversation'}]]
+    seed = root / 'seed.json'
+    seed.write_text(json.dumps(entries))
+    modern = root / 'modern'; modern.mkdir()
+    database = modern / 'corpora.lmdb'
+    call('seed', database, seed)
+    original = call('inspect', database)
+    process = subprocess.Popen([EXE, 'crash-cleanup', str(database)], stdout=subprocess.PIPE, text=True)
+    assert process.stdout.readline().strip() == 'READY'
+    process.kill(); process.wait(timeout=10)
+    assert call('inspect', database) == original
+    cleaned = call('corpora', modern)
+    assert cleaned['local/app-version'] == 'v00.02.02'
+    assert cleaned['events/chief'] == [events[i] for i in [1, 3, 4, 5]]
+    assert cleaned['events/other'] == [] and cleaned['events/empty'] == []
+    assert cleaned['messages/customer'] == original['messages/customer']
+    assert call('corpora', modern) == cleaned
+    malformed = root / 'malformed-events'; malformed.mkdir()
+    seed.write_text(json.dumps(entries + [['events/z-broken', {'unexpected': True}]]))
+    call('seed', malformed / 'corpora.lmdb', seed)
+    original = call('inspect', malformed / 'corpora.lmdb')
+    call('corpora', malformed, ok=False)
+    assert call('inspect', malformed / 'corpora.lmdb') == original
+    # A pre-versioning LMDB store must still pass through the cleanup step.
+    adopted = root / 'unversioned'; adopted.mkdir()
+    seed.write_text(json.dumps(entries[1:]))
+    call('seed', adopted / 'corpora.lmdb', seed)
+    assert call('corpora', adopted)['events/chief'] == cleaned['events/chief']
+    print('PASS lifecycle cleanup, exact matching, all owners, interruption, rollback, adoption and repeat')

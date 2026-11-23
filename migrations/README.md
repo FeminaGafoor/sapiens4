@@ -3,7 +3,7 @@
 `v00.01.99` names the previous `dev` application (commit `7ae4825`):
 Corpora SQLite schema 8, agent JSON schema 3, JSON configuration and archives,
 SQLite remote receipts and relay mailboxes. `v00.02.00` is the LMDB release.
-`VERSION` carries the public version; Cabal represents it numerically as `0.2.0`.
+`VERSION` carries the public version; Cabal represents it numerically (currently `0.2.1`).
 Installer UUIDs and per-document schema versions are different identifiers.
 
 ## Permanent rules
@@ -90,3 +90,51 @@ have priority. Missing or invalid old workspaces fail visibly instead of startin
 fresh. Discovery retains the old config; the normal workspace-ready publication
 writes `config/storage.json` only after successful opening. Desktop setup selects
 detected content even when current terms still require acceptance.
+
+## v00.02.00 -> v00.02.01
+
+`V00_02_01.hs` removes `system.started` and `system.stopped` entries whose actor is
+`system` and entity is `corpora` from every stored `events/` list. Other activity,
+unknown fields, row IDs and order are retained. Startup and shutdown no longer
+create these entries. Relay data is unchanged and explicitly advances its marker.
+Malformed event lists abort the entire step; retry starts from the previous
+committed version. The storage engine's historical transaction journal and retained
+legacy source files are unchanged.
+
+## v00.02.01 -> v00.02.02
+
+`V00_02_02.hs` replaces JSON values in all LMDB namespaces with Append4's flat
+binary cells. `v00.02.01` remains an explicit prerequisite, including its original
+lifecycle-event cleanup. Earlier releases traverse both steps in order.
+
+The migration preserves all current logical values, unknown/nested fields,
+empty containers, nulls, arbitrary-size exact numbers, long Unicode field names,
+receipts, expiry indexes, metadata, duplicate-ID ledgers and the complete ordered
+mutation history. Historical append IDs, transaction IDs, conditions and deletions
+are unchanged. One final audit commit records the v00.02.02 marker.
+
+Conversion builds `<store>.v00.02.02.staging`, verifies each namespace and value,
+then records the target marker. The closed original is retained as
+`<store>.v00.02.01`; only the verified stage becomes the active file. A crash
+between renames restores the old filename and repeats verification. Incomplete
+stages are rebuilt. Malformed history, unexpected versions, map exhaustion or a
+conflicting backup refuse publication. The caller holds the app migration lock
+and excludes writers throughout. Do not run an older app on the retained backup.
+
+Run `spec/migrations/flat.py FIXTURE LEGACY_WRITER` for typed round trips, original
+history preservation, publication recovery, malformed-history rejection and relay
+coverage. Build `Legacy.c` against the vendored LMDB for the frozen input writer.
+Network/provider payloads and external integration documents still use their
+specified JSON formats; they are not the LMDB representation.
+
+`V00_02_02Files.hs` converts active storage selection, terms acceptance, telemetry
+settings, Windows client preferences and Corpora identity files to a binary list
+of flat path/atom pairs. Original settings files are retained with `.v00.02.01` suffixes;
+the identity uses an authoritative `.typed` sidecar so the frozen SQLite source
+fingerprint remains unchanged.
+existing filenames remain compatible with discovery and installer contracts.
+Each file is validated, backed up, atomically replaced and can be retried. Current
+writers emit typed bytes; frozen JSON readers are retained only for older input.
+macOS native preferences already use the platform plist format. Relay connection
+exports, computer-provider snapshots and `host-control.json` are external JSON
+interchange documents, as are HTTP/LLM/provider responses and installer manifests.

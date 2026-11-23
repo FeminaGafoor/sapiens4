@@ -12,8 +12,11 @@ import System.FilePath
 import System.FileLock
 import MigrationVersion
 import MigrationPlan
+import qualified V00_02_02 as Flat
+import qualified V00_02_02Files as TypedFiles
 import qualified V00_01_99 as Old
 import qualified V00_02_00 as Upgrade
+import qualified V00_02_01 as Lifecycle
 #ifndef mingw32_HOST_OS
 import qualified System.Posix.IO as Posix
 import qualified System.Posix.Unistd as Posix
@@ -22,7 +25,10 @@ import qualified System.Posix.Unistd as Posix
 -- The caller holds host.lock, including for managed children. No workers have
 -- started yet. Registered migrations are compiled into every shipped binary.
 openCorpora :: FilePath -> IO A.Store
-openCorpora root = openVersioned A.defaultOptions (root </> "corpora.lmdb") (root </> "corpora.sqlite3") (Upgrade.corpora root) (Upgrade.corporaFingerprint root)
+openCorpora root = do
+ store <- openVersioned A.defaultOptions (root </> "corpora.lmdb") (root </> "corpora.sqlite3") (Upgrade.corpora root) (Upgrade.corporaFingerprint root) Lifecycle.corpora
+ TypedFiles.migrateIdentity (root </> "corpora-identity.json") `onException` A.closeStore store
+ pure store
 
 -- Keep accepting explicit old --db paths. The source always remains untouched.
 openRelay :: FilePath -> IO A.Store
@@ -33,15 +39,18 @@ openRelay requested = do
      legacyPath = sqlite || not exists && legacyName
      target = if legacyPath then (if legacyName then replaceExtension requested "lmdb" else requested<.>"lmdb") else requested
      source = if legacyPath then requested else replaceExtension requested "sqlite3"
- openVersioned A.defaultOptions {A.historyPolicy=A.CurrentOnly} target source (Upgrade.relay source) (Upgrade.relayFingerprint source)
+ openVersioned A.defaultOptions {A.historyPolicy=A.CurrentOnly} target source (Upgrade.relay source) (Upgrade.relayFingerprint source) Lifecycle.relay
 
-openVersioned :: A.Options -> FilePath -> FilePath -> (A.Store -> IO ()) -> IO Value -> IO A.Store
-openVersioned options target source convert sourceFingerprint = do
+openVersioned :: A.Options -> FilePath -> FilePath -> (A.Store -> IO ()) -> IO Value -> (A.Store -> IO ()) -> IO A.Store
+openVersioned options target source convert sourceFingerprint cleanup = do
  createDirectoryIfMissing True (takeDirectory target)
- forM_ [target,source,target++".migration.lock",target++".migrating"] $ \path ->
+ forM_ [target,source,target++".migration.lock",target++".migrating",target++".v00.02.01",target++".v00.02.02.staging"] $ \path ->
   void (Old.safePath (takeDirectory target) (takeFileName path))
  bracket (tryLockFile (target++".migration.lock") Exclusive >>= maybe (fail "Another app migration is running") pure) unlockFile $ \_ -> do
-  let steps = [Migration Upgrade.sourceVersion Upgrade.targetVersion convert]
+  let steps = [Migration Upgrade.sourceVersion Upgrade.targetVersion convert
+              ,Migration Lifecycle.sourceVersion Lifecycle.targetVersion cleanup
+              ,Migration Flat.sourceVersion Flat.targetVersion Flat.finish]
+  Flat.recover target
   published <- doesFileExist target
   legacy <- doesFileExist source
   unless published $ when legacy $ do
@@ -49,6 +58,8 @@ openVersioned options target source convert sourceFingerprint = do
    -- The reserved staging file is resumable. Its version is committed together
    -- with all converted keys. No partially converted file is ever published.
    fingerprint <- sourceFingerprint
+   Flat.recover staging
+   oldStage <- doesFileExist staging >>= \exists -> if exists then A.isLegacyStorage staging else pure False
    expected <- bracket (A.openStoreWith options staging) A.closeStore $ \store -> do
     saved <- A.getValue store versionKey
     case saved of
@@ -70,12 +81,15 @@ openVersioned options target source convert sourceFingerprint = do
      A.putValue store "local/migration-source" (toJSON source)
      A.putValue store "local/migration-fingerprint" fingerprint
     current <- storedVersion store
-    runMigrations steps current currentVersion store
+    runMigrations steps current (if oldStage then Flat.sourceVersion else currentVersion) store
     A.readSnapshot store
    unchanged <- sourceFingerprint
    unless (unchanged==fingerprint) $ fail "Legacy files changed during conversion; retry after stopping the old app"
+   when oldStage (Flat.prepare options staging)
+   let verified = if oldStage then expected { A.version = A.version expected+1
+         , A.entries = M.insert versionKey (String (versionText currentVersion)) (A.entries expected) } else expected
    actual <- bracket (A.openStoreWith options staging) A.closeStore A.readSnapshot
-   unless (actual==expected) $ fail "Migration read-back verification failed; originals retained"
+   unless (actual==verified) $ fail "Migration read-back verification failed; originals retained"
    -- Both files are on the same volume. Sync the directory after publication.
    renameFile staging target
    syncDirectory (takeDirectory target)
@@ -88,6 +102,15 @@ openVersioned options target source convert sourceFingerprint = do
     Nothing | legacy -> fail "Both unversioned LMDB and legacy storage exist; refusing to guess which is authoritative"
     Nothing -> pure () -- pre-versioning PR91 LMDB: already the target layout
     _ -> fail "Invalid persisted app version"
+  when published $ do
+   oldFormat <- A.isLegacyStorage target
+   when oldFormat $ do
+    bracket (A.openStoreWith options target) A.closeStore $ \store -> do
+     marker <- A.getValue store versionKey
+     when (marker==Nothing) $ A.putValue store versionKey (String (versionText Upgrade.targetVersion))
+     current <- storedVersion store
+     runMigrations steps current Flat.sourceVersion store
+    Flat.prepare options target
   bracketOnError (A.openStoreWith options target) A.closeStore $ \store -> do
    marker <- A.getValue store versionKey
    when (marker==Nothing) $ A.putValue store versionKey (String (versionText (if published then Upgrade.targetVersion else currentVersion)))
