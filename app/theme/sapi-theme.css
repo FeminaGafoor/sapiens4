@@ -473,3 +473,5 @@
 :root[data-theme] body.sapi-workspace.sapi-workspace .agent-name[aria-current=true]{box-shadow:none!important;background:transparent!important}
 :root[data-theme] body.sapi-workspace.sapi-workspace .avatar:not(.large):not(.mini)>span{font-size:12px;letter-spacing:-1px}
 :root[data-theme] body.sapi-workspace.sapi-workspace .avatar.mini>span{font-size:8px;letter-spacing:-.5px}
+
+:root[data-theme] body.sapi-workspace.sapi-workspace .group-labels.compact .group-chip{padding:5px!important;font-size:13px!important}

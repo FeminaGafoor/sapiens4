@@ -73,8 +73,8 @@ Stop/cancel and application-update controls stay neutral.
 White heads and dark facial marks do not invert in dark mode. Compact avatar
 chips use the stored character marks without adding outer parentheses. Existing
 names and custom facial expressions remain unchanged. Legacy default palette
-values are translated at render time; custom colors remain intact. No saved
-avatar data is rewritten.
+values are translated at render time; colors outside the reviewed palette display
+as action pink. Stored custom colors remain intact; no avatar data is rewritten.
 
 Task marks distinguish complete (`●`), active (`◎`), waiting (`○`) and attention
 (`!`) in addition to their text labels. Focus uses a contrasting ink outline.

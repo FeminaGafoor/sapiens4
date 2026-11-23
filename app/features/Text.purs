@@ -23,7 +23,13 @@ color value = case S.toLower value of
   "#f7d6d1" -> "#f9bdd0"
   "#c9f3f1" -> "#bfe3fa"
   "#e1edc6" -> "#fbe58a"
-  _ -> if D.matches "^#[a-fA-F0-9]{6}$" value then value else "#f9bdd0"
+  "#f9bdd0" -> "#f9bdd0"
+  "#f08fb0" -> "#f08fb0"
+  "#cfc4f2" -> "#cfc4f2"
+  "#fbe58a" -> "#fbe58a"
+  "#bfe3fa" -> "#bfe3fa"
+  -- Keep stored custom colors intact; the interface uses the reviewed palette.
+  _ -> "#f9bdd0"
 
 avatar :: X.Entity -> String -> Boolean -> V.Html
 avatar a size presence = V.node "span" [V.cls $ "avatar " <> (if M.isGroup a then "group-avatar " else "") <> size,V.style (if M.isGroup a then "background:linear-gradient(90deg," <> bands <> ")" else "--avatar-color:" <> color (a.color)),V.attr "aria-hidden" "true"]
