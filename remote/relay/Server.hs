@@ -20,7 +20,7 @@ import qualified Data.Set as S
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Data.Text (Text)
-import qualified Append4 as A
+import qualified AppStorage as A
 import qualified Clock
 import qualified Migrations
 import Network.HTTP.Types

@@ -35,7 +35,7 @@ import System.Directory
 import System.Environment (lookupEnv)
 import System.FilePath
 import System.IO (hPutStrLn, stderr)
-import qualified Append4 as A
+import qualified AppStorage as A
 import qualified Clock
 import Types
 import qualified Store as DB
@@ -252,7 +252,7 @@ readProgress s owner recording = do
 -- Finish an interrupted cancellation before accepting new voice work.
 recoverVoice :: Service -> IO ()
 recoverVoice s = do
- saved <- A.values (serviceStore s) "voice/"
+ saved <- A.recordsAt 2 (serviceStore s) "voice/"
  forM_ [(owner,recording) | (key,v)<-saved,boolean (get v "cancelled"),["voice",owner,recording]<-[T.splitOn "/" key]] $ \(owner,recording) ->
   void (cancelRecording s owner recording)
 

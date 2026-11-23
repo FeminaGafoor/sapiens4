@@ -13,6 +13,7 @@ EXE = str(Path(sys.argv[1]).resolve())
 SCHEMA = Path(__file__).with_name('v00.01.99.sql').read_text()
 
 def call(*args, ok=True):
+    args=({"corpora":"corpora02","relay":"relay02"}.get(args[0],args[0]),*args[1:])
     result = subprocess.run([EXE, *map(str, args)], capture_output=True, text=True)
     assert (result.returncode == 0) == ok, result.stderr
     return json.loads(result.stdout) if ok and result.stdout.startswith('{') else result

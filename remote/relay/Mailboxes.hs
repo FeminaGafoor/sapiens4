@@ -2,7 +2,7 @@ module Mailboxes where
 
 import Types
 import Crypto
-import qualified Append4 as A
+import qualified AppStorage as A
 import Control.Monad
 import Data.Aeson hiding (pairs)
 import qualified Data.ByteString as B
@@ -12,7 +12,7 @@ import Data.Text (Text)
 import qualified Data.Text.Encoding
 
 rows :: A.Store -> Text -> IO [Value]
-rows store key = map snd <$> A.values store (key<>"/")
+rows store key = map snd <$> A.recordsAt (if key=="messages" then 2 else 1) store (key<>"/")
 row :: A.Store -> Text -> IO Value
 row store key = maybe Null id <$> A.getValue store key
 putRow :: A.Store -> Text -> Text -> Value -> IO ()

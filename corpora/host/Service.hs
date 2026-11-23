@@ -29,7 +29,7 @@ import qualified Telemetry
 import DataRoot
 import qualified Computer
 import qualified Store as DB
-import qualified Append4 as A
+import qualified AppStorage as A
 import qualified Migrations
 import qualified Clock
 import Population

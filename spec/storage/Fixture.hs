@@ -4,7 +4,8 @@ import Control.Exception (bracket)
 import Control.Monad
 import Data.Aeson (Value(..), encode, toJSON)
 import Types
-import qualified Append4 as A
+import qualified AppStorage as A
+import qualified Append4.KV as K
 import qualified Mailboxes as M
 import Crypto (seconds)
 import System.Environment
@@ -51,15 +52,15 @@ relayChecks path = do
   expiredMessages <- M.roomMessages store "expired-room"
   live <- M.roomMessages store "live-room"
   trusted <- M.row store "rooms/trusted-room"
-  indexes <- A.values store "expiry/"
+  indexes <- K.values store "expiry/"
   -- Bounded cleanup must not let overdue rows through while a backlog remains.
   A.transaction store $ forM_ [10..309] $ \ident -> saveMessage ident "live-room" (time-1)
   batch <- M.transact store "GET" ["api","rooms","live-room","messages"] "phone-token" empty "admin" False
   A.transaction store (M.expire store time)
   void (M.transact store "DELETE" ["api","rooms","live-room","messages","3"] "phone-token" empty "admin" False)
   remaining <- M.roomMessages store "live-room"
-  remainingIndexes <- A.values store "expiry/"
-  retained <- A.history store
+  remainingIndexes <- K.values store "expiry/"
+  retained <- K.history store
   pure $ obj
    [("expired_room_removed",Bool (expired==Null && null expiredMessages))
    ,("live_room_isolated",Bool (map (`get` "id") live==[num 3]))
@@ -96,7 +97,7 @@ legacyBackupCheck root = do
      child=live </> "corporas" </> ident
  createDirectoryIfMissing True child
  createDirectory config
- writeJSON (live </> "host-corpora.json") (obj [("locals",arr [str (T.pack ident)])])
+ L.writeFile (live </> "host-corpora.json") (encode (obj [("locals",arr [str (T.pack ident)])]))
  writeFile (child </> "customer-document.txt") "customer data"
  Backup.withRootLocks live $ void (Backup.snapshot destination (UpdateRoots live config))
  copied <- readFile (destination </> "0/corporas" </> ident </> "customer-document.txt")

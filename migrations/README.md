@@ -3,7 +3,7 @@
 `v00.01.99` names the previous `dev` application (commit `7ae4825`):
 Corpora SQLite schema 8, agent JSON schema 3, JSON configuration and archives,
 SQLite remote receipts and relay mailboxes. `v00.02.00` is the LMDB release.
-`VERSION` carries the public version; Cabal represents it numerically (currently `0.2.1`).
+`VERSION` carries the public version; Cabal represents it numerically (currently `0.2.3`).
 Installer UUIDs and per-document schema versions are different identifiers.
 
 ## Permanent rules
@@ -18,7 +18,7 @@ to install every intermediate application release.
    transition, including changed settings, files, indexes and compatibility rules.
    Freeze its source/target constants; never define an old step’s target in terms
    of the moving `currentVersion`.
-2. Register the transition in `Migrations.openVersioned`'s `steps` list. Supply
+2. Register the transition in `Migrations`' sequential runner (transaction steps or an explicit format-publication step). Supply
    Corpora and relay actions as needed; an unchanged scope still advances its
    marker through an explicit no-op action. Update `MigrationVersion`, `VERSION`
    and the Cabal version together.
@@ -138,3 +138,32 @@ writers emit typed bytes; frozen JSON readers are retained only for older input.
 macOS native preferences already use the platform plist format. Relay connection
 exports, computer-provider snapshots and `host-control.json` are external JSON
 interchange documents, as are HTTP/LLM/provider responses and installer manifests.
+
+## v00.02.02 -> v00.02.03
+
+`V00_02_03.hs` owns the transition to complete-key typed KV. The sequential runner
+first finishes the frozen .00, .01 and .02 steps as necessary, closes that store,
+then invokes .03 before opening the runtime `Append4.KV` store. A persisted newer
+version is rejected before writes. All previously released migration readers stay
+available. New runtime code uses `AppStorage` only for in-memory domain assembly.
+
+The conversion writes `<store>.v00.02.03.staging`, retaining the exact closed
+source as `<store>.v00.02.02`. It verifies every scalar, reconstruction of every
+original record, every historical replay, and the exact original history archive
+before committing the .03 marker and publishing. Duplicate or ambiguous complete
+keys fail closed. A crash between renames restores the source and rebuilds the
+stage. Existing conflicting backups are never overwritten. The .03 publication
+lock spans the earlier steps and the final transition.
+
+Each namespace now maps a complete key directly to a typed value. There are no
+`.cells`/`.paths` tables or nonempty document roots. `prior-history` retains the
+original journal as complete scalar keys; active `audit` replays scalar mutations
+with the original append and transaction IDs. The version change adds one commit.
+CurrentOnly relay stores remain CurrentOnly and preserve receipts and expiry.
+
+`V00_02_03Files.hs` migrates the .02 settings/identity files to complete key/value
+pairs, retaining the .02 bytes beside them. Inputs from earlier releases first
+pass through the frozen .02 file step. Customer workspace and media files are
+unchanged. Run `spec/migrations/single.py FIXTURE`; the older `check.py` and
+`flat.py` continue exercising their frozen transitions through explicit fixture
+commands, so later releases cannot silently change their target versions.

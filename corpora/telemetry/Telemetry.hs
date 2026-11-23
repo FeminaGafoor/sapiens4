@@ -11,7 +11,7 @@ import Control.Concurrent.MVar
 import Control.Concurrent.STM
 import Control.Exception
 import Control.Monad
-import qualified V00_02_02Files as TypedFiles
+import qualified V00_02_03Files as TypedFiles
 import Data.Aeson
 import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString.Lazy as BL
