@@ -21,13 +21,31 @@ and Nerd `#BFE3FA` stay identical in both themes. Text on pastel surfaces is
 always `#111111`. Blush is decorative progress color, never body text.
 
 Cards and dialogs use 21px radii; fields, rows and inset surfaces use 13px;
-buttons, chips and composers use pill shapes. Activity navigation uses compact
+buttons use 13px rounded corners, badges use 8px, and composers use 21px. Activity navigation uses
 underlined tabs to distinguish navigation from selection controls. Panes are separated by 13px
 of ground, with no dividing borders. Visible panes alone receive grid tracks.
 
 DM Sans is the interface font, Zen Maru Gothic is the face font (300 for artwork,
 500 for chips), and IBM Plex Mono is the code font. All four WOFF2 files are
 bundled with their full glyph sets. Font licenses ship in `license/fonts/`.
+
+## Optimized component system
+
+The reviewed `ui-extract.html` component sheet supplies the geometry and palette
+for the live controls. Shared rules cover buttons, fields, menus, tabs, avatars,
+attachments, voice controls, tooltips, badges, and disclosures across features.
+
+- Spacing follows 5/8/13/21/34/55/89px intervals. Actionable controls are at least
+  44px high; inline mentions retain a 24px text target to preserve paragraph flow.
+- Avatars use 34/55/89px sizes, with the large header avatar reduced to 55px on
+  narrow screens. Fields and buttons share a 13px radius and 13px/21px text.
+- Hover, press, selection, keyboard focus, disabled and invalid states use the
+  reference colors. Selection has an ink mark; focus has a 2px ink outline.
+  Status labels and symbols distinguish outcomes without requiring color.
+- Live controls use native hover/focus/active selectors; the sheet's inert/static
+  preview attributes and gallery wrappers are not included in the application.
+- Native checkbox/radio behavior, hidden states, scroll containers and responsive
+  layout are preserved. Reduced-motion settings suppress control transitions.
 
 ## Components
 
