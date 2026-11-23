@@ -163,7 +163,7 @@ pauseRoutine time paused routine = routine
  , routineFields=KM.insert "updated" (str (timestamp time)) (routineFields routine) }
 
 dispatch :: Service -> Pulse -> IO ()
-dispatch s tick = when (pulseFrequency tick == Bph60) $ do
+dispatch s _ = do
  t <- getCurrentTime
  routines <- readRoutines s
  forM_ routines $ \routine -> do

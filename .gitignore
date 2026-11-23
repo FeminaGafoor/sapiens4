@@ -14,13 +14,12 @@ DerivedData/
 # Logs
 *.log
 
-# Local UI database, runtime state, agent artifacts and Python caches
+# Local runtime state, workspace artifacts and caches
 .sapiens4/
 .sapiens4-relay/
 .agentpy/
-*.sqlite3
-*.sqlite3-wal
-*.sqlite3-shm
+*.append4
+*.append4.lock
 __pycache__/
 .venv/
 .test-output/

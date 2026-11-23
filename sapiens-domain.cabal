@@ -15,7 +15,7 @@ common runtime
   ghc-options: -threaded -rtsopts -O1 -Wall -Werror=incomplete-patterns -Werror=incomplete-uni-patterns -Werror=missing-fields
   build-depends: base >=4.18 && <5, aeson ==2.3.2.0, bytestring, text, containers,
     directory, filepath, process, time, async, stm, scientific, vector,
-    sqlite-simple, filelock, uuid, base64-bytestring, network-uri, regex-tdfa,
+    append4, filelock, uuid, base64-bytestring, network-uri, regex-tdfa,
     http-client, http-client-tls, http-types, network, wai, warp, wai-websockets,
     websockets, wuss, cryptohash-sha256, entropy, memory, random, tagsoup ==0.14.8
   if !os(windows)
@@ -41,6 +41,7 @@ common host
   import: macos-update
   hs-source-dirs: corpora, corpora/state, corpora/work, corpora/work/schedule, corpora/host, corpora/telemetry, remote/relay, remote/control, remote/protocol, build, environments/update
   other-modules:
+    Clock,
     Command,
     Admission,
     Domain,
@@ -74,7 +75,6 @@ common host
     BrowserCrypto,
     Mailboxes,
     Registry,
-    Receipt,
     Server,
     Setup,
     Transport,
@@ -82,6 +82,7 @@ common host
     HostServer,
     Service,
     Store,
+    Clock,
     Types,
     Voice,
     Workspace,
@@ -124,6 +125,7 @@ executable sapiens-macos
     UpdateState,
     HostUpdateProtocol,
     DesktopStorage,
+    Clock,
     Types,
     Application,
     Browser,
@@ -163,6 +165,7 @@ common windows-host
     Paths_sapiens_domain,
     DataRoot,
     DesktopStorage,
+    Clock,
     Types,
     Browser,
     Host,

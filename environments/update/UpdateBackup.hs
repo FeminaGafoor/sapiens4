@@ -14,6 +14,7 @@ import System.FilePath
 import System.FileLock
 import UpdatePlatform
 import UpdateState
+import qualified Append4 as A
 
 data EntryKind = FileEntry | DirectoryEntry deriving Eq
 data TreeEntry = TreeEntry { relativePath :: FilePath, entryKind :: EntryKind } deriving Eq
@@ -41,10 +42,11 @@ backupRoots destination = UpdateRoots {dataRoot=destination </> "0", configRoot=
 managedChildren :: FilePath -> IO [FilePath]
 managedChildren root = do
  validatePath root
- let path = root </> "host-corpora.json"
+ let path = root </> "corpora.append4"
  exists <- pathPresent path
  if not exists then pure [] else do
-  names <- B.readFile path >>= either fail pure . (eitherDecodeStrict >=> parseEither registry)
+  saved <- bracket (A.openStore path) A.closeStore (\store -> A.getValue store "local/registry")
+  names <- maybe (pure []) (either fail pure . parseEither registry) saved
   forM names $ \name -> case canonicalUUID name of
    Just _ -> pure (root </> "corporas" </> T.unpack name)
    _ -> fail "Invalid registered child Corpora"

@@ -27,3 +27,7 @@ Windows: build the host and driver using their platform guides.
 Coverage excludes installer lifecycle, native guest isolation, remote-client
 UI, altered/expired encrypted delivery, load, native onboarding, provider
 discovery, model-settings UI, full provider combinations, and Group scenarios.
+
+Storage uses fresh Append4 fixtures; legacy-file migration tests are replaced by
+crash/restart, ownership and public audit checks. See `docs/storage.md` and
+`submodules/append4/README.md` for the storage contract and low-level checks.
