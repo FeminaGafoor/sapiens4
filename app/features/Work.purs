@@ -17,9 +17,10 @@ import Sapiens.Html as V
 import Sapiens.Model as M
 import Sapiens.Navigation as N
 import Sapiens.Text as T
+import Sapiens.Art as Art
 
 emptyTasks :: String -> String -> V.Html
-emptyTasks title detail = V.div "task-empty" [V.p "" title,V.textNode "small" [] (detail)]
+emptyTasks title detail = V.div "task-empty" [Art.empty Art.Asleep,V.p "" title,V.textNode "small" [] (detail)]
 
 disclosure :: M.Model -> String -> String -> Array V.Html -> Array V.Html -> V.Html
 disclosure m key classes summary content = V.node "details" [V.cls classes,V.bool "open" $ Set.member key m.expanded]
@@ -27,7 +28,7 @@ disclosure m key classes summary content = V.node "details" [V.cls classes,V.boo
 
 taskRow :: M.Model -> X.Task -> V.Html
 taskRow m task = disclosure m ("task:" <> m.selected <> ":" <> task.id) ("task-row " <> if routine then "task-routine" else "")
-  ([V.span [V.cls $ "task-mark " <> tone,V.attr "aria-hidden" "true"] (if state == X.WorkCompleted then "✓" else if tone == "attention" then "!" else "·")
+  ([V.span [V.cls $ "task-mark " <> tone,V.attr "aria-hidden" "true"] (if state == X.WorkCompleted then "●" else if tone == "attention" then "!" else if tone == "active" then "◎" else "○")
    ,V.node "span" [V.cls "task-row-copy"] [V.span [V.cls "task-title",V.attr "title" $ task.title] (task.title),V.node "span" [V.cls "task-meta"] [V.span [V.cls $ "task-state " <> tone] (if state == X.WorkWaitingForAdmin then "Needs input" else X.workName state),V.span [V.cls "task-assignee"] (D.fallback route $ task.meta)]]]
    <> (if routine then [control "Run routine" "Run" $ PrepareDraft ("@" <> task.id <> "\nRun it now.") "",control "Edit routine" "Edit" $ PrepareDraft ("Edit @" <> task.id <> " ( " <> task.title <> " )\nEdit Frequency (prev every " <> task.minutes <> " minutes): new every XXX minutes\nEdit Execution Prompt as: " <> task.prompt) "XXX",control (if state == X.WorkPaused then "Resume routine" else "Pause routine") (if state == X.WorkPaused then "▶" else "Ⅱ") $ PrepareDraft ((if state == X.WorkPaused then "Resume Scheduled Routine" else "Pause Scheduled Routine") <> "\n@" <> task.id) "",V.node "span" [V.cls "task-reference",V.attr "title" "Scheduled tasks queued in this allowance; pauses automatically at 1000."] [V.textNode "code" [] ("@" <> task.id),V.span [] (show task.runCount <> "/1000")]] else []) <> [V.span [V.cls "task-chevron",V.attr "aria-hidden" "true"] "›"])
   [V.div "task-body-heading" [V.span [] (if routine then "Execution prompt" else "Task body"),V.span [V.cls "task-format"] (if routine then "" else "YAML"),V.control [V.cls "task-copy",V.label $ "Copy " <> if routine then "execution prompt" else "task YAML"] "Copy" (Copy (task.body) (if routine then "Execution prompt copied." else "Task YAML copied."))]
@@ -97,7 +98,7 @@ tasks m view period = V.node "section" [V.cls "task-browser"] [V.node "div" [V.i
   group = M.selected m
   groupRows = A.filter (\t -> (view /= N.Automated || t.taskType == "automated") && if period == N.Deleted then t.deleted else not (t.deleted) && (t.state == X.GroupDone) == past) $ group.tasks
   calls = if view == N.Automated || period == N.Deleted then [] else A.filter (\t -> M.past (t.state) == past) $ groupCalls m group
-  groupContent = if A.null groupRows && A.null calls then [V.p "empty" "No tasks here yet."] else map (groupTask m group) groupRows <> map (taskRow m) calls
+  groupContent = if A.null groupRows && A.null calls then [emptyTasks "No tasks here yet." "Plan your next task with the Group."] else map (groupTask m group) groupRows <> map (taskRow m) calls
 
 routines :: M.Model -> N.Period -> V.Html
 routines m period = V.node "section" [V.cls "task-browser"] [V.node "div" [V.cls "task-list",V.label $ N.periodLabel period <> " scheduled routines"] $ if A.null rows then [emptyTasks (if period == N.Paused then "No paused routines" else "No planned routines") (if period == N.Paused then "Paused routines will appear here." else "Create a scheduled routine through chat.")] else map (taskRow m) rows]
@@ -105,7 +106,7 @@ routines m period = V.node "section" [V.cls "task-browser"] [V.node "div" [V.cls
   rows = map (\r -> {id:r.id,title:r.title,owner:r.owner,sender:r.owner,state:if r.paused then X.WorkPaused else X.WorkPlanned,routine:true,minutes:show $ I.floor r.minutes,prompt:r.prompt,runCount:I.floor r.runCount,meta:"Every " <> show (I.floor r.minutes) <> " minutes" <> if r.paused then "" else " · " <> B.formatDate "" D.empty r.nextDue,body:"Frequency: every " <> show (I.floor r.minutes) <> " minutes\nExecute: " <> r.prompt,result:"",error:"",taskType:""}) $ A.filter (\r -> r.owner == m.selected && r.paused == (period == N.Paused)) m.snapshot.routines
 
 events :: M.Model -> V.Html
-events m = V.node "section" [V.cls "event-log"] [V.div "event-columns event-head" $ map (\s -> V.span [] (s)) ["Timestamp","Actor","Entity","Event","Agency",""],V.div "event-rows" $ if A.null rows then [V.p "empty" "No events yet."] else map event rows]
+events m = V.node "section" [V.cls "event-log",V.label "Events",V.attr "tabindex" "0"] [V.div "event-columns event-head" $ map (\s -> V.span [] (s)) ["Timestamp","Actor","Entity","Event","Agency",""],V.div "event-rows" $ if A.null rows then [V.div "empty" [Art.empty Art.Watching,V.p "" "No events yet."]] else map event rows]
   where
   rows = A.take 100 $ fromMaybe [] $ O.lookup m.selected m.snapshot.events
   name id = case id of

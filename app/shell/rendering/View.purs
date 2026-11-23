@@ -16,6 +16,7 @@ import Sapiens.Html as V
 import Sapiens.Model as M
 import Sapiens.Navigation as N
 import Sapiens.Text as T
+import Sapiens.Art as Art
 import Sapiens.Work as Work
 import Sapiens.Workspace as Workspace
 
@@ -26,7 +27,7 @@ render m = V.node "div" []
   ,Dialog.view m,V.textNode "div" [V.id "toast",V.cls $ "toast " <> if m.toast /= "" then "visible" else "",V.attr "role" "status",V.attr "aria-live" "polite"] (m.toast)]
   where
   panes = M.visiblePanes m
-  columns = [(if A.elem N.Sidebar panes then if A.length panes == 1 then "minmax(0,1fr)" else "clamp(205px,18vw,250px)" else "0px"),(if A.elem N.ChatPane panes then "minmax(300px,1fr)" else "0px"),(if A.elem N.Workspace panes then "minmax(350px,1.2fr)" else "0px")]
+  columns = A.filter (_ /= "") [(if A.elem N.Sidebar panes then if A.length panes == 1 then "minmax(0,1fr)" else "clamp(260px,20vw,300px)" else ""),(if A.elem N.ChatPane panes then "minmax(340px,1fr)" else ""),(if A.elem N.Workspace panes then "minmax(350px,1.2fr)" else "")]
 
 status :: M.Model -> String
 status m = if (M.busy m) then "Connecting…" else if m.active == "" then "Not connected" else if not (M.online m) then "Offline" else if (M.activeRecord m).stopping then "Pausing…" else stateName $ (M.activeRecord m).status
@@ -39,7 +40,7 @@ stateName = case _ of
 
 header :: M.Model -> V.Html
 header m = V.node "header" [V.cls "app-header"] $
-  [V.node "a" [V.cls "wordmark",V.attr "href" "#",V.label "Sapiens4 home",V.on "click" \e -> Link e Home] [V.span [V.cls "brand-name"] "Sapiens4"]
+  [V.node "a" [V.cls "wordmark",V.attr "href" "#",V.label "Sapiens4 home",V.on "click" \e -> Link e Home] [Art.chiefy "brand-mark",V.span [V.cls "brand-name"] "Sapiens4"]
   ,V.control [V.id "app-menu",V.cls "icon-button menu-button",V.label "Menu",V.attr "title" "Menu"] "☰" (OpenDialog M.AppMenu F.NoRecord)
   ,V.node "nav" [V.cls "pane-controls",V.label "Panel visibility"] $ map paneButton [Tuple N.Sidebar "chat list",Tuple N.ChatPane "chat",Tuple N.Workspace "workspace"]
   ,V.control [V.cls "theme-toggle",V.label $ "Switch to " <> (if m.theme == "dark" then "light" else "dark") <> " theme"] (if m.theme == "dark" then "☀" else "☾") (Theme)
@@ -96,7 +97,10 @@ statusMenu m = V.node "div" [V.id "corpora-status-menu",V.cls "corpora-popover s
 
 emptyCorpora :: M.Model -> V.Html
 emptyCorpora m = V.node "section" [V.id "corpora-empty",V.cls "corpora-empty",V.hidden $ m.active /= "" || m.installRequired]
-  [V.textNode "h1" [] "Your corpora",V.p "" "Connect to your Sapis on another computer.",V.button "" "Connect remote corpora" $ OpenDialog M.ConnectRemote F.NoRecord,V.when m.localAvailable $ V.button "" "Create local corpora" $ OpenDialog M.CreateCorpora F.NoRecord]
+  [V.div "empty-art" [Art.chiefy "welcome-chiefy"],V.textNode "h1" [] "Many minds.\nOne place."
+  ,V.p "" $ if m.localAvailable then "Your own team of AI coworkers. Start here or connect to your Sapis on another computer." else "Your own team of AI coworkers. Connect to your Sapis on another computer."
+  ,V.when m.localAvailable $ V.button "primary" "Create local corpora" $ OpenDialog M.CreateCorpora F.NoRecord
+  ,V.button (if m.localAvailable then "" else "primary") "Connect remote corpora" $ OpenDialog M.ConnectRemote F.NoRecord]
 
 installGate :: M.Model -> V.Html
 installGate m = V.node "section" [V.id "mobile-install-gate",V.label "Install Sapiens4",V.hidden $ not m.installRequired]
@@ -122,7 +126,7 @@ conversation :: M.Model -> V.Html
 conversation m = V.node "section" [V.cls "conversation",V.id "chat-panel",V.label "Agent conversation",V.hidden $ not $ A.elem N.ChatPane panes]
   [V.node "div" [V.cls "agent-heading",V.id "agent-heading"] [T.avatar a (if m.selected == m.snapshot.main_agent_id then "large main-sapi-avatar" else "large") true,V.div "" [V.div "agent-title" [V.textNode "h2" [] (a.name),V.when (not $ M.isGroup a) $ T.groupLabels m a false],V.p "agent-role" $ (if M.isGroup a then a.description else a.role)],V.icon "Sapi settings" "···" $ OpenDialog (if M.isGroup a then M.GroupSettings else M.AgentSettings) (F.EntityRecord a)]
   ,activityNav m,viewbar m
-  ,V.keyed "div" [V.cls "conversation-body",V.id "conversation-body",V.on "scroll" $ const Scroll,V.on "pointerdown" $ const UserScroll,V.on "touchstart" $ const UserScroll,V.on "wheel" $ const UserScroll,V.on "keydown" $ const UserScroll] $ case m.activity of
+  ,V.keyed "div" [V.cls "conversation-body",V.id "conversation-body",V.attr "tabindex" "0",V.on "scroll" $ const Scroll,V.on "pointerdown" $ const UserScroll,V.on "touchstart" $ const UserScroll,V.on "wheel" $ const UserScroll,V.on "keydown" $ const UserScroll] $ case m.activity of
     N.Chat N.Conversation -> Chat.rows m
     N.Chat view -> [Tuple "unavailable" $ V.p "empty" $ N.chatLabel view <> " are not available yet."]
     N.Work N.Scheduled period -> [Tuple "routines" $ Work.routines m period]
