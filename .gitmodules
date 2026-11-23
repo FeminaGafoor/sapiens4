@@ -5,3 +5,4 @@
 [submodule "submodules/append4"]
 	path = submodules/append4
 	url = https://github.com/fatmahalqaisi-code/append4.git
+	branch = codex/lmdb-storage
