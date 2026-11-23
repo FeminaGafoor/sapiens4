@@ -6,7 +6,6 @@ import qualified Append4 as A
 import Control.Monad
 import Data.Aeson hiding (pairs)
 import qualified Data.ByteString as B
-import Data.Char
 import Data.List (sort,sortOn)
 import qualified Data.Text as T
 import Data.Text (Text)
@@ -17,18 +16,47 @@ rows store key = map snd <$> A.values store (key<>"/")
 row :: A.Store -> Text -> IO Value
 row store key = maybe Null id <$> A.getValue store key
 putRow :: A.Store -> Text -> Text -> Value -> IO ()
-putRow store kind identity = A.putValue store (kind<>"/"<>identity)
+putRow store kind identity value = do
+ let key = kind<>"/"<>identity
+ previous <- row store key
+ forM_ (expiryKey key previous) (A.deleteValue store)
+ A.putValue store key value
+ forM_ (expiryKey key value) (\index -> A.putValue store index (str key))
 removeRow :: A.Store -> Text -> Text -> IO ()
-removeRow store kind identity = A.deleteValue store (kind<>"/"<>identity)
+removeRow store kind identity = do
+ let key = kind<>"/"<>identity
+ previous <- row store key
+ forM_ (expiryKey key previous) (A.deleteValue store)
+ A.deleteValue store key
 expiry :: Value -> Double
 expiry (Number n) = realToFrac n
 expiry _ = 0
+orderedNumber :: Integer -> Text
+orderedNumber = T.justifyRight 20 '0' . T.pack . show
+expiryKey :: Text -> Value -> Maybe Text
+expiryKey key value
+ | any (`T.isPrefixOf` key) ["rooms/","messages/"] && expiry (get value "expires") > 0 =
+    Just ("expiry/"<>orderedNumber (ceiling (expiry (get value "expires")*1000))<>"/"<>key)
+ | otherwise = Nothing
+roomMessages :: A.Store -> Text -> IO [Value]
+roomMessages store room = rows store ("messages/"<>room)
+messageIdentity :: Text -> Value -> Text
+messageIdentity room value = room<>"/"<>orderedNumber (fromIntegral (int value))
+removeRoom :: A.Store -> Text -> IO ()
+removeRoom store room = do
+ roomMessages store room >>= mapM_ (removeRow store "messages" . messageIdentity room . (`get` "id"))
+ removeRow store "rooms" room
 expire :: A.Store -> Double -> IO ()
 expire store time = do
- rooms <- rows store "rooms"
- let expired=[at v "id" | v<-rooms,get v "expires"/=Null,expiry (get v "expires")<=time]
- rows store "messages" >>= mapM_ (\v -> when (expiry (get v "expires")<=time || at v "room" `elem` expired) (removeRow store "messages" (T.pack (show (int (get v "id"))))))
- mapM_ (removeRow store "rooms") expired
+ due <- A.rangeValues store "expiry/" ("expiry/"<>orderedNumber (floor (time*1000)+1)) 256
+ forM_ due $ \(index,value) -> do
+  let key = text value
+  saved <- row store key
+  if expiryKey key saved /= Just index then A.deleteValue store index
+  else when (expiry (get saved "expires")<=time) $ do
+   if "rooms/" `T.isPrefixOf` key then removeRoom store (T.drop 6 key)
+   else removeRow store "messages" (T.drop 9 key)
+   A.deleteValue store index
 transact :: A.Store -> Text -> [Text] -> Text -> Value -> Text -> Bool -> IO Value
 transact store method parts bearer body admin beta = A.transaction store $ do
  time <- seconds
@@ -36,7 +64,7 @@ transact store method parts bearer body admin beta = A.transaction store $ do
  if parts==["api","rooms"] && method=="POST" then do
   authorized <- constantEqual bearer admin
   require (beta || authorized) 401 "Unauthorized"
-  count <- length <$> rows store "rooms"
+  count <- length . filter (\v -> get v "expires"==Null || expiry (get v "expires")>time) <$> rows store "rooms"
   require (count<100) 429 "Room limit reached"
   when beta $ do
    recent <- filter ((>time-60) . expiry) . list <$> row store "beta"
@@ -50,7 +78,7 @@ transact store method parts bearer body admin beta = A.transaction store $ do
    void (unb64 (get body "public_key") (Just 32))
    existing <- row store ("corpora/"<>text address)
    live <- row store ("rooms/"<>at existing "room")
-   require (not beta || live==Null) 409 "Revoke the existing pairing before creating another"
+   require (not beta || live==Null || (get live "expires"/=Null && expiry (get live "expires")<=time)) 409 "Revoke the existing pairing before creating another"
    require (existing==Null || at existing "identity"==at body "corpora_id") 409 "CORPORA ID collision"
   room <- token
   desktop <- token
@@ -62,22 +90,21 @@ transact store method parts bearer body admin beta = A.transaction store $ do
   require (length parts>=3 && take 2 parts==["api","rooms"]) 404 "Not found"
   let room=parts!!2
   saved <- row store ("rooms/"<>room)
-  require (saved/=Null) 401 "Unknown or expired mailbox"
+  require (saved/=Null && (get saved "expires"==Null || expiry (get saved "expires")>time)) 401 "Unknown or expired mailbox"
   desktop <- constantEqual (hashText bearer) (at saved "desktop")
   phone <- constantEqual (hashText bearer) (at saved "phone")
   require (desktop || phone) 401 "Unknown or expired mailbox"
   let role=if desktop then "desktop" else "phone"
       recipient=if desktop then "phone" else "desktop"
       updateAddress = A.values store "corpora/" >>= mapM_ (\(key,v) -> when (at v "room"==room) (A.putValue store key (put "expires" (num 0) v)))
-  messages <- filter ((==room) . (`at` "room")) <$> rows store "messages"
+  messages <- filter ((>time) . expiry . (`get` "expires")) <$> roomMessages store room
   case (drop 3 parts,method) of
    (["trust"],"POST") | desktop -> do
     putRow store "rooms" room (put "expires" Null saved)
     updateAddress
     pure (obj [("trusted",Bool True)])
    ([],"DELETE") | desktop -> do
-    mapM_ (removeRow store "messages" . T.pack . show . int . (`get` "id")) messages
-    removeRow store "rooms" room
+    removeRoom store room
     updateAddress
     pure (obj [("deleted",Bool True)])
    (["messages"],"GET") -> pure (obj [("messages",arr (mailboxBatch (take 20 (sortOn (int . (`get` "id")) (filter ((==role) . (`at` "recipient")) messages)))))])
@@ -90,12 +117,13 @@ transact store method parts bearer body admin beta = A.transaction store $ do
     require (length messages<100 && sum (map (T.length . jsonText . (`get` "frame")) messages)+T.length (jsonText body)<=48000000) 429 "Mailbox full"
     identity <- (+1) . int <$> row store "sequence"
     A.putValue store "sequence" (num identity)
-    putRow store "messages" (T.pack (show identity)) (obj [("id",num identity),("room",str room),("recipient",str recipient),("frame",body),("expires",toJSON (time+86400))])
+    putRow store "messages" (messageIdentity room (num identity)) (obj [("id",num identity),("room",str room),("recipient",str recipient),("frame",body),("expires",toJSON (time+86400))])
     pure (obj [("id",num identity)])
    (["messages",identity],"DELETE") -> do
-    require (not (T.null identity) && T.all isDigit identity) 400 "Invalid message ID"
-    message <- row store ("messages/"<>identity)
-    when (at message "room"==room && at message "recipient"==role) (removeRow store "messages" identity)
+    require (not (T.null identity) && T.length identity<=20 && T.all (\c -> c>='0' && c<='9') identity) 400 "Invalid message ID"
+    let key = room<>"/"<>T.justifyRight 20 '0' identity
+    message <- row store ("messages/"<>key)
+    when (at message "room"==room && at message "recipient"==role) (removeRow store "messages" key)
     pure (obj [("deleted",Bool True)])
    _ -> failure 404 "Not found"
 mailboxBatch :: [Value] -> [Value]

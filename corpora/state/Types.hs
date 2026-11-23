@@ -73,7 +73,7 @@ instance ToJSON ModelSelection where
  toJSON choice = obj [("provider",str (providerName (selectionProvider choice))),("model",str (selectionModel choice)),("effort",str (selectionEffort choice))]
 
 data Run = Run { runOwner :: AgentId, runId :: RunId, runSlot :: Int, runCancel :: IORef Bool, runProcess :: MVar (Maybe ProcessHandle), runActivity :: IORef Value, runDeadline :: Word64, runModelConfig :: ModelSelection }
-data Service = Service { serviceAdmission :: Admission, serviceRoot :: FilePath, repositoryRoot :: FilePath, serviceGuard :: MVar (), serviceFileLock :: FileLock, serviceStopping :: IORef Bool, serviceWorker :: MVar (Maybe (Async ())), serviceRuns :: MVar (Map RunId Run), serviceLease :: IORef (Maybe (AgentId, RunId)), serviceEndpoint :: IORef Text, servicePulse :: IORef Value, serviceActors :: MVar (Map ThreadId (Text,Maybe Text)), serviceStore :: A.Store, serviceClock :: Clock.Clock, serviceFlush :: Async ()
+data Service = Service { serviceAdmission :: Admission, serviceRoot :: FilePath, repositoryRoot :: FilePath, serviceGuard :: MVar (), serviceFileLock :: FileLock, serviceStopping :: IORef Bool, serviceWorker :: MVar (Maybe (Async ())), serviceRuns :: MVar (Map RunId Run), serviceLease :: IORef (Maybe (AgentId, RunId)), serviceEndpoint :: IORef Text, servicePulse :: IORef Value, serviceActors :: MVar (Map ThreadId (Text,Maybe Text)), serviceStore :: A.Store, serviceClock :: Clock.Clock
  , serviceRevision :: TVar Integer, updateSubscribers :: TVar Int, snapshotFiles :: IORef (Set FilePath)
  , serviceVoicePieces :: IORef (Map (Text,Text) Word64)
  , serviceTelemetry :: IORef (Maybe Telemetry.Telemetry), serviceCorporaId :: Text }

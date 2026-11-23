@@ -57,9 +57,8 @@ openService clock gate telemetry choice path = do
       require (get identity "version"==num 1 && maybe False ((==at identity "corpora_id") . UUID.toText) (UUID.fromText (at identity "corpora_id"))) 409 "Invalid CORPORA identity. Restore corpora-identity.json from backup."
       pure (at identity "corpora_id")
  corporaId <- prepareIdentity `onException` unlockFile lock
- store <- A.openStore (root </> "corpora.append4") `onException` unlockFile lock
- flusher <- Clock.subscribe clock (const (A.flush store)) `onException` (A.closeStore store `finally` unlockFile lock)
- let cleanup = cancel flusher >> (A.closeStore store `finally` unlockFile lock)
+ store <- A.openStore (root </> "corpora.lmdb") `onException` unlockFile lock
+ let cleanup = A.closeStore store `finally` unlockFile lock
  let initialize = do
       guard <- newMVar ()
       stopping <- newIORef False
@@ -73,7 +72,7 @@ openService clock gate telemetry choice path = do
       subscribers <- newTVarIO 0
       files <- newIORef Set.empty
       voicePieces <- newIORef M.empty
-      let s=Service gate root repo guard lock stopping worker runs lease endpoint pulse actors store clock flusher revision subscribers files voicePieces telemetry corporaId
+      let s=Service gate root repo guard lock stopping worker runs lease endpoint pulse actors store clock revision subscribers files voicePieces telemetry corporaId
       A.transaction store $ do
        rows <- DB.agents s
        when (null rows) $ void (createAgent s (obj [("name",str "ChiefSapi"),("role",str "Head of Corpora")]))
@@ -143,7 +142,7 @@ closeService s = do
   awaitRuns
   (do chief <- DB.mainAgent s
       DB.record s [chief] "corpora" "system.stopped" empty "system" Nothing)
-   `finally` ((cancel (serviceFlush s) >> A.closeStore (serviceStore s)) `finally` unlockFile (serviceFileLock s))
+   `finally` (A.closeStore (serviceStore s) `finally` unlockFile (serviceFileLock s))
 snapshotUnlocked :: Service -> IO Value
 snapshotUnlocked s = do
  revision <- readTVarIO (serviceRevision s)

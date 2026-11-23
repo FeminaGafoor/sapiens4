@@ -1,45 +1,58 @@
-# Append4 storage
+# LMDB storage through Append4
 
-Sapiens embeds the Haskell library in `submodules/append4`. There is one host
-clock at 120 BPM (500 ms), shared by local Corpora, flushes, execution,
-transcription, filesystem observation and telemetry scheduling. Append4 has a
-writer worker, but no independent clock or service. Network timeouts and retry
-backoff are transport concerns, not additional application pulses.
+Sapiens embeds Append4's Haskell transaction API over vendored LMDB 0.9.36.
+There is no storage service or storage timer. The host's shared 120 BPM clock
+(500 ms) schedules application workers, filesystem observation and telemetry;
+LMDB commits start as soon as writes are submitted.
 
-A Corpora owns `corpora.append4`. API operations and execution transitions stage
-KV changes within the existing service guard. Exceptions discard staged changes.
-The writer syncs before publishing or returning success; provider workers launch
-through post-commit callbacks. Audio buffers are removed after commit; interrupted
-cancellations finish their cleanup on restart. A paused Corpora still commits administrative
-changes; it does not admit scheduled work.
+A Corpora owns corpora.lmdb. API operations and execution transitions stage
+changes inside the existing service guard. Exceptions discard staged changes.
+LMDB commits synchronously before success or provider dispatch. Audio buffers
+are removed after commit; interrupted cancellations finish cleanup on restart.
+Paused Corpora can still commit administrative changes.
 
-The same store holds agents, state, turns, messages, groups, routines, attachments,
-preferences, settings, voice-upload progress, directory relationships, audit records, remote receipts,
-pairing credentials and the local/remote Corpora registry. `local/` keys are
-device-bound: a future replication protocol must explicitly exclude/rebind them.
-The standalone relay also uses Append4 (`relay.append4`) and its own process's
-single 120 BPM clock. SQLite and its schema/SQL adapters have been removed.
+One LMDB environment contains state, receipts, expiry, audit and metadata named
+databases. These namespaces share atomic commits. Agents, turns, attachments,
+settings, directory relationships, pairing and registry data remain accessible
+through the same KV API. Prefix reads seek into the B-tree. Only transaction
+changes are staged in Haskell memory; current state and permanent history are
+read from disk on demand. local/ keys remain device-bound.
 
-Bootstrap files select and identify the data directory. Installer transaction
-state, consent/configuration outside the data directory, user workspace files,
-media, and generated provider manifests remain files; they are not parallel
-Corpora state stores. Update backup discovers registered children from Append4
-while writers are stopped and copies the entire data tree.
+Corpora retain mutation history on disk. Each accepted transaction has one
+logical version; separate reversing transactions remain distinct. NoChange
+rejects an exact logical round trip inside one transaction. The indexed duplicate
+ledger replaces scans of past transactions. Full snapshots and history are explicit
+reads, not startup or per-commit work. Disk retention of Corpora history remains
+unbounded; this change does not add replication or an audit archival policy.
 
-This change uses fresh temporary fixtures. Existing SQLite/JSON Corpora data are
-rejected without conversion. Use a separate empty data directory. No migration
-runner or dual-write bridge is included.
+The relay owns relay.lmdb with CurrentOnly history policy. Expired and acknowledged
+message payloads are deleted from current state without being copied into an
+append-only audit journal. An expiry index supports bounded cleanup (256 index
+entries per pass), on requests and once per minute. Delivery and authentication
+check expiration even while cleanup has a backlog. Room-prefixed message keys
+avoid scanning other rooms. LMDB reuses released pages; deletion does not promise
+secure byte erasure or immediate shrinking of the database file. Address mappings
+and explicit request-ID ledgers have their own lifetimes.
 
-`NoChange` rejects an exact logical KV state round-trip inside one transaction.
-Separate reversing transactions are retained, including within one flush.
-Snapshots are immutable; history reads identify the end of an append. No complex
-netting, replication, failover, checkpointing or compaction is implemented here.
-All historical data remain resident; relay expiry removes delivery eligibility,
-not bytes from journal history. External action outcomes still require review
-when an interruption leaves them uncertain; remote retries never blindly replay
-an incomplete receipt.
+The map grows from 16 MiB up to a configurable 64 GiB ceiling. Growth waits for
+readers and retries prepared writes only, without rerunning application actions.
+Use short transactions and local filesystems. Writes stay on one bound OS thread;
+read data is copied before transaction release. Default synchronous LMDB durability
+is enabled. The vendored engine includes its original copyright and license notices.
 
-Tests assert public behavior with temporary directories, fixture providers and
-fixture-owned remote credentials. They no longer repair internal JSON files or
-read audit/credential persistence formats. Low-level Append4 format and durability
-checks live with Append4 and exercise the Haskell implementation from Lean.
+Bootstrap/installer files, workspace documents, media and generated provider
+artifacts remain files. Backups stop writers and copy corpora.lmdb with the
+owned data tree, excluding disposable LMDB and Append4 lock files. Managed
+children are discovered through a read-only offline lookup that does not
+change the database or create lock files. It requires stopped writers or an
+immutable backup.
+
+This change requires fresh data. SQLite/JSON data and the earlier .append4 journal
+format are rejected without conversion; existing data are not modified. Use an
+empty directory. A persisted history policy must match when reopening a store.
+
+External effects still require reconciliation after an uncertain interruption;
+afterCommit is not a durable job queue. Remote incomplete receipts prevent blind
+replay. Low-level checks cover commit/cancellation/restart behavior, capacity
+failures, indexed reads and transient page reuse. See the Append4 README and
+docs/testing.md for commands.

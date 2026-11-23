@@ -1,4 +1,4 @@
--- One host clock, shared by all Corpora, storage flushes and periodic workers.
+-- One host clock for periodic application workers. Storage commits independently.
 module Clock (Clock, start, stop, subscribe) where
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async

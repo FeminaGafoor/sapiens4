@@ -18,8 +18,9 @@ DerivedData/
 .sapiens4/
 .sapiens4-relay/
 .agentpy/
-*.append4
-*.append4.lock
+*.lmdb
+*.lmdb.lock
+*.lmdb-lock
 __pycache__/
 .venv/
 .test-output/

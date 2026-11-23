@@ -42,10 +42,12 @@ backupRoots destination = UpdateRoots {dataRoot=destination </> "0", configRoot=
 managedChildren :: FilePath -> IO [FilePath]
 managedChildren root = do
  validatePath root
- let path = root </> "corpora.append4"
+ let path = root </> "corpora.lmdb"
  exists <- pathPresent path
  if not exists then pure [] else do
-  saved <- bracket (A.openStore path) A.closeStore (\store -> A.getValue store "local/registry")
+  -- Live roots are held by withRootLocks; backups are immutable. Avoid opening
+  -- a writer or changing LMDB lock files during metadata verification.
+  saved <- A.getOfflineValue path "local/registry"
   names <- maybe (pure []) (either fail pure . parseEither registry) saved
   forM names $ \name -> case canonicalUUID name of
    Just _ -> pure (root </> "corporas" </> T.unpack name)
@@ -138,7 +140,8 @@ inventories resolve live source = do
  let dataPath = dataRoot source
      locks = map (makeRelative dataPath . (</> "host.lock")) corpora
      relative child = if child == dataPath then "" else makeRelative dataPath child
-     profiles = [relative child </> profile | child <- corpora, profile <- reservationName:profileExclusions]
+     profiles = [relative child </> profile | child <- corpora,
+       profile <- reservationName:"corpora.lmdb.lock":"corpora.lmdb-lock":profileExclusions]
      configExcluded = configOwnerName:configWriterLockName:profileExclusions
  skippedData <- resolve dataPath (locks ++ profiles)
  savedData <- Inventory (dataRoot live) locks profiles <$> inventory dataPath skippedData

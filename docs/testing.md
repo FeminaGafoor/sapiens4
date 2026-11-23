@@ -28,6 +28,19 @@ Coverage excludes installer lifecycle, native guest isolation, remote-client
 UI, altered/expired encrypted delivery, load, native onboarding, provider
 discovery, model-settings UI, full provider combinations, and Group scenarios.
 
-Storage uses fresh Append4 fixtures; legacy-file migration tests are replaced by
+Storage uses fresh LMDB fixtures through Append4; legacy-file migration tests are replaced by
 crash/restart, ownership and public audit checks. See `docs/storage.md` and
 `submodules/append4/README.md` for the storage contract and low-level checks.
+
+Additional storage checks (pass the executable path returned by cabal list-bin):
+
+```sh
+cabal --project-dir=build --project-file=cabal.project build exe:append4-fixture exe:sapiens-storage-fixture
+lean --run submodules/append4/spec/Main.lean PATH_TO_APPEND4_FIXTURE
+lean --run spec/storage/Main.lean PATH_TO_SAPIENS_STORAGE_FIXTURE
+```
+
+These include relay expiry backlogs, room isolation, trust/ack index cleanup,
+no transient payload history, map growth and commits without a flush clock.
+On Windows/macOS, the integration fixture also verifies an actual update backup
+with LMDB data and excluded runtime lock files.

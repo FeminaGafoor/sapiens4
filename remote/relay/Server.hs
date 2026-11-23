@@ -36,9 +36,10 @@ newRelay repo path admin url beta = do
  require (T.length admin >= 32 && T.all isAscii admin) 400 "SAPIENS_RELAY_ADMIN_TOKEN must contain at least 32 ASCII characters"
  approved <- origin (str url)
  clock <- Clock.start
- store <- A.openStore path `onException` Clock.stop clock
- flusher <- Clock.subscribe clock (const (A.flush store))
- let close = cancel flusher >> (A.closeStore store `finally` Clock.stop clock)
+ store <- A.openStoreWith A.defaultOptions { A.historyPolicy = A.CurrentOnly } path `onException` Clock.stop clock
+ cleanup <- Clock.subscribe clock (\tick -> when (tick `mod` 120==0) (A.transaction store (seconds >>= expire store)))
+  `onException` (A.closeStore store `finally` Clock.stop clock)
+ let close = cancel cleanup >> (A.closeStore store `finally` Clock.stop clock)
  Relay store clock close approved admin beta repo <$> newMVar M.empty <*> newMVar 0
 relayApplication :: Relay -> Application
 relayApplication relay req respond = do
@@ -136,7 +137,7 @@ socketApp relay pending = do
          active <- current
          unless active (failure 401 "Connected in another tab")
          result <- transact (relayDB relay) "GET" path bearer empty (relayAdmin relay) False
-         live <- filter ((==room) . (`at` "room")) <$> rows (relayDB relay) "messages"
+         live <- roomMessages (relayDB relay) room
          batch <- modifyMVar inflight (pure . deliveryBatch (S.fromList [int (get v "id") | v<-live]) result)
          forM_ batch (send . put "type" (str "messages"))
         receive = forever $ do

@@ -129,7 +129,7 @@ hostMain root args = do
 #endif
  ownConfig $ bracket (startHost consent directory port preparing) hostStop $ \host -> do
   let url="http://127.0.0.1:"<>show (hostPort host)<>"/workspace/"
-  putStrLn ("Sapiens4: "<>url<>"\nAppend4 store: "<>directory</>"corpora.append4")
+  putStrLn ("Sapiens4: "<>url<>"\nLMDB store: "<>directory</>"corpora.lmdb")
   finished <- newEmptyMVar
   let shutdown=void (tryPutMVar finished ())
   installShutdown shutdown
@@ -179,7 +179,7 @@ relayMain root args = do
  bind <- option "--bind" <$> (fromMaybe "127.0.0.1" <$> lookupEnv "SAPIENS_RELAY_BIND") <*> pure args
  portDefault <- fromMaybe "4180" <$> lookupEnv "PORT"
  port <- validated (parseIntegerOption "--port" portDefault args)
- dbDefault <- fromMaybe ".sapiens4-relay/relay.append4" <$> lookupEnv "SAPIENS_RELAY_DB"
+ dbDefault <- fromMaybe ".sapiens4-relay/relay.lmdb" <$> lookupEnv "SAPIENS_RELAY_DB"
  urlEnv <- lookupEnv "SAPIENS_RELAY_ORIGIN"
  railway <- lookupEnv "RAILWAY_PUBLIC_DOMAIN"
  let database=option "--db" dbDefault args

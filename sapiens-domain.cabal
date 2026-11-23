@@ -99,6 +99,13 @@ executable sapiens4
   import: runtime, host
   main-is: Main.hs
 
+executable sapiens-storage-fixture
+  import: runtime, host
+  hs-source-dirs: spec/storage
+  main-is: Fixture.hs
+  if os(windows) || os(osx)
+    other-modules: UpdateBackup
+
 executable sapiens-linux
   import: runtime, host
   hs-source-dirs: environments/linux
