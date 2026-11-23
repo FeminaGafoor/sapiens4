@@ -29,6 +29,7 @@ import qualified Data.Text.Encoding as TE
 import Data.Time
 import Data.Typeable
 import Data.Word (Word64)
+import qualified V00_02_02Files as TypedFiles
 import qualified Append4 as A
 import qualified Clock
 import qualified Data.UUID as UUID
@@ -125,9 +126,7 @@ newId = T.filter (/= '-') . UUID.toText <$> UUID.nextRandom
 fresh :: Text -> IO Text
 fresh prefix = (prefix <>) . T.take 12 <$> newId
 readJSON :: FromJSON a => FilePath -> a -> IO a
-readJSON p def = do
- exists <- doesFileExist p
- if exists then either (throwIO . userError) pure . eitherDecode =<< BL.readFile p else pure def
+readJSON = TypedFiles.readValue
 atomicBytes :: FilePath -> BL.ByteString -> IO ()
 atomicBytes p bytes = do
  createDirectoryIfMissing True (takeDirectory p)
@@ -152,7 +151,7 @@ atomicBytes p bytes = do
   bracket (Posix.openFd (takeDirectory p) Posix.ReadOnly Posix.defaultFileFlags) Posix.closeFd Posix.fileSynchronise
 #endif
 writeJSON :: ToJSON a => FilePath -> a -> IO ()
-writeJSON p = atomicBytes p . encode
+writeJSON = TypedFiles.writeValue
 locked :: Service -> IO a -> IO a
 locked s action = withMVar (serviceGuard s) (const (A.transaction (serviceStore s) action))
 agentRoot :: Service -> Text -> FilePath

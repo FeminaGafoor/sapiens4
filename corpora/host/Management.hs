@@ -40,7 +40,7 @@ prepare s a = do
  endpoint <- readIORef (serviceEndpoint s)
  unless (T.null endpoint) $ do
   let path=workspaceRoot s a </> "host-control.json"
-  writeJSON path (obj [("url",str (endpoint<>"/api/agents/"<>a<>"/control"))])
+  atomicBytes path (encode (obj [("url",str (endpoint<>"/api/agents/"<>a<>"/control"))]))
   executable <- getExecutablePath
   template <- prompt s "host-control"
   writeText (agentRoot s a </> "manifests/host-control.md") (render template [("command",shellCommand executable <> " control " <> shellQuote path)])

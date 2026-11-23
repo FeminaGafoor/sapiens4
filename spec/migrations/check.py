@@ -26,6 +26,13 @@ def digest(root):
     return {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()
             for p in root.rglob('*') if p.is_file() and '.lmdb' not in p.name}
 
+def sources_preserved(root, before):
+    for name, expected in before.items():
+        path=root/name
+        if path.read_bytes().startswith(b'SAPIENS-TYPED-CELLS-1\0'):
+            path=Path(str(path)+'.v00.02.01')
+        assert hashlib.sha256(path.read_bytes()).hexdigest()==expected, name
+
 def fixture(root):
     root.mkdir(parents=True)
     db = sqlite3.connect(root / 'corpora.sqlite3')
@@ -77,8 +84,8 @@ with tempfile.TemporaryDirectory(prefix='sapiens-migration-test-') as temporary:
     root=Path(temporary)
     data=root/'customer'; state=fixture(data); before=digest(data)
     result=call('corpora',data)
-    assert digest(data)==before, 'source files changed'
-    assert result['local/app-version']=='v00.02.01'
+    sources_preserved(data,before)
+    assert result['local/app-version']=='v00.02.02'
     assert result['states/sapi_a']==state
     assert result['turns/turn-old']['output']=='Original answer'
     assert result['turns/turn-old']['slot']==2
@@ -125,7 +132,7 @@ with tempfile.TemporaryDirectory(prefix='sapiens-migration-test-') as temporary:
     db.execute('UPDATE agents SET name=?',('Written in WAL',)); db.commit()
     snapshot=digest(wal)
     assert call('corpora',wal)['agents/sapi_a']['name']=='Written in WAL'
-    assert digest(wal)==snapshot
+    sources_preserved(wal,snapshot)
     db.close()
     print('PASS committed SQLite WAL is imported without modifying source')
     relay=root/'relay.sqlite3'; db=sqlite3.connect(relay)
@@ -173,7 +180,7 @@ with tempfile.TemporaryDirectory(prefix='sapiens-migration-test-') as temporary:
     process.kill(); process.wait(timeout=10)
     assert call('inspect', database) == original
     cleaned = call('corpora', modern)
-    assert cleaned['local/app-version'] == 'v00.02.01'
+    assert cleaned['local/app-version'] == 'v00.02.02'
     assert cleaned['events/chief'] == [events[i] for i in [1, 3, 4, 5]]
     assert cleaned['events/other'] == [] and cleaned['events/empty'] == []
     assert cleaned['messages/customer'] == original['messages/customer']

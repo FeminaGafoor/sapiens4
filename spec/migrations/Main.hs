@@ -11,12 +11,23 @@ import MigrationPlan
 import MigrationVersion
 import qualified Migrations
 import qualified V00_02_01 as Lifecycle
+import qualified V00_02_02Files as TypedFiles
+import System.FilePath
 import System.Environment
 
 main :: IO ()
 main = do
  args <- getArgs
  case args of
+  ["at",path,number] -> bracket (A.openStore path) A.closeStore $ \store -> A.snapshotAt store (read number) >>= L.putStrLn . encode . fmap A.entries
+  ["duplicate",path] -> bracket (A.openStore path) A.closeStore $ \store -> do
+    result <- A.submit store (A.Transaction "customer-id" [] [A.Set "document" Null]) >>= A.await
+    unless (result==A.Duplicate) (fail "Duplicate ledger lost")
+    L.putStrLn "true"
+  ["files",root] -> do
+    TypedFiles.migrateConfig root
+    TypedFiles.readValue (root </> "storage.json") Null >>= L.putStrLn . encode
+  ["history",path] -> bracket (A.openStore path) A.closeStore (A.history >=> L.putStrLn . encode)
   ["corpora",root] -> dump (Migrations.openCorpora root)
   ["relay",path] -> dump (Migrations.openRelay path)
   ["plan",path] -> checkPlan path
