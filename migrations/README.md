@@ -81,3 +81,12 @@ explicit error. They need their own registered migration before being supported.
 From `build/`: `cabal build exe:sapiens-migration-fixture`.
 Then run `python3 spec/migrations/check.py /absolute/path/to/sapiens-migration-fixture`
 from the repository root. The suite uses a frozen copy of the actual dev SQL schema.
+
+### Previous desktop launcher selection
+
+`V00_02_00Launcher.hs` reads the v00.01.99 profile's `config.json` data
+location when no modern selection exists. Explicit and modern saved selections
+have priority. Missing or invalid old workspaces fail visibly instead of starting
+fresh. Discovery retains the old config; the normal workspace-ready publication
+writes `config/storage.json` only after successful opening. Desktop setup selects
+detected content even when current terms still require acceptance.

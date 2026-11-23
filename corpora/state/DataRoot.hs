@@ -5,6 +5,7 @@ module DataRoot (module DataRoot, module RuntimePaths) where
 
 import Types (writeJSON)
 import RuntimePaths
+import V00_02_00Launcher (previousLauncherDirectory)
 import UpdateState (assertDataAvailable)
 import Control.Exception
 import Control.Monad
@@ -46,7 +47,14 @@ startupDataDirectory Nothing = do
  saved <- savedDataDirectory
  case saved of
   Just directory -> pure (Just directory)
-  Nothing -> defaultDataDirectory >>= populatedDataDirectory
+  Nothing -> do
+   previous <- configDirectory >>= previousLauncherDirectory
+   case previous of
+    Nothing -> defaultDataDirectory >>= populatedDataDirectory
+    Just path -> do
+     directory <- externalStoragePath path
+     validateDataRoot AttachExisting directory
+     pure (Just directory)
 
 populatedDataDirectory :: FilePath -> IO (Maybe FilePath)
 populatedDataDirectory directory = do
