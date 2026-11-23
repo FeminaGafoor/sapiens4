@@ -21,7 +21,8 @@ and Nerd `#BFE3FA` stay identical in both themes. Text on pastel surfaces is
 always `#111111`. Blush is decorative progress color, never body text.
 
 Cards and dialogs use 20px radii; fields, rows and inset surfaces use 14px;
-buttons, tabs, chips and composers use pill shapes. Panes are separated by 12px
+buttons, chips and composers use pill shapes. Activity navigation uses compact
+underlined tabs to distinguish navigation from selection controls. Panes are separated by 12px
 of ground, with no dividing borders. Visible panes alone receive grid tracks.
 
 DM Sans is the interface font, Zen Maru Gothic is the face font (300 for artwork,
@@ -33,7 +34,7 @@ bundled with their full glyph sets. Font licenses ship in `license/fonts/`.
 - Shell: header, pane controls, connection status, corpora menus, update control.
 - Roster: search, scope segments, selected rows, avatar chips, Group badges,
   shared-computer card.
-- Conversation: assistant text, user bubbles, activity segments and menus,
+- Conversation: assistant text, user bubbles, activity tabs and menus,
   composer, mentions, attachments, recording controls, warnings and live work.
 - Work: task and routine cards, state marks, disclosures, results, code and events.
 - Workspace: browser tabs, address entry, bookmarks, menus, document content,
@@ -55,7 +56,7 @@ White heads and dark facial marks do not invert in dark mode. Compact avatar
 chips use the stored character marks without adding outer parentheses. Existing
 names and custom facial expressions remain unchanged. Legacy default palette
 values are translated at render time; custom colors remain intact. No saved
-application data is rewritten.
+avatar data is rewritten.
 
 Task marks distinguish complete (`●`), active (`◎`), waiting (`○`) and attention
 (`!`) in addition to their text labels. Focus uses a contrasting ink outline.
@@ -97,3 +98,34 @@ Font route resolution, offline font-cache membership, relay cache-version
 replacement and Windows icon checksums were verified separately. These checks
 used the app's view components with fixture state; they do not replace the native
 end-to-end suite, which was not run for this change.
+
+## Usability refinement
+
+The workspace applies [Apple's layout guidance](https://developer.apple.com/design/human-interface-guidelines/layout)
+on hierarchy, alignment and consistent spacing, and [WCAG 2.2 target-size guidance](https://www.w3.org/WAI/WCAG22/Understanding/target-size-minimum/).
+Desktop rows and secondary controls use denser spacing; mobile controls keep 44px
+touch targets. Main controls have explicit labels on wide screens, active roster
+rows have a non-color selection marker, and focused controls retain an ink outline.
+Conversation headers and tabs leave more room for the work. Wide chat text has a
+bounded reading width. Shared-computer status uses user-facing language.
+
+Updates use aligned columns on wide panes and stacked labeled rows on narrow panes.
+Dates omit subsecond noise; the full timestamp remains on the time element.
+Only meaningful payloads offer disclosure, operable by keyboard. Empty feeds explain
+what belongs there. The single-purpose Updates menu and its inactive placeholder
+are removed. Application start/stop events are no longer recorded; the v00.02.01
+migration removes existing lifecycle entries from stored event lists (see
+[migration contract](../migrations/README.md)).
+
+Refinement checks: 49 browser configurations across light/dark, 320–1440px,
+chat, populated/empty Updates and secondary component scenes passed automated
+WCAG A/AA checks, including the WCAG 2.2 target-size rule, with no script errors
+or page/Updates horizontal overflow. The native binaries and all production
+bundles built. The migration suite covers the real cleanup step, exact matching,
+all owners, skip-version upgrade, interrupted transactions, malformed inputs,
+rollback, unversioned adoption and repeat opening. Two host startup/shutdown
+cycles retained meaningful events and produced no lifecycle noise. Keyboard
+expansion/collapse, non-expandable empty payloads, a nine-Sapi roster with Group
+badges, pane resizing and draft input also passed focused interaction checks.
+
+[Desktop Updates](art-direction/updates-dark.png) · [Narrow Updates](art-direction/updates-mobile.png)

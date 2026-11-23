@@ -106,7 +106,10 @@ routines m period = V.node "section" [V.cls "task-browser"] [V.node "div" [V.cls
   rows = map (\r -> {id:r.id,title:r.title,owner:r.owner,sender:r.owner,state:if r.paused then X.WorkPaused else X.WorkPlanned,routine:true,minutes:show $ I.floor r.minutes,prompt:r.prompt,runCount:I.floor r.runCount,meta:"Every " <> show (I.floor r.minutes) <> " minutes" <> if r.paused then "" else " · " <> B.formatDate "" D.empty r.nextDue,body:"Frequency: every " <> show (I.floor r.minutes) <> " minutes\nExecute: " <> r.prompt,result:"",error:"",taskType:""}) $ A.filter (\r -> r.owner == m.selected && r.paused == (period == N.Paused)) m.snapshot.routines
 
 events :: M.Model -> V.Html
-events m = V.node "section" [V.cls "event-log",V.label "Events",V.attr "tabindex" "0"] [V.div "event-columns event-head" $ map (\s -> V.span [] (s)) ["Timestamp","Actor","Entity","Event","Agency",""],V.div "event-rows" $ if A.null rows then [V.div "empty" [Art.empty Art.Watching,V.p "" "No events yet."]] else map event rows]
+events m = V.node "section" [V.cls "event-log",V.label "Updates"] $
+  if A.null rows then [V.div "empty" [Art.empty Art.Watching,V.p "" "No updates yet.",V.textNode "small" [] "Changes to this Sapi and its work will appear here."]]
+  else [V.node "div" [V.cls "event-columns event-head",V.attr "aria-hidden" "true"] $ map (V.span []) ["When","Update","By","About",""]
+       ,V.div "event-rows" $ map event rows]
   where
   rows = A.take 100 $ fromMaybe [] $ O.lookup m.selected m.snapshot.events
   name id = case id of
@@ -114,6 +117,19 @@ events m = V.node "section" [V.cls "event-log",V.label "Events",V.attr "tabindex
     "system" -> "System"
     "corpora" -> "Corpora"
     _ -> D.fallback (if S.take 12 id == "routine_sch_" then "@" <> id else id) $ fromMaybe "" $ _.name <$> X.findEntity id m.agents
-  event row = let key = "event:" <> row.id in V.node "details" [V.cls "task-row event-row",V.bool "open" $ Set.member key m.expanded]
-    [V.node "summary" [V.cls "event-columns",V.on "click" \e -> Link e (ToggleExpanded key)] (map (\v -> V.span [V.attr "title" v] (v)) [B.formatDate "en-GB" (D.json {day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", second: "2-digit", fractionalSecondDigits: 3}) (row.timestamp),name $ row.actor,name $ row.entity,row.event,D.fallback "—" $ row.agency,"›"])
-    ,V.when (Set.member key m.expanded) $ V.textNode "pre" [] (row.details)]
+  caption value = let words = D.replace "[._]" " " value in S.toUpper (S.take 1 words) <> S.drop 1 words
+  event row =
+    let key = "event:" <> row.id
+        open = Set.member key m.expanded
+        payload = not $ A.elem (S.trim row.details) ["", "{}", "[]", "null"]
+        expandable = payload || row.agency /= ""
+        cells =
+          [V.textNode "time" [V.cls "event-time",V.attr "datetime" row.timestamp,V.attr "title" row.timestamp] $ B.formatDate "en-GB" (D.json {day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"}) row.timestamp
+          ,V.span [V.cls "event-title",V.attr "title" row.event] $ caption row.event
+          ,V.node "span" [V.cls "event-actor",V.attr "title" $ name row.actor] [V.span [V.cls "event-cell-label"] "By ",V.text $ name row.actor]
+          ,V.node "span" [V.cls "event-entity",V.attr "title" $ name row.entity] [V.span [V.cls "event-cell-label"] "About ",V.text $ name row.entity]
+          ,V.when expandable $ V.node "span" [V.cls "event-chevron",V.attr "aria-hidden" "true"] [V.chevron true]]
+    in if not expandable then V.div "event-row" [V.div "event-columns" cells]
+       else V.node "details" [V.cls "event-row",V.bool "open" open]
+         [V.node "summary" [V.cls "event-columns",V.on "click" \e -> Link e (ToggleExpanded key)] cells
+         ,V.when open $ V.div "event-detail" [V.when (row.agency /= "") $ V.p "" ("Source: " <> row.agency),V.when payload $ V.textNode "pre" [] row.details]]

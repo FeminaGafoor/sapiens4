@@ -53,10 +53,15 @@ header m = V.node "header" [V.cls "app-header"] $
   paneButton (Tuple pane caption) =
     let visible = A.elem pane panes
         label = (if N.limit m.env == 1 || not visible then "Show " else "Hide ") <> caption
-    in V.control [V.cls "pane-toggle",V.label label,V.attr "title" label,V.attr "aria-pressed" $ show visible,V.attr "aria-expanded" $ show visible] (case pane of
-      N.Sidebar -> "☷"
-      N.ChatPane -> "▤"
-      N.Workspace -> "▣") (TogglePane pane)
+    in V.controlWith [V.cls "pane-toggle",V.label label,V.attr "title" label,V.attr "aria-pressed" $ show visible,V.attr "aria-expanded" $ show visible] [V.svg "svg" [V.attr "viewBox" "0 0 24 24",V.attr "fill" "none",V.attr "stroke" "currentColor",V.attr "stroke-width" "1.5",V.attr "stroke-linecap" "round",V.attr "stroke-linejoin" "round",V.attr "aria-hidden" "true",V.attr "focusable" "false"]
+      [V.svg "path" [V.attr "d" $ case pane of
+        N.Sidebar -> "M4 5h16v14H4z M9 5v14 M12 9h5 M12 13h5"
+        N.ChatPane -> "M5 4h14v12H9l-4 4z M8 8h8 M8 12h5"
+        N.Workspace -> "M3 5h18v14H3z M3 9h18 M6 7h.01 M9 7h.01"] []]
+      ,V.span [V.cls "pane-caption",V.attr "aria-hidden" "true"] $ case pane of
+        N.Sidebar -> "List"
+        N.ChatPane -> "Chat"
+        N.Workspace -> "Workspace"] (TogglePane pane)
 
 appUpdateButton :: M.AppUpdate -> V.Html
 appUpdateButton M.UpdateHidden = V.empty
@@ -112,7 +117,7 @@ sidebar m = V.node "aside" [V.cls "sidebar",V.id "chat-list-panel",V.label "Chat
   ,V.node "div" [V.cls "scope-switch",V.label "Agent views"] $ map (\(Tuple scope label) -> V.control [V.cls $ if m.scope == scope then "active" <> if m.groupView /= Nothing then " group-open" else "" else "",V.attr "aria-pressed" $ show $ m.scope == scope,V.disabled $ scope == N.Groups && not (A.any (\a -> M.isGroup a && not (a.archived)) m.agents)] (label) (SetScope scope)) [Tuple N.All "All",Tuple N.Sapis "Sapis",Tuple N.Groups "Groups"]
   ,V.node "label" [V.id "corpora-search",V.cls $ "search-field " <> if m.searchOpen then "search-open" else ""] [V.span [V.attr "aria-hidden" "true"] "⌕",V.node "input" [V.id "agent-search",V.attr "type" "search",V.attr "placeholder" "Find a Sapi or Group…",V.label "Search agents",V.value m.search,V.input Search] [],V.textNode "kbd" [] "/"]
   ,V.node "div" [V.id "agent-list",V.cls "agent-list"] $ map row $ M.roster m
-  ,V.node "footer" [V.cls "sidebar-bottom"] [V.div "resource-card" [V.node "button" [V.id "resource-button",V.cls "resource-open",V.label "Open shared computer",V.click $ OpenDialog M.Computer F.NoRecord] [V.span [V.cls "computer-icon",V.attr "aria-hidden" "true"] "▣",V.textNode "strong" [] "SHARED COMPUTER",V.node "span" [V.id "resource-status",V.cls $ "status-dot " <> if owner == "" then "idle" else ""] []],V.textNode "small" [V.id "resource-owner"] (if owner /= "" then "In use · " <> (M.agent m owner).name else if m.snapshot.computer.built then "Blindly4 · Available" else "Blindly4 · Build required")]]]
+  ,V.node "footer" [V.cls "sidebar-bottom"] [V.div "resource-card" [V.node "button" [V.id "resource-button",V.cls "resource-open",V.label "Open shared computer",V.click $ OpenDialog M.Computer F.NoRecord] [V.span [V.cls "computer-icon",V.attr "aria-hidden" "true"] "▣",V.textNode "strong" [] "Shared computer",V.node "span" [V.id "resource-status",V.cls $ "status-dot " <> if owner == "" then "idle" else ""] []],V.textNode "small" [V.id "resource-owner"] (if owner /= "" then "In use · " <> (M.agent m owner).name else if m.snapshot.computer.built then "Available" else "Setup required")]]]
   where
   panes = M.visiblePanes m
   owner = m.snapshot.computer.owner
@@ -147,7 +152,7 @@ activityNav m = V.node "nav" [V.cls "conversation-tabs",V.label "Agent activity"
     N.Branch id label view children -> V.div "activity-submenu-row" [item (N.Work view N.Planned) label,V.controlWith [V.attr "data-activity-menu" $ "activity-" <> id,V.label $ label <> " menu",V.attr "aria-expanded" $ show $ m.menu == Just ("activity-" <> id)] [V.chevron true] (Menu $ "activity-" <> id),V.node "div" [V.cls "activity-menu activity-submenu",V.hidden $ m.menu /= Just ("activity-" <> id)] $ map tree children]
   tab (Tuple id label) = V.div ("activity-tab " <> if N.panel m.activity == id then "active" else "")
     [V.control [V.attr "data-panel" id,V.attr "aria-pressed" $ show $ N.panel m.activity == id] (label) (if id == "work" then DefaultWork else Navigate $ if id == "chat" then N.Chat N.Conversation else N.Updates)
-    ,V.node "button" [V.cls "activity-toggle",V.label $ label <> " menu",V.attr "aria-expanded" $ show $ m.menu == Just ("activity-" <> id),V.click $ Menu $ "activity-" <> id] [V.chevron false]
+    ,V.when (id /= "updates") $ V.node "button" [V.cls "activity-toggle",V.label $ label <> " menu",V.attr "aria-expanded" $ show $ m.menu == Just ("activity-" <> id),V.click $ Menu $ "activity-" <> id] [V.chevron false]
     ,V.node "div" [V.cls "activity-menu",V.hidden $ if id == "work" then not (A.elem m.menu $ map (Just <<< ("activity-" <> _)) ["work","tasks","automation","routine","workflows","composer"]) else m.menu /= Just ("activity-" <> id)] $ case id of
       "chat" -> map (\view -> item (N.Chat view) $ N.chatLabel view) [N.Pins,N.Threads,N.Comments] <> [V.node "hr" [] [],V.button "" "＋ Add feedback" Feedback]
       "work" -> map tree N.workTree
