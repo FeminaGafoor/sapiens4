@@ -20,9 +20,9 @@ Action/Chiefy `#F9BDD0`, blush `#F08FB0`, Curio `#CFC4F2`, Buildly `#FBE58A`
 and Nerd `#BFE3FA` stay identical in both themes. Text on pastel surfaces is
 always `#111111`. Blush is decorative progress color, never body text.
 
-Cards and dialogs use 20px radii; fields, rows and inset surfaces use 14px;
+Cards and dialogs use 21px radii; fields, rows and inset surfaces use 13px;
 buttons, chips and composers use pill shapes. Activity navigation uses compact
-underlined tabs to distinguish navigation from selection controls. Panes are separated by 12px
+underlined tabs to distinguish navigation from selection controls. Panes are separated by 13px
 of ground, with no dividing borders. Visible panes alone receive grid tracks.
 
 DM Sans is the interface font, Zen Maru Gothic is the face font (300 for artwork,
@@ -129,3 +129,13 @@ expansion/collapse, non-expandable empty payloads, a nine-Sapi roster with Group
 badges, pane resizing and draft input also passed focused interaction checks.
 
 [Desktop Updates](art-direction/updates-dark.png) · [Narrow Updates](art-direction/updates-mobile.png)
+
+## Golden-ratio sizing
+
+The conversation/workspace tracks divide their available width at 1:1.618 on
+wide windows, after the roster and gaps. Minimum pane widths take priority.
+Intermediate desktop windows use the same ratio between roster and work area.
+Spacing follows 8 / 13 / 21 / 34px; card/inner radii use 21 / 13px. The 13 / 21 /
+34px type anchors are complemented by a practical 16px body half-step and 1.618
+chat line-height. Touch targets remain at least 44px; narrow layouts prioritize
+readability over maintaining the wide-screen ratio.

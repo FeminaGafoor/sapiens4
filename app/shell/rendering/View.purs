@@ -27,7 +27,7 @@ render m = V.node "div" []
   ,Dialog.view m,V.textNode "div" [V.id "toast",V.cls $ "toast " <> if m.toast /= "" then "visible" else "",V.attr "role" "status",V.attr "aria-live" "polite"] (m.toast)]
   where
   panes = M.visiblePanes m
-  columns = A.filter (_ /= "") [(if A.elem N.Sidebar panes then if A.length panes == 1 then "minmax(0,1fr)" else "clamp(260px,20vw,300px)" else ""),(if A.elem N.ChatPane panes then "minmax(340px,1fr)" else ""),(if A.elem N.Workspace panes then "minmax(350px,1.2fr)" else "")]
+  columns = A.filter (_ /= "") [(if A.elem N.Sidebar panes then if A.length panes == 1 then "minmax(0,1fr)" else "clamp(260px,20vw,300px)" else ""),(if A.elem N.ChatPane panes then "minmax(340px,1fr)" else ""),(if A.elem N.Workspace panes then "minmax(350px,1.618fr)" else "")]
 
 status :: M.Model -> String
 status m = if (M.busy m) then "Connecting…" else if m.active == "" then "Not connected" else if not (M.online m) then "Offline" else if (M.activeRecord m).stopping then "Pausing…" else stateName $ (M.activeRecord m).status
