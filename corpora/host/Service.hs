@@ -30,6 +30,7 @@ import DataRoot
 import qualified Computer
 import qualified Store as DB
 import qualified Append4 as A
+import qualified Migrations
 import qualified Clock
 import Population
 import Workspace
@@ -57,7 +58,7 @@ openService clock gate telemetry choice path = do
       require (get identity "version"==num 1 && maybe False ((==at identity "corpora_id") . UUID.toText) (UUID.fromText (at identity "corpora_id"))) 409 "Invalid CORPORA identity. Restore corpora-identity.json from backup."
       pure (at identity "corpora_id")
  corporaId <- prepareIdentity `onException` unlockFile lock
- store <- A.openStore (root </> "corpora.lmdb") `onException` unlockFile lock
+ store <- Migrations.openCorpora root `onException` unlockFile lock
  let cleanup = A.closeStore store `finally` unlockFile lock
  let initialize = do
       guard <- newMVar ()
@@ -79,22 +80,17 @@ openService clock gate telemetry choice path = do
        let marker = initializingDirectory root
        pending <- doesDirectoryExist marker
        when (choice `elem` [StartNew,AttachExisting] && pending) $ removeDirectory marker
-       repairAvatars s
        agents <- DB.agents s
        mapM_ (ensureAgent s) agents
        chief <- DB.mainAgent s
        d <- directory s
        saveDirectory s $ foldl (\dir row -> let a=at row "id"; entry=get dir a in put a (put "parent" (if a==chief then Null else get entry "parent" `fallback` str chief) entry) dir) d agents
        mapM_ (E.recover s . (`at` "id")) agents
-       prefs <- DB.singleton s DB.Preferences
-       let panel=at prefs "panel"; updated=if panel=="mindmap" then put "panel" (str "notes") prefs else if panel `elem` ["cron","log"] then put "panel" (str "chat") prefs else prefs
-       DB.saveSingleton s DB.Preferences (remove ["work_views"] updated)
        savedPulse <- DB.singleton s DB.SystemPulse
        identityPulse <- if has savedPulse "pulse" then pure (at savedPulse "pulse") else ("pulse_" <>) <$> newId
        cfg <- corporaSettings s
        writeIORef pulse (obj [("id",str identityPulse),("running",Bool (corporaStatus cfg==Active)),("numbers",merge (obj [(k,num 0) | k<-["bpm120"]]) (get savedPulse "numbers"))])
        recoverVoice s
-       R.initializeRoutines s
        D.reconcileWorks s
        GC.reconcileGroups s
        DB.record s [chief] "corpora" "system.started" empty "system" Nothing

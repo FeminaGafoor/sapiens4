@@ -5,6 +5,7 @@ import qualified Telemetry
 import qualified Service as Service
 import Crypto
 import BrowserCrypto
+import LegacyReceipt (matchesLegacyReceipt)
 import Setup
 import Transport
 import Control.Concurrent
@@ -186,7 +187,7 @@ executeReply b config message = do
 processFrame :: Bridge -> Value -> Value -> IO (Value,Maybe Value)
 processFrame b config frame = admitted (bridgeService b) True $ do
  let peer = fallback (get config "peer") (get frame "sender")
- (message,_) <- unpackWithPlaintext (bridgeCrypto b) (get config "private") peer (at config "room") PhoneToDesktop frame
+ (message,plaintext) <- unpackWithPlaintext (bridgeCrypto b) (get config "private") peer (at config "room") PhoneToDesktop frame
  time <- seconds
  if get config "peer"==Null then do
   proof <- constantEqual (at message "secret") (at config "secret")
@@ -212,7 +213,10 @@ processFrame b config frame = admitted (bridgeService b) True $ do
        pure Nothing
      case receipt of
       Just saved -> do
-       require (at saved "hash"==digest) 400 "Request ID was reused"
+       let stored = at saved "hash"
+           matches = stored==digest || boolean (get saved "legacy") &&
+            matchesLegacyReceipt hash stored digest plaintext
+       require matches 400 "Request ID was reused"
        if get saved "reply"==Null then replyFrame b current ident (obj [("error",str "Outcome uncertain after interruption. Check desktop history before sending again.")])
         else pure (get saved "reply")
       Nothing -> do

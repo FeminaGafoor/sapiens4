@@ -24,7 +24,8 @@ main = do
  relay <- relayChecks path
 #if defined(mingw32_HOST_OS) || defined(darwin_HOST_OS)
  backup <- backupCheck (takeDirectory path)
- L.putStrLn (encode (put "backup_snapshot_valid" (Bool backup) relay))
+ legacyBackup <- legacyBackupCheck (takeDirectory path)
+ L.putStrLn (encode (put "legacy_backup_snapshot_valid" (Bool legacyBackup) (put "backup_snapshot_valid" (Bool backup) relay)))
 #else
  L.putStrLn (encode relay)
 #endif
@@ -85,4 +86,19 @@ backupCheck root = do
  ownership <- doesFileExist (copied<.>"lock")
  native <- doesFileExist (copied++"-lock")
  pure (value==Just (str "value") && not ownership && not native)
+
+legacyBackupCheck :: FilePath -> IO Bool
+legacyBackupCheck root = do
+ let live=root </> "legacy-backup-live"
+     config=root </> "legacy-backup-config"
+     destination=root </> "legacy-snapshot"
+     ident="00000000-0000-4000-8000-000000000002"
+     child=live </> "corporas" </> ident
+ createDirectoryIfMissing True child
+ createDirectory config
+ writeJSON (live </> "host-corpora.json") (obj [("locals",arr [str (T.pack ident)])])
+ writeFile (child </> "customer-document.txt") "customer data"
+ Backup.withRootLocks live $ void (Backup.snapshot destination (UpdateRoots live config))
+ copied <- readFile (destination </> "0/corporas" </> ident </> "customer-document.txt")
+ pure (copied=="customer data")
 #endif

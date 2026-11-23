@@ -22,6 +22,7 @@ import qualified Data.Text.Encoding as TE
 import Data.Text (Text)
 import qualified Append4 as A
 import qualified Clock
+import qualified Migrations
 import Network.HTTP.Types
 import Network.URI hiding (query)
 import Network.Wai
@@ -36,7 +37,7 @@ newRelay repo path admin url beta = do
  require (T.length admin >= 32 && T.all isAscii admin) 400 "SAPIENS_RELAY_ADMIN_TOKEN must contain at least 32 ASCII characters"
  approved <- origin (str url)
  clock <- Clock.start
- store <- A.openStoreWith A.defaultOptions { A.historyPolicy = A.CurrentOnly } path `onException` Clock.stop clock
+ store <- Migrations.openRelay path `onException` Clock.stop clock
  cleanup <- Clock.subscribe clock (\tick -> when (tick `mod` 120==0) (A.transaction store (seconds >>= expire store)))
   `onException` (A.closeStore store `finally` Clock.stop clock)
  let close = cancel cleanup >> (A.closeStore store `finally` Clock.stop clock)

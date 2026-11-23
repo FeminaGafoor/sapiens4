@@ -47,9 +47,14 @@ children are discovered through a read-only offline lookup that does not
 change the database or create lock files. It requires stopped writers or an
 immutable backup.
 
-This change requires fresh data. SQLite/JSON data and the earlier .append4 journal
-format are rejected without conversion; existing data are not modified. Use an
-empty directory. A persisted history policy must match when reopening a store.
+App/data upgrades are versioned in `migrations/`. The previous dev layout is
+`v00.01.99`; this release is `v00.02.00`. SQLite/JSON Corpora and relay data are
+converted automatically before workers start, through a verified staging LMDB.
+Original data files are retained. Committed migration steps and their version
+markers are atomic, and future steps run sequentially. See
+[the migration contract](../migrations/README.md) for coverage and recovery rules.
+Unreleased custom `.append4` journals still require a separately registered reader.
+A persisted history policy must match when reopening a store.
 
 External effects still require reconciliation after an uncertain interruption;
 afterCommit is not a durable job queue. Remote incomplete receipts prevent blind

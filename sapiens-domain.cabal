@@ -1,6 +1,6 @@
 cabal-version: 3.6
 name: sapiens-domain
-version: 0.2.0.0
+version: 0.2.0
 build-type: Simple
 
 flag linux-desktop
@@ -15,7 +15,7 @@ common runtime
   ghc-options: -threaded -rtsopts -O1 -Wall -Werror=incomplete-patterns -Werror=incomplete-uni-patterns -Werror=missing-fields
   build-depends: base >=4.18 && <5, aeson ==2.3.2.0, bytestring, text, containers,
     directory, filepath, process, time, async, stm, scientific, vector,
-    append4, filelock, uuid, base64-bytestring, network-uri, regex-tdfa,
+    append4, sqlite-simple ==0.4.19.0, filelock, uuid, base64-bytestring, network-uri, regex-tdfa,
     http-client, http-client-tls, http-types, network, wai, warp, wai-websockets,
     websockets, wuss, cryptohash-sha256, entropy, memory, random, tagsoup ==0.14.8
   if !os(windows)
@@ -39,7 +39,7 @@ common macos-update
 
 common host
   import: macos-update
-  hs-source-dirs: corpora, corpora/state, corpora/work, corpora/work/schedule, corpora/host, corpora/telemetry, remote/relay, remote/control, remote/protocol, build, environments/update
+  hs-source-dirs: migrations, corpora, corpora/state, corpora/work, corpora/work/schedule, corpora/host, corpora/telemetry, remote/relay, remote/control, remote/protocol, build, environments/update
   other-modules:
     Clock,
     Command,
@@ -51,6 +51,13 @@ common host
     TelemetryWire,
     Paths_sapiens_domain,
     DataRoot,
+    Migrations,
+    MigrationPlan,
+    MigrationVersion,
+    V00_01_99,
+    V00_02_00,
+    NoteTemplate,
+    LegacyReceipt,
     UpdateState,
     HostUpdateProtocol,
     Assets,
@@ -119,7 +126,7 @@ executable sapiens-linux
 
 executable sapiens-macos
   import: runtime, macos-update
-  hs-source-dirs: environments/macos, environments, environments/update, corpora/state, corpora/telemetry
+  hs-source-dirs: migrations, environments/macos, environments, environments/update, corpora/state, corpora/telemetry
   other-modules:
     Admission,
     Domain,
@@ -129,6 +136,13 @@ executable sapiens-macos
     TelemetryWire,
     Paths_sapiens_domain,
     DataRoot,
+    Migrations,
+    MigrationPlan,
+    MigrationVersion,
+    V00_01_99,
+    V00_02_00,
+    NoteTemplate,
+    LegacyReceipt,
     UpdateState,
     HostUpdateProtocol,
     DesktopStorage,
@@ -171,6 +185,13 @@ common windows-host
     TelemetryWire,
     Paths_sapiens_domain,
     DataRoot,
+    Migrations,
+    MigrationPlan,
+    MigrationVersion,
+    V00_01_99,
+    V00_02_00,
+    NoteTemplate,
+    LegacyReceipt,
     DesktopStorage,
     Clock,
     Types,
@@ -189,7 +210,7 @@ common windows-host
 
 executable sapiens-windows
   import: windows-host
-  hs-source-dirs: environments/windows, environments, environments/update, corpora/state, corpora/telemetry
+  hs-source-dirs: migrations, environments/windows, environments, environments/update, corpora/state, corpora/telemetry
   main-is: WindowsMain.hs
   if os(windows)
     ld-options: .build/haskell/windows-resources.o
@@ -205,3 +226,9 @@ executable sapiens-starter
     ghc-options: -optl-mwindows
   else
     buildable: False
+
+executable sapiens-migration-fixture
+  import: runtime
+  hs-source-dirs: spec/migrations, migrations, corpora/state, environments/update
+  main-is: Main.hs
+  other-modules: Migrations, MigrationPlan, MigrationVersion, V00_01_99, V00_02_00, NoteTemplate, RuntimePaths, UpdateState

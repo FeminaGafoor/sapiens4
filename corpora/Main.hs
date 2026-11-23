@@ -5,6 +5,7 @@ import Types
 #if defined(mingw32_HOST_OS) || defined(darwin_HOST_OS)
 import Installation (checkCandidateData, withConfigAccess, withInstalledVersion)
 #endif
+import MigrationVersion (currentVersion, versionText)
 import DataRoot
 import HostServer
 import qualified HostUpdateProtocol as Update
@@ -47,6 +48,7 @@ main = launch `catches` [Handler (\(code::ExitCode) -> throwIO code), Handler re
  launch = do
   args <- getArgs
   case args of
+   ["--version"] -> putStrLn (T.unpack (versionText currentVersion))
    "mcp":_ -> withInstalledVersion (pure ()) >> run args
    _ -> withInstalledVersion (run args)
  report (e::SomeException) = do

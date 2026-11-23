@@ -106,18 +106,6 @@ randomAvatar used = do
  palette <- randomRIO (0,length colors-1)
  suffix <- if null available then ("✦"<>) . T.take 4 <$> newId else pure ""
  pure (choices!!index<>suffix,colors!!palette)
-repairAvatars :: Service -> IO ()
-repairAvatars s = do
- used <- newIORef []
- rows <- DB.agents s
- forM_ rows $ \row -> do
-  known <- readIORef used
-  face <- if at row "face" `elem` known then do
-   (face,color) <- randomAvatar known
-   DB.addAgent s (merge row (obj [("face",str face),("color",str color)]))
-   pure face
-   else pure (at row "face")
-  modifyIORef' used (face:)
 data AgentDraft = AgentDraft
  { draftName :: Text, draftRole :: Text
  , preferredColor :: Maybe Text, preferredFace :: Maybe Text

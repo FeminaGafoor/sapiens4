@@ -11,7 +11,8 @@ def main (args : List String) : IO UInt32 := do
       "backlog_never_delivered", "ack_cleans_indexes", "no_payload_history"] do
       unless (← IO.ofExcept <| facts.getObjValAs? Bool name) do throw <| IO.userError s!"FAIL {name}"
       IO.println s!"PASS {name}"
-    if let .ok passed := facts.getObjValAs? Bool "backup_snapshot_valid" then
-      unless passed do throw <| IO.userError "FAIL backup_snapshot_valid"
-      IO.println "PASS backup_snapshot_valid"
+    for name in ["backup_snapshot_valid", "legacy_backup_snapshot_valid"] do
+      if let .ok passed := facts.getObjValAs? Bool name then
+        unless passed do throw <| IO.userError s!"FAIL {name}"
+        IO.println s!"PASS {name}"
   return 0

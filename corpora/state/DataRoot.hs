@@ -156,24 +156,24 @@ storageError = ioError . userError
 readDataJSON :: FromJSON a => FilePath -> IO a
 readDataJSON path = either (storageError . ("Could not read data: " ++)) pure . eitherDecode =<< L.readFile path
 
--- Append4 validates the LMDB environment on open. No old-format conversion runs here.
+-- Validation is read-only. Versioned conversion runs under host.lock in Migrations.
 validateDataRoot :: StorageChoice -> FilePath -> IO ()
 validateDataRoot choice root = do
  exists <- doesDirectoryExist root
  unless exists $ storageError "This data directory is unavailable."
  names <- filter (/="host.lock") <$> listDirectory root
- forM_ ["corpora.lmdb","corpora.lmdb.lock","corpora.lmdb-lock","corpora-identity.json","workspaces","uploads","agentpy"] $ \name -> void (containedPath root (root </> name))
- when (any (`elem` names) ["corpora.sqlite3","corpora.append4"]) $ storageError "Legacy storage is unsupported by Append4. Use a fresh data directory; existing data were not changed."
+ forM_ ["corpora.sqlite3","corpora.sqlite3-wal","corpora.sqlite3-journal","corpora.lmdb","corpora.lmdb.migration.lock","corpora.lmdb.migrating","corpora.lmdb.migrating.lock","corpora.lmdb.migrating-lock","corpora.lmdb.lock","corpora.lmdb-lock","corpora-identity.json","workspaces","uploads","agentpy"] $ \name -> void (containedPath root (root </> name))
+ when ("corpora.append4" `elem` names && not (any (`elem` names) ["corpora.lmdb","corpora.sqlite3"])) $ storageError "Unreleased Append4 journal format has no registered migration; originals retained."
  pending <- doesDirectoryExist (initializingDirectory root)
  when pending $ do
   void (containedPath root (initializingDirectory root))
   contents <- listDirectory (initializingDirectory root)
-  let allowed name = name `elem` [".sapiens-initializing","corpora-identity.json","corpora.lmdb","corpora.lmdb.lock","corpora.lmdb-lock","agentpy","workspaces"] || ".writing-" `isPrefixOf` name
+  let allowed name = name `elem` [".sapiens-initializing","corpora-identity.json","corpora.sqlite3","corpora.sqlite3-wal","corpora.sqlite3-journal","corpora.lmdb","corpora.lmdb.migration.lock","corpora.lmdb.migrating","corpora.lmdb.migrating.lock","corpora.lmdb.migrating-lock","corpora.lmdb.lock","corpora.lmdb-lock","agentpy","workspaces"] || ".writing-" `isPrefixOf` name
   unless (null contents && all allowed names) $ storageError "Unexpected files in an unfinished data directory."
  let creating = null names || pending || choice==CreateCorpora && names==["corpora-identity.json"]
  when (choice==StartNew && not creating) $ storageError "Start fresh requires an empty data directory."
  unless creating $ do
-  unless (all (`elem` names) ["corpora-identity.json","corpora.lmdb"]) $ storageError "Incomplete Append4 data directory."
+  unless ("corpora-identity.json" `elem` names && any (`elem` names) ["corpora.lmdb","corpora.sqlite3"]) $ storageError "Incomplete Append4 data directory."
   identity <- readDataJSON (root </> "corpora-identity.json")
   case identity of
    Object fields | Just (String ident) <- K.lookup "corpora_id" fields, (UUID.toText <$> UUID.fromText ident)==Just ident ->
