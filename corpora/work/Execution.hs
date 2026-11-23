@@ -222,8 +222,8 @@ launch s a batch tick slot batching = do
  modifyMVar_ (serviceRuns s) (pure . M.insert i run)
  DB.pulseCall s tick a "chatInput" slot (nub [at (turnField t "origin") "group" | t <- NE.toList batch,has (turnField t "origin") "group"])
  DB.project s a
- afterCommit s $ void $ forkIO $ do
-  result <- try (withActor s a (Just "chatInput") (if has (turnField execution "origin") "group" then G.runGroup s run execution else D.runDecision s run execution snapshot))
+ afterCommit s $ void $ forkIOWithUnmask $ \unmask -> do
+  result <- try (unmask $ withActor s a (Just "chatInput") (if has (turnField execution "origin") "group" then G.runGroup s run execution else D.runDecision s run execution snapshot))
   locked s $ finish s run execution result `finally` do
    lease <- readIORef (serviceLease s)
    when (lease==Just (AgentId a,i)) $ writeIORef (serviceLease s) Nothing

@@ -33,7 +33,7 @@ import qualified Append4 as A
 import qualified Clock
 import Population
 import Workspace
-import Voice (receivePiece, cancelRecording, retryTranscription, draftable, busyVoice)
+import Voice (receivePiece, cancelRecording, retryTranscription, draftable, busyVoice, recoverVoice)
 import Memo
 import qualified Management as Mgt
 import qualified Provider as Provider
@@ -94,6 +94,7 @@ openService clock gate telemetry choice path = do
        identityPulse <- if has savedPulse "pulse" then pure (at savedPulse "pulse") else ("pulse_" <>) <$> newId
        cfg <- corporaSettings s
        writeIORef pulse (obj [("id",str identityPulse),("running",Bool (corporaStatus cfg==Active)),("numbers",merge (obj [(k,num 0) | k<-["bpm120"]]) (get savedPulse "numbers"))])
+       recoverVoice s
        R.initializeRoutines s
        D.reconcileWorks s
        GC.reconcileGroups s

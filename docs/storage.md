@@ -9,11 +9,12 @@ backoff are transport concerns, not additional application pulses.
 A Corpora owns `corpora.append4`. API operations and execution transitions stage
 KV changes within the existing service guard. Exceptions discard staged changes.
 The writer syncs before publishing or returning success; provider workers launch
-through post-commit callbacks. A paused Corpora still commits administrative
+through post-commit callbacks. Audio buffers are removed after commit; interrupted
+cancellations finish their cleanup on restart. A paused Corpora still commits administrative
 changes; it does not admit scheduled work.
 
 The same store holds agents, state, turns, messages, groups, routines, attachments,
-preferences, settings, directory relationships, audit records, remote receipts,
+preferences, settings, voice-upload progress, directory relationships, audit records, remote receipts,
 pairing credentials and the local/remote Corpora registry. `local/` keys are
 device-bound: a future replication protocol must explicitly exclude/rebind them.
 The standalone relay also uses Append4 (`relay.append4`) and its own process's
