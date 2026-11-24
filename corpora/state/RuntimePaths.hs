@@ -1,7 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 module RuntimePaths (configDirectory, defaultDataDirectory, externalStoragePath, containedPath) where
 
-import qualified V00_02_02Files as TypedFiles
+import qualified V00_02_03Files as TypedFiles
 import Data.Aeson
 import Control.Monad
 import Data.Char (toLower)

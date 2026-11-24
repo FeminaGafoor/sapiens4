@@ -48,7 +48,7 @@ change the database or create lock files. It requires stopped writers or an
 immutable backup.
 
 App/data upgrades are versioned in `migrations/`. The previous dev layout is
-`v00.01.99`; this release is `v00.02.00`. SQLite/JSON Corpora and relay data are
+`v00.01.99`; this release is `v00.02.03`. SQLite/JSON Corpora and relay data are
 converted automatically before workers start, through a verified staging LMDB.
 Original data files are retained. Committed migration steps and their version
 markers are atomic, and future steps run sequentially. See
@@ -61,3 +61,25 @@ afterCommit is not a durable job queue. Remote incomplete receipts prevent blind
 replay. Low-level checks cover commit/cancellation/restart behavior, capacity
 failures, indexed reads and transient page reuse. See the Append4 README and
 docs/testing.md for commands.
+
+## Complete typed keys (v00.02.03)
+
+`Append4.KV` accepts one complete text key and one binary typed value: null,
+boolean, text, exact decimal (integer coefficient and exponent), empty object or
+empty array. For example, `agents/<id>/name` maps directly to a text value.
+Nonempty records have no stored root, document ID, field-path column or JSON blob.
+Keys escape literal slash/tilde in field names; `~iN` identifies array positions.
+An empty object/array marker preserves the distinction from null and absence.
+
+Application record serializers assemble domain/API values in memory from prefix
+reads. They atomically diff scalar keys on write and remove obsolete keys.
+The storage engine does not accept documents. All new audit, receipt, expiry and
+metadata values also use complete scalar keys. Long keys over LMDB's limit use a
+collision-checked full-key overflow index; ordinary keys are stored directly.
+
+The versioned migration retains the previous database, converts every current
+value and replayable historical state, and archives the exact original journal
+as scalar keys in `prior-history`. This archive preserves original conditions,
+no-op mutations and transaction identities. New audit entries operate directly
+on scalar keys. Original append IDs and the duplicate-ID ledger are retained.
+See `migrations/README.md` for the sequential conversion and recovery contract.

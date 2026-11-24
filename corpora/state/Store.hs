@@ -6,7 +6,7 @@ import Data.Maybe
 import qualified Data.List.NonEmpty as NE
 import Data.Text (Text)
 import qualified Data.Text as T
-import qualified Append4 as A
+import qualified AppStorage as A
 import Types
 
 data Collection = Workloads | Groups | ScheduledRoutines | PulseCalls | Preferences | SystemPulse deriving (Eq, Show)
@@ -40,7 +40,7 @@ saveAttachment, updateAttachment :: Service -> Value -> IO ()
 saveAttachment s v = saveValue s ("attachments/"<>at v "agent"<>"/"<>at v "id") v
 updateAttachment s v = saveAttachment s v >> notifyChange s
 pendingVoices :: Service -> IO [Value]
-pendingVoices s = take 1 . filter (\v -> at v "kind"=="voice" && at v "transcript_status"=="pending" && not (boolean (get v "cancelled"))) . map snd <$> A.values (serviceStore s) "attachments/"
+pendingVoices s = take 1 . filter (\v -> at v "kind"=="voice" && at v "transcript_status"=="pending" && not (boolean (get v "cancelled"))) . map snd <$> A.recordsAt 2 (serviceStore s) "attachments/"
 message :: Service -> Text -> Text -> [Value] -> IO ()
 message s i t as = saveValue s ("messages/"<>i) (obj [("input",str t),("attachments",arr as)])
 record :: Service -> [Text] -> Text -> Text -> Value -> Text -> Maybe Text -> IO ()

@@ -5,4 +5,4 @@
 [submodule "submodules/append4"]
 	path = submodules/append4
 	url = https://github.com/aleski-green/append4.git
-	branch = codex/flat-typed-storage
+	branch = codex/single-key-storage

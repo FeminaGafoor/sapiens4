@@ -4,7 +4,7 @@
 module DataRoot (module DataRoot, module RuntimePaths) where
 
 import Types (writeJSON)
-import qualified V00_02_02Files as TypedFiles
+import qualified V00_02_03Files as TypedFiles
 import RuntimePaths
 import V00_02_00Launcher (previousLauncherDirectory)
 import UpdateState (assertDataAvailable)
@@ -171,13 +171,13 @@ validateDataRoot choice root = do
  exists <- doesDirectoryExist root
  unless exists $ storageError "This data directory is unavailable."
  names <- filter (/="host.lock") <$> listDirectory root
- forM_ ["corpora.sqlite3","corpora.sqlite3-wal","corpora.sqlite3-journal","corpora.lmdb","corpora.lmdb.migration.lock","corpora.lmdb.migrating","corpora.lmdb.migrating.lock","corpora.lmdb.migrating-lock","corpora.lmdb.lock","corpora.lmdb-lock","corpora-identity.json","corpora-identity.typed","workspaces","uploads","agentpy"] $ \name -> void (containedPath root (root </> name))
+ forM_ ["corpora.sqlite3","corpora.sqlite3-wal","corpora.sqlite3-journal","corpora.lmdb","corpora.lmdb.migration.lock","corpora.lmdb.migrating","corpora.lmdb.migrating.lock","corpora.lmdb.migrating-lock","corpora.lmdb.lock","corpora.lmdb-lock","corpora.lmdb.single-migration.lock","corpora.lmdb.v00.02.01","corpora.lmdb.v00.02.02","corpora.lmdb.v00.02.03.staging","corpora.lmdb.v00.02.03.staging.lock","corpora.lmdb.v00.02.03.staging-lock","corpora-identity.json","corpora-identity.typed","workspaces","uploads","agentpy"] $ \name -> void (containedPath root (root </> name))
  when ("corpora.append4" `elem` names && not (any (`elem` names) ["corpora.lmdb","corpora.sqlite3"])) $ storageError "Unreleased Append4 journal format has no registered migration; originals retained."
  pending <- doesDirectoryExist (initializingDirectory root)
  when pending $ do
   void (containedPath root (initializingDirectory root))
   contents <- listDirectory (initializingDirectory root)
-  let allowed name = name `elem` [".sapiens-initializing","corpora-identity.json","corpora.sqlite3","corpora.sqlite3-wal","corpora.sqlite3-journal","corpora.lmdb","corpora.lmdb.migration.lock","corpora.lmdb.migrating","corpora.lmdb.migrating.lock","corpora.lmdb.migrating-lock","corpora.lmdb.lock","corpora.lmdb-lock","agentpy","workspaces"] || ".writing-" `isPrefixOf` name
+  let allowed name = name `elem` [".sapiens-initializing","corpora-identity.json","corpora-identity.typed","corpora-identity.typed.v00.02.02","corpora.sqlite3","corpora.sqlite3-wal","corpora.sqlite3-journal","corpora.lmdb","corpora.lmdb.migration.lock","corpora.lmdb.migrating","corpora.lmdb.migrating.lock","corpora.lmdb.migrating-lock","corpora.lmdb.lock","corpora.lmdb-lock","corpora.lmdb.single-migration.lock","corpora.lmdb.v00.02.01","corpora.lmdb.v00.02.02","corpora.lmdb.v00.02.03.staging","corpora.lmdb.v00.02.03.staging.lock","corpora.lmdb.v00.02.03.staging-lock","agentpy","workspaces"] || any (`isPrefixOf` name) [".writing-",".typed-writing-"]
   unless (null contents && all allowed names) $ storageError "Unexpected files in an unfinished data directory."
  let creating = null names || pending || choice==CreateCorpora && names==["corpora-identity.json"]
  when (choice==StartNew && not creating) $ storageError "Start fresh requires an empty data directory."

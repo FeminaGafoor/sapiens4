@@ -1,6 +1,6 @@
 cabal-version: 3.6
 name: sapiens-domain
-version: 0.2.2
+version: 0.2.3
 build-type: Simple
 
 flag linux-desktop
@@ -60,6 +60,9 @@ common host
     V00_02_01,
     V00_02_02,
     V00_02_02Files,
+    V00_02_03,
+    V00_02_03Files,
+    AppStorage,
     NoteTemplate,
     LegacyReceipt,
     UpdateState,
@@ -149,6 +152,9 @@ executable sapiens-macos
     V00_02_01,
     V00_02_02,
     V00_02_02Files,
+    V00_02_03,
+    V00_02_03Files,
+    AppStorage,
     NoteTemplate,
     LegacyReceipt,
     UpdateState,
@@ -202,6 +208,9 @@ common windows-host
     V00_02_01,
     V00_02_02,
     V00_02_02Files,
+    V00_02_03,
+    V00_02_03Files,
+    AppStorage,
     NoteTemplate,
     LegacyReceipt,
     DesktopStorage,
@@ -243,4 +252,4 @@ executable sapiens-migration-fixture
   import: runtime
   hs-source-dirs: spec/migrations, migrations, corpora/state, environments/update
   main-is: Main.hs
-  other-modules: Migrations, MigrationPlan, MigrationVersion, V00_01_99, V00_02_00, V00_02_01, V00_02_02, V00_02_02Files, NoteTemplate, RuntimePaths, UpdateState
+  other-modules: Migrations, MigrationPlan, MigrationVersion, V00_01_99, V00_02_00, V00_02_01, V00_02_02, V00_02_02Files, V00_02_03, V00_02_03Files, AppStorage, NoteTemplate, RuntimePaths, UpdateState

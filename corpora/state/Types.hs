@@ -29,8 +29,8 @@ import qualified Data.Text.Encoding as TE
 import Data.Time
 import Data.Typeable
 import Data.Word (Word64)
-import qualified V00_02_02Files as TypedFiles
-import qualified Append4 as A
+import qualified V00_02_03Files as TypedFiles
+import qualified AppStorage as A
 import qualified Clock
 import qualified Data.UUID as UUID
 import qualified Data.UUID.V4 as UUID

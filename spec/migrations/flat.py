@@ -2,6 +2,7 @@
 import json, subprocess, tempfile, pathlib, hashlib, sys, shutil
 exe, writer = map(str, map(pathlib.Path.resolve,map(pathlib.Path,sys.argv[1:])))
 def call(*args,ok=True):
+ args=({"corpora":"corpora02","relay":"relay02"}.get(args[0],args[0]),*args[1:])
  p=subprocess.run([exe,*map(str,args)],capture_output=True,text=True)
  assert (p.returncode==0)==ok,p.stderr
  return json.loads(p.stdout) if ok else p
