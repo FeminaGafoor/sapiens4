@@ -12,11 +12,8 @@ voiceMaxAttempts = 5
 voiceMaxBacklog :: Int
 voiceMaxBacklog = 15
 
-voiceClockMs :: Number
-voiceClockMs = 1000.0
+voiceSampleRate :: Int
+voiceSampleRate = 16000
 
-voiceRetryMs :: Number
-voiceRetryMs = 1000.0
-
-voiceTranscriptPollMs :: Number
-voiceTranscriptPollMs = 1500.0
+voiceSamplesPerMillisecond :: Number
+voiceSamplesPerMillisecond = 16.0

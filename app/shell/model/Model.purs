@@ -111,7 +111,7 @@ phaseRecorder = case _ of
 type VoiceSession =
   { owner :: String, path :: String, epoch :: Int, phase :: RecordingPhase, subscription :: SubscriptionId
   , queue :: Array X.VoicePiece, sending :: Boolean, attempts :: Int, pieces :: Int
-  , recording :: Maybe String, startedAt :: Number, elapsed :: Number }
+  , recording :: Maybe String, elapsed :: Number }
 
 -- | One chat's voice messages being sent one by one, in order, each as soon as its own
 -- | transcript is ready. Kept per chat ('outboxes'), so one chat never blocks another.
@@ -122,6 +122,11 @@ type Outbox = { epoch :: Int, path :: String, text :: String, others :: Array St
 voiceBusy :: Model -> Boolean
 voiceBusy m = O.member m.selected m.outboxes || case m.voice of
   Just v -> v.owner == m.selected
+  Nothing -> false
+
+voicePending :: Model -> Boolean
+voicePending m = not (O.isEmpty m.outboxes) || case m.voice of
+  Just _ -> true
   Nothing -> false
 
 data AppUpdate = UpdateHidden | UpdateAvailable | UpdateDownloading | UpdatePreparing | UpdateBusy | UpdateFailed

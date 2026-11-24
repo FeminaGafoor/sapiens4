@@ -27,13 +27,13 @@ type Outgoing = { owner :: String, voiceId :: String, outbox :: M.Outbox }
 
 handle :: C.Runtime -> E.Dispatch -> Action -> E.UI Boolean
 handle runtime dispatch action = case action of
-  VoiceStart -> startRecording ctx $> true
-  VoiceTick subscription -> tickClock ctx subscription $> true
+  VoiceStart -> startRecording $> true
+  VoiceProgress ms -> showProgress ms $> true
   VoiceStop -> stopWith M.Review $> true
   VoiceStopSend -> stopWith M.SendAfter $> true
   VoiceCancel -> cancelRecording ctx $> true
   VoiceSend -> queueSend ctx $> true
-  VoiceFlush owner -> flushOutbox ctx owner $> true
+  VoiceResume -> resumePendingVoice ctx $> true
   VoicePiece piece -> acceptPiece ctx piece $> true
   VoicePieceRejected reason -> rejectPiece ctx reason $> true
   VoiceRetry id -> retryTranscript ctx id $> true
@@ -41,30 +41,30 @@ handle runtime dispatch action = case action of
   where
   ctx = { runtime, dispatch }
 
-startRecording :: Ctx -> E.UI Unit
-startRecording ctx = do
+startRecording :: E.UI Unit
+startRecording = do
   m <- H.get
   case m.voice, M.selectedChat m of
     Just v, _ | v.owner /= m.selected -> E.notify "Finish or cancel the voice recording in the other chat first."
     Just _, _ -> pure unit
     Nothing, _ | M.ordinaryAttachmentCount m >= Config.maxAttachments -> E.notify "Remove an attachment to make room for a voice message."
-    Nothing, Just owner -> openRecording ctx m owner
+    Nothing, Just owner -> openRecording m owner
     Nothing, Nothing -> pure unit
 
-openRecording :: Ctx -> M.Model -> String -> E.UI Unit
-openRecording ctx m owner = do
-  startedAt <- liftEffect B.now
+openRecording :: M.Model -> String -> E.UI Unit
+openRecording m owner = do
   { emitter, listener } <- liftEffect HS.create
-  subscription <- H.subscribe (either VoicePieceRejected VoicePiece <<< X.voicePiece <$> emitter)
-  H.modify_ _ { voice = Just (newSession m owner subscription startedAt) }
-  E.later Config.voiceClockMs (ctx.dispatch (VoiceTick subscription))
-  let recorder = B.voiceStart "/voice-worklet.js" Config.voicePieceSeconds (HS.notify listener)
+  subscription <- H.subscribe emitter
+  H.modify_ _ { voice = Just (newSession m owner subscription) }
+  let onPiece = HS.notify listener <<< either VoicePieceRejected VoicePiece <<< X.voicePiece
+      onSecond = HS.notify listener <<< VoiceProgress
+      recorder = B.voiceStart "/voice-worklet.js" Config.voicePieceSeconds onPiece onSecond
   E.attempt (toAffE recorder) (microphoneReady subscription)
 
-newSession :: M.Model -> String -> H.SubscriptionId -> Number -> M.VoiceSession
-newSession m owner subscription startedAt =
+newSession :: M.Model -> String -> H.SubscriptionId -> M.VoiceSession
+newSession m owner subscription =
   { owner, path: M.ownerPath m <> "/voice", epoch: m.epoch, phase: M.Starting, subscription
-  , queue: [], sending: false, attempts: 0, pieces: 0, recording: Nothing, startedAt, elapsed: 0.0 }
+  , queue: [], sending: false, attempts: 0, pieces: 0, recording: Nothing, elapsed: 0.0 }
 
 microphoneReady :: H.SubscriptionId -> Either Error B.Voice -> E.UI Unit
 microphoneReady subscription result = H.gets _.voice >>= case _ of
@@ -79,16 +79,13 @@ microphoneReady subscription result = H.gets _.voice >>= case _ of
     Right recorder -> stopRecorder recorder
     Left _ -> H.unsubscribe subscription
 
-tickClock :: Ctx -> H.SubscriptionId -> E.UI Unit
-tickClock ctx subscription = do
+showProgress :: Number -> E.UI Unit
+showProgress ms = do
   m <- H.get
   case m.voice of
-    Just v | v.subscription == subscription ->
-      if v.epoch /= m.epoch then abandonRecording v else unless (M.isStopping v.phase) do
-        now <- liftEffect B.now
-        H.modify_ \s -> s { voice = map (_ { elapsed = now - v.startedAt }) s.voice }
-        E.later Config.voiceClockMs (ctx.dispatch (VoiceTick subscription))
-    _ -> pure unit
+    Just v | v.epoch /= m.epoch -> abandonRecording v
+    Just _ -> H.modify_ \s -> s { voice = map (_ { elapsed = ms }) s.voice }
+    Nothing -> pure unit
 
 stopRecorder :: B.Voice -> E.UI Unit
 stopRecorder recorder = E.attempt (toAffE $ B.voiceStop recorder) (const (pure unit))
@@ -156,7 +153,7 @@ sendWhenTranscribed ctx m out item = case map _.transcription (X.voiceOf item) o
   Just (X.TranscriptFailed _) -> do
     H.modify_ \s -> s { outboxes = O.delete out.owner s.outboxes }
     E.notify (item.name <> " couldn't be transcribed. Retry it or remove it, then press Send again.")
-  _ -> E.later Config.voiceTranscriptPollMs (ctx.dispatch (VoiceFlush out.owner))
+  _ -> pure unit
 
 sendVoice :: Ctx -> M.Model -> Outgoing -> E.UI Unit
 sendVoice ctx m out = do
@@ -213,6 +210,11 @@ retryTranscript ctx id = do
       let row = X.attachment reply
       H.modify_ \s -> s { attachments = O.update (Just <<< map (\item -> if item.id == row.id then row else item)) owner s.attachments }
 
+resumePendingVoice :: Ctx -> E.UI Unit
+resumePendingVoice ctx = do
+  drainUploads ctx
+  H.gets (O.keys <<< _.outboxes) >>= traverse_ (flushOutbox ctx)
+
 drainUploads :: Ctx -> E.UI Unit
 drainUploads ctx = H.get >>= \m -> traverse_ (drainSession ctx m) m.voice
 
@@ -243,7 +245,6 @@ uploaded ctx w piece = case _ of
         E.notify ("Voice message could not be sent: " <> message err)
     | otherwise -> do
         H.modify_ \s -> s { voice = map (\x -> x { sending = false, attempts = x.attempts + 1 }) s.voice }
-        E.later Config.voiceRetryMs (drainUploads ctx)
 
 addCuts :: Ctx -> M.VoiceSession -> Array X.Attachment -> E.UI Unit
 addCuts ctx v rows = unless (A.null rows) do
