@@ -43,6 +43,7 @@ common host
   other-modules:
     Clock,
     Command,
+    Config,
     Admission,
     Domain,
     RuntimePaths,
@@ -100,6 +101,7 @@ common host
     Types,
     Voice,
     Workspace,
+    Yoke,
     Wire
   if os(windows)
     hs-source-dirs: environments/windows
