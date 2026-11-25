@@ -75,6 +75,7 @@ openService clock gate telemetry choice path = do
       voicePieces <- newIORef M.empty
       let s=Service gate root repo guard lock stopping worker runs lease endpoint pulse actors store clock revision subscribers files voicePieces telemetry corporaId
       A.transaction store $ do
+       ensureEnvironment s
        rows <- DB.agents s
        when (null rows) $ void (createAgent s (obj [("name",str "ChiefSapi"),("role",str "Head of Corpora")]))
        let marker = initializingDirectory root

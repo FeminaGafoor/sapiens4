@@ -1,5 +1,6 @@
-module TelemetryDevice
- ( DeviceSource(..), DeviceIdentity, nativeOS, readNativeDevice, parseDeviceIdentity, deviceFields ) where
+module Environment
+ ( DeviceSource(..), DeviceIdentity, nativeOS, readNativeDevice, parseDeviceIdentity, deviceFields
+ , EnvironmentId(..), deviceEnvironment ) where
 
 import Control.Exception
 import Crypto.Hash.SHA256 (hmac)
@@ -22,6 +23,15 @@ import System.Timeout (timeout)
 
 data DeviceSource = MacPlatformUUID | WindowsSMBIOSUUID | LinuxMachineID deriving (Eq, Show)
 data DeviceIdentity = DeviceIdentity DeviceSource Text deriving Eq
+
+newtype EnvironmentId = EnvironmentId Text deriving (Eq, Show)
+instance ToJSON EnvironmentId where
+ toJSON (EnvironmentId key) = String key
+instance FromJSON EnvironmentId where
+ parseJSON = withText "Environment ID" (pure . EnvironmentId)
+
+deviceEnvironment :: DeviceIdentity -> EnvironmentId
+deviceEnvironment (DeviceIdentity _ key) = EnvironmentId key
 
 sourceName :: DeviceSource -> Text
 sourceName source = case source of
