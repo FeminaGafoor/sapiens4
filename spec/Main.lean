@@ -42,7 +42,8 @@ def browserJobs : List Job := [
   ("Resume remote work after reopening", Founder.resumeRemoteWorkWhenBrowserReopens),
   ("Deduplicate remote work across restart", Founder.processRedeliveredRemoteWorkOnce),
   ("Consent withdrawal before pairing approval", Founder.withdrawConsentBeforeTheOtherDeviceApproves),
-  ("Remote device approval, reconnection and revocation", Founder.approveOneDeviceThenRevokeItsMailbox)]
+  ("Remote device approval, reconnection and revocation", Founder.approveOneDeviceThenRevokeItsMailbox),
+  ("Keep one host key across pairings and restart", Founder.keepOneHostKeyAcrossPairings)]
 
 def desktopJobs : List Job := [
   ("Desktop messaging and reply persistence", User.sendAndReadOneDesktopReply),
