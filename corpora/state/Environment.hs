@@ -1,6 +1,6 @@
 module Environment
  ( DeviceSource(..), DeviceIdentity, nativeOS, readNativeDevice, parseDeviceIdentity, deviceFields
- , EnvironmentId(..), deviceEnvironment ) where
+ , EnvironmentId(..), EnvironmentRecord(..), deviceKey, sameDevice ) where
 
 import Control.Exception
 import Crypto.Hash.SHA256 (hmac)
@@ -30,8 +30,20 @@ instance ToJSON EnvironmentId where
 instance FromJSON EnvironmentId where
  parseJSON = withText "Environment ID" (pure . EnvironmentId)
 
-deviceEnvironment :: DeviceIdentity -> EnvironmentId
-deviceEnvironment (DeviceIdentity _ key) = EnvironmentId key
+data EnvironmentRecord = EnvironmentRecord { environmentId :: EnvironmentId, environmentDevice :: Maybe Text } deriving (Eq, Show)
+instance ToJSON EnvironmentRecord where
+ toJSON record = object ["id" .= environmentId record, "device" .= environmentDevice record]
+instance FromJSON EnvironmentRecord where
+ parseJSON = withObject "Environment" (\o -> EnvironmentRecord <$> o .: "id" <*> o .:? "device")
+
+deviceKey :: DeviceIdentity -> Text
+deviceKey (DeviceIdentity _ key) = key
+
+sameDevice :: Maybe Text -> EnvironmentRecord -> Bool
+sameDevice current record = case (current, environmentDevice record) of
+ (Just now, Just saved) -> now == saved
+ (Just _, Nothing) -> True
+ (Nothing, _) -> True
 
 sourceName :: DeviceSource -> Text
 sourceName source = case source of

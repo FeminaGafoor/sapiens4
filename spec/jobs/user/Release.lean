@@ -23,12 +23,14 @@ def retainModelSettingsAcrossRestart : IO Unit := IO.FS.withTempDir fun director
     IO.ofExcept <| fieldsMatch inherited (json% {defaults: $(defaults), overrides: {}})
     discard <| host.completedMessage owner "Use the corpora default again"
 
-def keepOneEnvironmentAcrossRestart : IO Unit := IO.FS.withTempDir fun directory => do
+def keepOneEnvironmentAcrossRestart : IO Unit := IO.FS.withTempDir fun directory => IO.FS.withTempDir fun other => do
   let environment := fun (host : Host) => do
     IO.ofExcept <| stringField ((← host.api "GET" "/api/corpora").getObjValD "environment") "id"
   let first ← withHost directory environment
   let again ← withHost directory environment
+  let elsewhere ← withHost other environment
   IO.ofExcept <| requireThat "restart changed the environment" (!first.isEmpty && again == first)
+  IO.ofExcept <| requireThat "two data folders shared one environment" (elsewhere != first)
 
 private def mcpSession (url : String) (requests : Array Json) : IO (Array Json) := do
   let root ← repoRoot
