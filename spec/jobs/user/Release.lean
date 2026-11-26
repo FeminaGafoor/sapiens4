@@ -25,7 +25,8 @@ def retainModelSettingsAcrossRestart : IO Unit := IO.FS.withTempDir fun director
 
 def keepOneEnvironmentAcrossRestart : IO Unit := IO.FS.withTempDir fun directory => IO.FS.withTempDir fun other => do
   let environment := fun (host : Host) => do
-    IO.ofExcept <| stringField ((← host.api "GET" "/api/corpora").getObjValD "environment") "id"
+    let corpora ← host.api "GET" "/api/corpora"
+    IO.ofExcept <| corpora.getObjVal? "environment" >>= (stringField · "id")
   let first ← withHost directory environment
   let again ← withHost directory environment
   let elsewhere ← withHost other environment

@@ -242,7 +242,11 @@ corporaIdentity s = do
  row <- if T.null chief then pure empty else DB.agent s chief
  template <- prompt s "corpora-settings-request"
  let place = obj [("id",toJSON (environmentId <$> machine)),("os",str nativeOS)]
- pure $ merge (remove ["operations"] (toJSON cfg)) (obj [("id",get identity "corpora_id"),("name",toJSON (corporaName cfg) `fallback` str ("CORPORA · " <> at row "name")),("chief_id",str chief),("settings_template",str (T.strip template)),("stopping",Bool False),("environment",place)])
+ let title = toJSON (corporaName cfg) `fallback` str ("CORPORA · " <> at row "name")
+     summary = obj
+      [ ("id",get identity "corpora_id"), ("name",title), ("chief_id",str chief)
+      , ("settings_template",str (T.strip template)), ("stopping",Bool False), ("environment",place) ]
+ pure (merge (remove ["operations"] (toJSON cfg)) summary)
 
 data ModelSettingsDraft = ModelSettingsDraft
  { modelSettingsRevision :: Int, modelSettingsDefault :: ModelSelection, modelSettingsOverrides :: Map.Map Text ModelSelection }
