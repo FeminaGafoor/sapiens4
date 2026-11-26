@@ -6,9 +6,10 @@ import qualified Data.ByteString.Lazy as BL
 import Data.Text (Text)
 import Environment (EnvironmentId(..))
 
-data Writer = Writer Text EnvironmentId
+data Writer = Writer Text (Maybe EnvironmentId)
 instance FromJSON Writer where
- parseJSON = withObject "Corpora" (\o -> Writer <$> o .: "id" <*> (o .: "environment" >>= withObject "Environment" (.: "id")))
+ parseJSON = withObject "Corpora"
+  (\o -> Writer <$> o .: "id" <*> (o .: "environment" >>= withObject "Environment" (.:? "id")))
 
 data HistoryPage = HistoryPage { pageEnvironment :: EnvironmentId, pageAppends :: [K.Append] }
 instance FromJSON HistoryPage where

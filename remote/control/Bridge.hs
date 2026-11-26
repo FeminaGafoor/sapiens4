@@ -5,8 +5,9 @@ import qualified Telemetry
 import qualified Service as Service
 import Crypto
 import BrowserCrypto
-import Environment (deviceKey, readNativeDevice)
+import Environment (EnvironmentId(..), EnvironmentRecord(..), deviceKey, readNativeDevice)
 import HostKeys
+import Population (adoptEnvironment)
 import LegacyReceipt (matchesLegacyReceipt)
 import Setup
 import Transport
@@ -81,6 +82,8 @@ hostKeys b = modifyMVar (bridgeKeyring b) $ \cached -> case cached of
    MakeKeys -> do
     (private,public) <- keypair (bridgeCrypto b)
     keep (HostKeys private public machine)
+  named <- fingerprint (String (hostPublic chosen))
+  adoptEnvironment (bridgeService b) (EnvironmentRecord (EnvironmentId named) machine)
   pure (Just chosen,chosen)
  where
  keep stored = saveValue (bridgeService b) hostKeysKey stored >> pure stored

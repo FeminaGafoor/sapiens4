@@ -23,11 +23,15 @@ catchUpMain :: Text -> FilePath -> IO ExitCode
 catchUpMain from directory = do
  root <- makeAbsolute directory
  manager <- newManager defaultManagerSettings
- Writer corpora source <- fetch decodeWriter manager (from <> "/api/corpora")
+ Writer corpora named <- fetch decodeWriter manager (from <> "/api/corpora")
+ source <- maybe (failure (H.statusCode H.conflict409) writerNotReady) pure named
  adoptCorpora root corpora
  result <- bracket (Migrations.openCorpora root) K.closeStore (\store -> catchUp manager from store source yokeStart)
  BL.putStrLn (encodeCatchUp result)
  pure ExitSuccess
+
+writerNotReady :: Text
+writerNotReady = "The writer has no environment yet. Open its Sapiens4 window once."
 
 adoptCorpora :: FilePath -> Text -> IO ()
 adoptCorpora root corpora = do

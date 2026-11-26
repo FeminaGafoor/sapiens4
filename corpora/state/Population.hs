@@ -17,7 +17,7 @@ import System.Environment
 import System.FilePath
 import System.Info
 import Types
-import Environment (EnvironmentId(..), EnvironmentRecord(..), deviceKey, nativeOS, readNativeDevice, sameDevice)
+import Environment (EnvironmentRecord(..), deviceKey, nativeOS, readNativeDevice, sameDevice)
 import qualified Store as DB
 import Memo
 import Workspace (seedMemoBookmark)
@@ -230,9 +230,12 @@ ensureEnvironment :: Service -> IO ()
 ensureEnvironment s = do
  machineKey <- fmap deviceKey <$> readNativeDevice
  stored <- loadValue s environmentKey Nothing
- unless (maybe False (sameDevice machineKey) stored) $ do
-  created <- EnvironmentId <$> newId
-  saveValue s environmentKey (EnvironmentRecord created machineKey)
+ unless (maybe True (sameDevice machineKey) stored) $
+  saveValue s environmentKey (Nothing :: Maybe EnvironmentRecord)
+adoptEnvironment :: Service -> EnvironmentRecord -> IO ()
+adoptEnvironment s record = do
+ stored <- loadValue s environmentKey Nothing
+ unless (stored == Just record) (saveValue s environmentKey record)
 corporaIdentity :: Service -> IO Value
 corporaIdentity s = do
  cfg <- corporaSettings s

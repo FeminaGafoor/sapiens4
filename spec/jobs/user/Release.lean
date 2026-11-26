@@ -1,4 +1,5 @@
 import io.Host
+import io.CryptoWindow
 
 open Lean System
 namespace Spec.User
@@ -23,26 +24,34 @@ def retainModelSettingsAcrossRestart : IO Unit := IO.FS.withTempDir fun director
     IO.ofExcept <| fieldsMatch inherited (json% {defaults: $(defaults), overrides: {}})
     discard <| host.completedMessage owner "Use the corpora default again"
 
+private def environmentOf (host : Host) : IO String :=
+  untilSome "environment from the host key" do
+    let place ← IO.ofExcept <| (← host.api "GET" "/api/corpora").getObjVal? "environment"
+    match ← IO.ofExcept <| place.getObjVal? "id" with
+    | .str named => return some named
+    | .null => return none
+    | other => throw <| IO.userError s!"unexpected environment id {other.compress}"
+
 def keepOneEnvironmentAcrossRestart : IO Unit := IO.FS.withTempDir fun directory => IO.FS.withTempDir fun other => do
-  let environment := fun (host : Host) => do
-    let corpora ← host.api "GET" "/api/corpora"
-    IO.ofExcept <| corpora.getObjVal? "environment" >>= (stringField · "id")
-  let first ← withHost directory environment
-  let again ← withHost directory environment
-  let elsewhere ← withHost other environment
+  let waiting ← withHost directory fun host => do
+    let place ← IO.ofExcept <| (← host.api "GET" "/api/corpora").getObjVal? "environment"
+    IO.ofExcept <| place.getObjVal? "id"
+  IO.ofExcept <| requireThat "environment existed before the host key" (waiting == Json.null)
+  let first ← withCryptoHost directory environmentOf
+  let again ← withCryptoHost directory environmentOf
+  let elsewhere ← withCryptoHost other environmentOf
   IO.ofExcept <| requireThat "restart changed the environment" (!first.isEmpty && again == first)
   IO.ofExcept <| requireThat "two data folders shared one environment" (elsewhere != first)
 
 def shareHistoryWithoutDeviceKeys : IO Unit := IO.FS.withTempDir fun directory => do
-  withHost directory fun host => do
-    let corpora ← host.api "GET" "/api/corpora"
+  withCryptoHost directory fun host => do
+    let environment ← environmentOf host
     let whole ← host.api "GET" "/api/yoke/history?after=0"
     let later ← host.api "GET" "/api/yoke/history?after=1"
     let rejected ← host.api "GET" "/api/yoke/history?after=first" none 400
     IO.ofExcept do
       let reason ← stringField rejected "error"
       requireThat "bad cursor was not explained" (!reason.isEmpty)
-      let environment ← corpora.getObjVal? "environment" >>= (stringField · "id")
       requireThat "history named another environment" ((← stringField whole "environment") == environment)
       let first ← (← whole.getObjValAs? (Array Json) "appends").mapM (·.getObjValAs? Nat "appendId")
       let rest ← (← later.getObjValAs? (Array Json) "appends").mapM (·.getObjValAs? Nat "appendId")
@@ -58,12 +67,14 @@ private def catchUp (url : String) (directory : FilePath) : IO Json := do
   IO.ofExcept <| Json.parse output.stdout.trimAscii.toString
 
 def catchUpWithoutRepeating : IO Unit := IO.FS.withTempDir fun directory => IO.FS.withTempDir fun standby => do
-  let (sapi, first, second) ← withHost directory fun host => do
+  let (sapi, writer, first, second) ← withCryptoHost directory fun host => do
     let sapi ← host.agent "Reviewer"
+    let writer ← environmentOf host
     let first ← catchUp host.url standby
     let second ← catchUp host.url standby
-    return (sapi, first, second)
+    return (sapi, writer, first, second)
   IO.ofExcept do
+    requireThat "catch-up followed another writer" ((← stringField first "source") == writer)
     requireThat "catch-up copied nothing" ((← first.getObjValAs? Nat "applied") > 0)
     requireThat "second catch-up repeated writes" ((← second.getObjValAs? Nat "applied") == 0)
   withHost standby fun host => do
